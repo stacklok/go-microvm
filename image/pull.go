@@ -410,6 +410,12 @@ func extractHardlink(hdr *tar.Header, target, rootDir string) error {
 		return fmt.Errorf("refusing hardlink to non-regular file: %s", linkSrc)
 	}
 
+	// Ensure the target itself is not a symlink (prevents writing through
+	// a symlink placed by a previous tar entry at this location).
+	if err := validateNoSymlinkLeaf(target); err != nil {
+		return err
+	}
+
 	// Remove any existing entry before creating the hard link.
 	_ = os.Remove(target)
 
