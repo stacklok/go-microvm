@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: '3'
+
+vars:
+  RUNNER_NAME: propolis-runner
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+  BUILD_DATE:
+    sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+  LDFLAGS: >-
+    -X github.com/stacklok/propolis/internal/version.Version={{.VERSION}}
+    -X github.com/stacklok/propolis/internal/version.Commit={{.COMMIT}}
+    -X github.com/stacklok/propolis/internal/version.BuildDate={{.BUILD_DATE}}
+  HOST_ARCH:
+    sh: uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'
+
+# Quick reference:
+#   task build-dev        → Fast dev build (requires system libkrun-devel)
+#   task test             → Run tests with race detector
+#   task lint             → Run linter
+#   task verify           → fmt + lint + test
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # =============================================================================
+  # Development Build (requires system libkrun-devel)
+  # =============================================================================
+
+  build-dev:
+    desc: Build runner for development (requires libkrun-devel on system)
+    platforms: [linux]
+    env:
+      CGO_ENABLED: "1"
+    cmds:
+      - mkdir -p bin
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - bin/{{.RUNNER_NAME}}
+
+  build-dev-darwin:
+    desc: Build runner for development on macOS (requires Homebrew libkrun)
+    platforms: [darwin]
+    cmds:
+      - mkdir -p bin
+      - CGO_ENABLED=1 go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+      # Hypervisor.framework requires entitlements
+      - codesign --entitlements assets/entitlements.plist --force -s - bin/{{.RUNNER_NAME}}
+
+  build-dev-race:
+    desc: Build runner with race detector (requires libkrun-devel)
+    env:
+      CGO_ENABLED: "1"
+    cmds:
+      - mkdir -p bin
+      - go build -race -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+
+  # =============================================================================
+  # Standard Tasks
+  # =============================================================================
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test -v -race ./...
+
+  test-coverage:
+    desc: Run tests with coverage
+    cmds:
+      - go test -v -race -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo "Coverage report generated at coverage.html"
+
+  lint:
+    desc: Run linter
+    cmds:
+      - golangci-lint run ./...
+
+  lint-fix:
+    desc: Run linter and fix issues
+    cmds:
+      - golangci-lint run --fix ./...
+
+  fmt:
+    desc: Format code
+    cmds:
+      - go fmt ./...
+      - goimports -w .
+
+  tidy:
+    desc: Tidy go modules
+    cmds:
+      - go mod tidy
+
+  verify:
+    desc: Verify code (fmt, lint, test)
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
+
+  version:
+    desc: Print version information
+    cmds:
+      - 'echo "Version: {{.VERSION}}"'
+      - 'echo "Commit: {{.COMMIT}}"'
+      - 'echo "Build Date: {{.BUILD_DATE}}"'
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf bin/
+      - rm -f coverage.out coverage.html

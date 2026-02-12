@@ -1,0 +1,187 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"syscall"
+	"time"
+)
+
+const (
+	// runnerBinaryName is the name of the propolis-runner binary.
+	runnerBinaryName = "propolis-runner"
+	// stopTimeout is the maximum time to wait for the process to exit after SIGTERM.
+	stopTimeout = 30 * time.Second
+	// stopPollInterval is the interval between process liveness checks during stop.
+	stopPollInterval = 250 * time.Millisecond
+)
+
+// Process represents a running VM runner subprocess.
+type Process struct {
+	// PID is the process ID of the runner subprocess.
+	PID int
+	cmd *exec.Cmd
+}
+
+// Spawn starts the propolis-runner binary as a detached subprocess.
+// The runner binary receives the VM configuration as a JSON string in argv[1].
+// On success, the returned Process can be used to monitor and stop the VM.
+func Spawn(ctx context.Context, cfg Config) (*Process, error) {
+	runnerPath, err := findRunner(cfg.RunnerPath)
+	if err != nil {
+		return nil, fmt.Errorf("runner binary not found: %w", err)
+	}
+
+	configJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal runner config: %w", err)
+	}
+
+	// Use exec.Command (NOT exec.CommandContext) because the runner is a
+	// long-lived process that should outlive the calling context. The context
+	// may have a timeout that we do not want to propagate to the VM process.
+	// The runner lifecycle is managed explicitly via Stop().
+	_ = ctx // acknowledged but intentionally unused for exec.Command
+	cmd := exec.Command(runnerPath, string(configJSON))
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true, // Create new session (detach from terminal)
+	}
+
+	// Set library search path for bundled libraries if available.
+	if cfg.LibDir != "" {
+		cmd.Env = append(os.Environ(), libPathEnvVar()+"="+cfg.LibDir)
+	}
+
+	// Redirect stdout/stderr to log file if configured.
+	if cfg.VMLogPath != "" {
+		logFile, err := os.OpenFile(cfg.VMLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("open vm log file: %w", err)
+		}
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		// Close after Start — the child process inherits the file descriptors.
+		defer func() { _ = logFile.Close() }()
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start runner process: %w", err)
+	}
+
+	proc := &Process{
+		PID: cmd.Process.Pid,
+		cmd: cmd,
+	}
+
+	// Start a goroutine to reap the child process when it exits. This prevents
+	// zombie processes. The goroutine terminates when cmd.Wait returns.
+	go func() { _ = cmd.Wait() }()
+
+	return proc, nil
+}
+
+// Stop sends SIGTERM to the runner process and waits for it to exit.
+// If the process does not exit within 30 seconds, it sends SIGKILL.
+func (p *Process) Stop(ctx context.Context) error {
+	if !p.IsAlive() {
+		return nil
+	}
+
+	// Send SIGTERM for graceful shutdown.
+	if err := syscall.Kill(p.PID, syscall.SIGTERM); err != nil {
+		// If the process is already gone, that is fine.
+		if !isNoSuchProcess(err) {
+			return fmt.Errorf("send SIGTERM to pid %d: %w", p.PID, err)
+		}
+		return nil
+	}
+
+	// Poll until the process exits or the timeout expires.
+	deadline := time.Now().Add(stopTimeout)
+	ticker := time.NewTicker(stopPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Context canceled — force kill.
+			_ = syscall.Kill(p.PID, syscall.SIGKILL)
+			return ctx.Err()
+		case <-ticker.C:
+			if !p.IsAlive() {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				// Timeout — force kill.
+				if err := syscall.Kill(p.PID, syscall.SIGKILL); err != nil && !isNoSuchProcess(err) {
+					return fmt.Errorf("send SIGKILL to pid %d: %w", p.PID, err)
+				}
+				return nil
+			}
+		}
+	}
+}
+
+// IsAlive checks if the process is still running.
+func (p *Process) IsAlive() bool {
+	if p.PID <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(p.PID)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// findRunner locates the propolis-runner binary. It checks, in order:
+// 1. The explicit path provided in cfg.RunnerPath
+// 2. The system PATH
+// 3. Next to the current executable
+func findRunner(explicit string) (string, error) {
+	// 1. Explicit path.
+	if explicit != "" {
+		if _, err := os.Stat(explicit); err == nil {
+			return explicit, nil
+		}
+		return "", fmt.Errorf("explicit runner path not found: %s", explicit)
+	}
+
+	// 2. System PATH.
+	if p, err := exec.LookPath(runnerBinaryName); err == nil {
+		return p, nil
+	}
+
+	// 3. Next to the current executable.
+	execPath, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(execPath), runnerBinaryName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("%s not found in PATH or next to executable", runnerBinaryName)
+}
+
+// libPathEnvVar returns the platform-specific environment variable for the
+// shared library search path.
+func libPathEnvVar() string {
+	if runtime.GOOS == "darwin" {
+		return "DYLD_LIBRARY_PATH"
+	}
+	return "LD_LIBRARY_PATH"
+}
+
+// isNoSuchProcess returns true if the error indicates the process does not exist.
+func isNoSuchProcess(err error) bool {
+	return err == syscall.ESRCH
+}
