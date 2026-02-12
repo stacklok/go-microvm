@@ -122,7 +122,7 @@ func TestGetPublicKeyContent(t *testing.T) {
 func TestGetPublicKeyContent_NonExistentFile(t *testing.T) {
 	t.Parallel()
 
-	_, err := GetPublicKeyContent("/nonexistent/path/id_ecdsa.pub")
+	_, err := GetPublicKeyContent("/nonexistent/path/ssh_key.pub")
 	assert.Error(t, err)
 }
 

@@ -18,14 +18,14 @@ import (
 
 const (
 	// privateKeyFileName is the default name for generated private keys.
-	privateKeyFileName = "id_ecdsa"
+	privateKeyFileName = "ssh_key"
 
 	// publicKeyFileName is the default name for generated public keys.
-	publicKeyFileName = "id_ecdsa.pub"
+	publicKeyFileName = "ssh_key.pub"
 )
 
 // GenerateKeyPair generates an ECDSA P-256 SSH key pair and writes the
-// private key to keyDir/id_ecdsa and the public key to keyDir/id_ecdsa.pub.
+// private key to keyDir/ssh_key and the public key to keyDir/ssh_key.pub.
 // The private key file is created with 0600 permissions.
 //
 // If the key files already exist, they are overwritten.

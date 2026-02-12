@@ -12,11 +12,18 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/stacklok/propolis/krun"
+)
+
+// sentinel errors for classifying exit codes.
+var (
+	errLibkrunContext = errors.New("libkrun context creation failed")
+	errStartupFailed  = errors.New("VM failed to start")
 )
 
 // Config contains the configuration for running a VM.
@@ -54,6 +61,8 @@ const (
 	exitSuccess      = 0
 	exitConfigError  = 125
 	exitRuntimeError = 1
+	exitStartupError = 2
+	exitLibkrunError = 3
 )
 
 func main() {
@@ -80,7 +89,7 @@ func main() {
 	// Run the VM.
 	if err := runVM(&config); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to run VM: %v\n", err)
-		os.Exit(exitRuntimeError)
+		os.Exit(exitCodeForError(err))
 	}
 
 	// If we get here, something went wrong (krun_start_enter should never return on success).
@@ -122,7 +131,7 @@ func runVM(config *Config) error {
 	// Create libkrun context.
 	ctx, err := krun.CreateContext()
 	if err != nil {
-		return fmt.Errorf("create libkrun context: %w", err)
+		return fmt.Errorf("%w: %w", errLibkrunContext, err)
 	}
 	// Note: we don't defer ctx.Free() because krun_start_enter takes ownership.
 
@@ -176,9 +185,23 @@ func runVM(config *Config) error {
 	// IMPORTANT: This call NEVER returns on success.
 	// The process becomes the VM supervisor and will exit() when the VM shuts down.
 	if err := ctx.StartEnter(); err != nil {
-		return fmt.Errorf("start VM: %w", err)
+		return fmt.Errorf("%w: %w", errStartupFailed, err)
 	}
 
 	// Should never reach here.
 	return fmt.Errorf("unexpected return from krun_start_enter")
+}
+
+// exitCodeForError maps known error types to specific exit codes for
+// diagnostics. The caller can inspect the process exit code to distinguish
+// between configuration errors, libkrun failures, and VM startup failures.
+func exitCodeForError(err error) int {
+	switch {
+	case errors.Is(err, errLibkrunContext):
+		return exitLibkrunError
+	case errors.Is(err, errStartupFailed):
+		return exitStartupError
+	default:
+		return exitRuntimeError
+	}
 }

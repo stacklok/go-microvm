@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,10 @@ const (
 type Process struct {
 	// PID is the process ID of the runner subprocess.
 	PID int
-	cmd *exec.Cmd
+	// runnerPath is the resolved path to the runner binary, used to verify
+	// process identity before sending signals (prevents signaling recycled PIDs).
+	runnerPath string
+	cmd        *exec.Cmd
 }
 
 // Spawn starts the propolis-runner binary as a detached subprocess.
@@ -77,13 +81,26 @@ func Spawn(ctx context.Context, cfg Config) (*Process, error) {
 	}
 
 	proc := &Process{
-		PID: cmd.Process.Pid,
-		cmd: cmd,
+		PID:        cmd.Process.Pid,
+		runnerPath: runnerPath,
+		cmd:        cmd,
 	}
 
 	// Start a goroutine to reap the child process when it exits. This prevents
 	// zombie processes. The goroutine terminates when cmd.Wait returns.
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			slog.Warn("runner process exited with error",
+				"pid", cmd.Process.Pid,
+				"error", waitErr,
+			)
+		} else {
+			slog.Info("runner process exited normally",
+				"pid", cmd.Process.Pid,
+			)
+		}
+	}()
 
 	return proc, nil
 }
@@ -92,6 +109,16 @@ func Spawn(ctx context.Context, cfg Config) (*Process, error) {
 // If the process does not exit within 30 seconds, it sends SIGKILL.
 func (p *Process) Stop(ctx context.Context) error {
 	if !p.IsAlive() {
+		return nil
+	}
+
+	// Verify process identity before signaling to avoid killing a recycled PID
+	// that now belongs to an unrelated process.
+	if p.runnerPath != "" && !isExpectedProcess(p.PID, p.runnerPath) {
+		slog.Warn("PID no longer belongs to the expected runner binary, skipping signal",
+			"pid", p.PID,
+			"expected_binary", p.runnerPath,
+		)
 		return nil
 	}
 
@@ -131,6 +158,8 @@ func (p *Process) Stop(ctx context.Context) error {
 }
 
 // IsAlive checks if the process is still running.
+// When a runner path is known, it also verifies the PID still belongs to the
+// expected binary (prevents false positives from PID reuse).
 func (p *Process) IsAlive() bool {
 	if p.PID <= 0 {
 		return false
@@ -139,7 +168,14 @@ func (p *Process) IsAlive() bool {
 	if err != nil {
 		return false
 	}
-	return process.Signal(syscall.Signal(0)) == nil
+	if process.Signal(syscall.Signal(0)) != nil {
+		return false
+	}
+	// If we know the runner path, verify the PID still belongs to it.
+	if p.runnerPath != "" {
+		return isExpectedProcess(p.PID, p.runnerPath)
+	}
+	return true
 }
 
 // findRunner locates the propolis-runner binary. It checks, in order:

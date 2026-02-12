@@ -22,6 +22,10 @@ func registerPlatformChecks(c *checker) {
 		Run:         checkKVM,
 		Required:    true,
 	})
+
+	// Add resource checks as non-required (advisory) defaults.
+	c.Register(DiskSpaceCheck("", 2.0))
+	c.Register(ResourceCheck(1, 1.0))
 }
 
 // checkKVM verifies that /dev/kvm exists, is a character device, and is

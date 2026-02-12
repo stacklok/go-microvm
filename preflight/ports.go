@@ -67,15 +67,32 @@ func checkPortAvailable(ctx context.Context, port uint16) error {
 // It uses the `ss` command on Linux. Returns an empty string if the
 // information cannot be determined.
 func getPortProcessInfo(ctx context.Context, port uint16) string {
-	// Try ss (modern Linux).
+	// Try ss (modern Linux). The filter expression must be a single argument.
 	//nolint:gosec // port is a uint16, not user-controlled string
 	out, err := exec.CommandContext(ctx, "ss", "-tlnp",
-		"sport", "=", fmt.Sprintf(":%d", port)).CombinedOutput()
+		fmt.Sprintf("sport = :%d", port)).CombinedOutput()
 	if err == nil {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		// Skip header line; return the first data line if present.
-		if len(lines) > 1 {
-			return strings.TrimSpace(lines[1])
+		for _, line := range lines {
+			if !strings.Contains(line, "LISTEN") {
+				continue
+			}
+			// Parse users:(("name",pid=NNN,fd=N)) to extract process info.
+			if idx := strings.Index(line, "users:(("); idx != -1 {
+				start := idx + len("users:((")
+				end := strings.Index(line[start:], "))")
+				if end != -1 {
+					info := line[start : start+end]
+					parts := strings.Split(info, ",")
+					if len(parts) >= 2 {
+						procName := strings.Trim(parts[0], "\"")
+						pid := strings.TrimPrefix(parts[1], "pid=")
+						return fmt.Sprintf("%s (pid %s)", procName, pid)
+					}
+					return info
+				}
+			}
+			return "process listening"
 		}
 	}
 

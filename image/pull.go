@@ -132,6 +132,8 @@ func extractTar(r io.Reader, dst string) error {
 	lr := &io.LimitedReader{R: r, N: maxExtractSize}
 	tr := tar.NewReader(lr)
 
+	var entryCount int
+
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -140,6 +142,8 @@ func extractTar(r io.Reader, dst string) error {
 		if err != nil {
 			return fmt.Errorf("read tar header: %w", err)
 		}
+
+		entryCount++
 
 		target, err := sanitizeTarPath(dst, hdr.Name)
 		if err != nil {
@@ -157,6 +161,10 @@ func extractTar(r io.Reader, dst string) error {
 		}
 	}
 
+	if entryCount == 0 {
+		return fmt.Errorf("tar archive is empty or contains no valid entries")
+	}
+
 	return nil
 }
 
@@ -165,6 +173,11 @@ func extractTar(r io.Reader, dst string) error {
 func sanitizeTarPath(dst, entryName string) (string, error) {
 	// Clean the entry name to remove any ".." or "." components.
 	cleaned := filepath.Clean(entryName)
+
+	// Reject absolute paths in tar entries.
+	if filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("path traversal detected: absolute path %q in tar entry", entryName)
+	}
 
 	// Join with the destination, then verify it's actually under dst.
 	target := filepath.Join(dst, cleaned)
@@ -183,6 +196,70 @@ func sanitizeTarPath(dst, entryName string) (string, error) {
 	return target, nil
 }
 
+// mkdirAllNoSymlink creates directories one component at a time and refuses
+// to traverse or overwrite symlinks.
+func mkdirAllNoSymlink(destDir, targetDir string, mode os.FileMode) error {
+	base := filepath.Clean(destDir)
+	cleanTarget := filepath.Clean(targetDir)
+	if cleanTarget != base && !strings.HasPrefix(cleanTarget, base+string(os.PathSeparator)) {
+		return fmt.Errorf("invalid target directory: %s", targetDir)
+	}
+
+	rel, err := filepath.Rel(base, cleanTarget)
+	if err != nil {
+		return fmt.Errorf("compute relative path: %w", err)
+	}
+	if rel == "." {
+		return nil
+	}
+
+	cur := base
+	parts := strings.Split(rel, string(os.PathSeparator))
+	for _, p := range parts {
+		if p == "" || p == "." {
+			continue
+		}
+		cur = filepath.Join(cur, p)
+		info, err := os.Lstat(cur)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to traverse symlink during extraction: %s", cur)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("path component is not a directory: %s", cur)
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat directory %s: %w", cur, err)
+		}
+		if err := os.Mkdir(cur, mode); err != nil {
+			return fmt.Errorf("create directory %s: %w", cur, err)
+		}
+	}
+	return nil
+}
+
+// validateNoSymlinkLeaf checks that the target path is not a symlink or
+// directory before writing a regular file. Uses os.Lstat to avoid following
+// symlinks.
+func validateNoSymlinkLeaf(target string) error {
+	info, err := os.Lstat(target)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through symlink: %s", target)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("refusing to overwrite directory with file: %s", target)
+		}
+		return nil
+	}
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return fmt.Errorf("stat target %s: %w", target, err)
+}
+
 // extractTarEntry extracts a single tar entry to target. It handles files,
 // directories, symlinks, and hard links with appropriate security checks.
 //
@@ -190,12 +267,17 @@ func sanitizeTarPath(dst, entryName string) (string, error) {
 func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) error {
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(target, hdr.FileInfo().Mode().Perm()|0o700); err != nil {
+		mode := hdr.FileInfo().Mode().Perm() | 0o700
+		if err := mkdirAllNoSymlink(rootDir, target, mode); err != nil {
 			return fmt.Errorf("create directory: %w", err)
+		}
+		// Also chmod to handle existing directories from partial extractions.
+		if err := os.Chmod(target, mode); err != nil {
+			return fmt.Errorf("set directory permissions: %w", err)
 		}
 
 	case tar.TypeReg:
-		if err := extractRegularFile(tr, hdr, target); err != nil {
+		if err := extractRegularFile(tr, hdr, target, rootDir); err != nil {
 			return err
 		}
 
@@ -222,10 +304,15 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 }
 
 // extractRegularFile extracts a regular file from the tar stream.
-func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target string) error {
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target, rootDir string) error {
+	// Ensure parent directory exists without traversing symlinks.
+	if err := mkdirAllNoSymlink(rootDir, filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
+	}
+
+	// Verify the target is not a symlink or directory before writing.
+	if err := validateNoSymlinkLeaf(target); err != nil {
+		return err
 	}
 
 	mode := hdr.FileInfo().Mode().Perm()
@@ -249,8 +336,8 @@ func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target string) error {
 // extractSymlink creates a symbolic link, validating that the link target
 // does not escape the rootfs directory.
 func extractSymlink(hdr *tar.Header, target, rootDir string) error {
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	// Ensure parent directory exists without traversing symlinks.
+	if err := mkdirAllNoSymlink(rootDir, filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create parent directory for symlink: %w", err)
 	}
 
@@ -276,8 +363,16 @@ func extractSymlink(hdr *tar.Header, target, rootDir string) error {
 		}
 	}
 
-	// Remove any existing entry before creating the symlink.
-	_ = os.Remove(target)
+	// Check if the target is an existing directory -- refuse to replace
+	// directories with symlinks.
+	if info, err := os.Lstat(target); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("refusing to replace directory with symlink: %s", target)
+		}
+		_ = os.Remove(target)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat symlink target %s: %w", target, err)
+	}
 
 	if err := os.Symlink(linkTarget, target); err != nil {
 		return fmt.Errorf("create symlink: %w", err)
@@ -289,8 +384,8 @@ func extractSymlink(hdr *tar.Header, target, rootDir string) error {
 // extractHardlink creates a hard link, validating that both source and target
 // remain within the rootfs directory.
 func extractHardlink(hdr *tar.Header, target, rootDir string) error {
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	// Ensure parent directory exists without traversing symlinks.
+	if err := mkdirAllNoSymlink(rootDir, filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create parent directory for hardlink: %w", err)
 	}
 
@@ -301,6 +396,18 @@ func extractHardlink(hdr *tar.Header, target, rootDir string) error {
 	rel, err := filepath.Rel(rootDir, linkSrc)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("hardlink %q source outside rootfs: %q", hdr.Name, hdr.Linkname)
+	}
+
+	// Only allow hardlinks to already-extracted, regular files within rootDir.
+	srcInfo, err := os.Lstat(linkSrc)
+	if err != nil {
+		return fmt.Errorf("stat hardlink source %s: %w", linkSrc, err)
+	}
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing hardlink to symlink: %s", linkSrc)
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("refusing hardlink to non-regular file: %s", linkSrc)
 	}
 
 	// Remove any existing entry before creating the hard link.
