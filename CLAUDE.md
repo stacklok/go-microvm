@@ -356,3 +356,5 @@ Never do `git add -A`.
 |----------|---------|
 | [README.md](README.md) | User-facing documentation, quick start, prerequisites |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Deep technical architecture, security model, internals |
+| [docs/MACOS.md](docs/MACOS.md) | macOS support, code signing, Hypervisor.framework |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues, log files, resource limits, licensing |

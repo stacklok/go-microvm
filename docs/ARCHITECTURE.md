@@ -482,6 +482,11 @@ propolis.Run(ctx, ref,
 
 Custom checks are appended to (not replacing) the built-in platform defaults.
 
+To replace the entire preflight checker (e.g., when the caller manages its own):
+```go
+propolis.WithPreflightChecker(preflight.NewEmpty())
+```
+
 ## State Management
 
 The `state` package provides persistent VM state with file-based locking.
@@ -738,7 +743,9 @@ appliance experience:
 | `WithPreflightChecks` | Validates KVM, disk space, connectivity |
 | `WithVirtioFS` | Shares host directories for data persistence |
 | `WithDataDir` | Uses `~/.config/toolhive-appliance/` |
-| `WithRunnerPath` | Points at the embedded `toolhive-vm-runner` binary |
+| `WithRootFSPath` | Uses pre-built rootfs (skips OCI image pull) |
+| `WithPreflightChecker` | Replaces default preflight with empty checker (appliance has its own) |
+| `WithRunnerPath` | Points at the embedded `propolis-runner` binary |
 | `WithLibDir` | Points at bundled libkrun/libkrunfw libraries |
 | `WithPorts` | Forwards HTTP (8080), HTTPS (8443), k8s API (6443), SSH (2222) |
 | `WithCPUs` / `WithMemory` | Configures VM resources per user settings |
