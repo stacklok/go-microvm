@@ -69,6 +69,16 @@ func New(dataDir string) *Provider {
 	}
 }
 
+// NewWithBinaryPath creates a new gvproxy Provider using an explicit binary
+// path instead of searching the system PATH. This is useful when the caller
+// extracts gvproxy from an embedded runtime to a known location.
+func NewWithBinaryPath(binaryPath, dataDir string) *Provider {
+	return &Provider{
+		binaryPath: binaryPath,
+		dataDir:    dataDir,
+	}
+}
+
 // Start launches gvproxy as a detached process with the given configuration.
 //
 // It writes a YAML config file with interfaces.qemu (the listen socket) and

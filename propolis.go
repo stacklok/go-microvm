@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 
 	"github.com/stacklok/propolis/image"
+	"github.com/stacklok/propolis/net/gvproxy"
 	"github.com/stacklok/propolis/runner"
 )
 
@@ -45,11 +46,18 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		return nil, fmt.Errorf("preflight: %w", err)
 	}
 
-	// 2. Pull and extract OCI image (cached by digest).
-	slog.Debug("pulling image", "ref", imageRef)
-	rootfs, err := image.Pull(ctx, imageRef, cfg.imageCache)
-	if err != nil {
-		return nil, fmt.Errorf("pull image: %w", err)
+	// 2. Obtain rootfs: use pre-built path or pull OCI image.
+	var rootfs *image.RootFS
+	if cfg.rootfsPath != "" {
+		slog.Debug("using pre-built rootfs", "path", cfg.rootfsPath)
+		rootfs = &image.RootFS{Path: cfg.rootfsPath, Config: nil}
+	} else {
+		slog.Debug("pulling image", "ref", imageRef)
+		var err error
+		rootfs, err = image.Pull(ctx, imageRef, cfg.imageCache)
+		if err != nil {
+			return nil, fmt.Errorf("pull image: %w", err)
+		}
 	}
 
 	// 3. Run rootfs hooks (no-op on happy path).
@@ -65,7 +73,10 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		return nil, fmt.Errorf("write krun config: %w", err)
 	}
 
-	// 5. Start networking.
+	// 5. Start networking (lazy-init default provider if not set by caller).
+	if cfg.netProvider == nil {
+		cfg.netProvider = gvproxy.New(cfg.dataDir)
+	}
 	slog.Debug("starting network provider")
 	netCfg := cfg.buildNetConfig()
 	if err := cfg.netProvider.Start(ctx, netCfg); err != nil {

@@ -20,7 +20,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, uint32(512), cfg.memory)
 	assert.Equal(t, "propolis", cfg.name)
 	assert.NotNil(t, cfg.preflight)
-	assert.NotNil(t, cfg.netProvider)
+	assert.Nil(t, cfg.netProvider) // lazy-initialized in Run() when not set by WithNetProvider
 	assert.NotNil(t, cfg.imageCache)
 	assert.Nil(t, cfg.ports)
 }
@@ -115,6 +115,26 @@ func TestWithDataDir(t *testing.T) {
 
 	assert.Equal(t, "/custom/data", cfg.dataDir)
 	assert.NotNil(t, cfg.imageCache) // imageCache should be recreated
+}
+
+func TestWithRootFSPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	assert.Empty(t, cfg.rootfsPath)
+
+	WithRootFSPath("/path/to/rootfs").apply(cfg)
+	assert.Equal(t, "/path/to/rootfs", cfg.rootfsPath)
+}
+
+func TestWithRootFSPath_OverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	WithRootFSPath("/first").apply(cfg)
+	WithRootFSPath("/second").apply(cfg)
+
+	assert.Equal(t, "/second", cfg.rootfsPath)
 }
 
 func TestWithVirtioFS(t *testing.T) {

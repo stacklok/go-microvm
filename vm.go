@@ -85,3 +85,6 @@ func (vm *VM) RootFSPath() string { return vm.rootfsPath }
 
 // Ports returns the configured port forwards.
 func (vm *VM) Ports() []PortForward { return vm.ports }
+
+// NetProviderPID returns the process ID of the network provider (e.g., gvproxy).
+func (vm *VM) NetProviderPID() int { return vm.netProv.PID() }

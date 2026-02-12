@@ -10,7 +10,6 @@ import (
 
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/net/gvproxy"
 	"github.com/stacklok/propolis/preflight"
 )
 
@@ -49,6 +48,7 @@ type config struct {
 	memory        uint32 // MiB
 	ports         []PortForward
 	initOverride  []string
+	rootfsPath    string // pre-built rootfs directory; skips OCI image pull when set
 	rootfsHooks   []RootFSHook
 	netProvider   net.Provider
 	preflight     preflight.Checker
@@ -67,7 +67,7 @@ func defaultConfig() *config {
 		cpus:       1,
 		memory:     512,
 		ports:      nil,
-		netProvider: gvproxy.New(dataDir),
+		netProvider: nil, // lazy-initialized in Run() if not set by WithNetProvider
 		preflight:  preflight.Default(),
 		imageCache: image.NewCache(filepath.Join(dataDir, "cache")),
 		dataDir:    dataDir,
@@ -125,6 +125,14 @@ func WithInitOverride(cmd ...string) Option {
 	return optionFunc(func(c *config) { c.initOverride = cmd })
 }
 
+// WithRootFSPath uses a pre-built rootfs directory instead of pulling an OCI
+// image. When set, the imageRef parameter to [Run] is ignored and image.Pull
+// is skipped entirely. Rootfs hooks and krun config writing still run against
+// the provided path.
+func WithRootFSPath(path string) Option {
+	return optionFunc(func(c *config) { c.rootfsPath = path })
+}
+
 // WithRootFSHook adds hooks that modify the extracted rootfs before VM boot.
 // Hooks run in order after image extraction and before .krun_config.json is written.
 func WithRootFSHook(hooks ...RootFSHook) Option {
@@ -134,6 +142,14 @@ func WithRootFSHook(hooks ...RootFSHook) Option {
 // WithNetProvider replaces the default gvproxy network provider.
 func WithNetProvider(p net.Provider) Option {
 	return optionFunc(func(c *config) { c.netProvider = p })
+}
+
+// WithPreflightChecker replaces the entire preflight checker. Use this when
+// the caller manages its own preflight logic and wants to skip the built-in
+// defaults (KVM, port availability, disk space). Pass [preflight.NewEmpty]()
+// to disable all propolis preflight checks.
+func WithPreflightChecker(checker preflight.Checker) Option {
+	return optionFunc(func(c *config) { c.preflight = checker })
 }
 
 // WithPreflightChecks adds additional preflight checks.
