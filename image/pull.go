@@ -30,11 +30,13 @@ func Pull(ctx context.Context, imageRef string, cache *Cache) (*RootFS, error) {
 	return PullWithFetcher(ctx, imageRef, cache, nil)
 }
 
-// PullWithFetcher is like Pull but uses the provided ImageFetcher instead of crane.
-// If fetcher is nil, the default CraneFetcher is used.
+// PullWithFetcher is like Pull but uses the provided ImageFetcher.
+// If fetcher is nil, the default local-then-remote fallback fetcher is used,
+// which tries the local Docker/Podman daemon first before falling back to
+// remote registry pull.
 func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher ImageFetcher) (*RootFS, error) {
 	if fetcher == nil {
-		fetcher = CraneFetcher{}
+		fetcher = NewLocalThenRemoteFetcher()
 	}
 
 	ref, err := name.ParseReference(imageRef)

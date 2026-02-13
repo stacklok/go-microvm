@@ -440,9 +440,9 @@ func TestPullWithFetcher_FetchError(t *testing.T) {
 func TestPullWithFetcher_NilFetcher(t *testing.T) {
 	t.Parallel()
 
-	// With nil fetcher, PullWithFetcher uses CraneFetcher which will try
-	// to reach a real registry. Use an invalid ref that parses but fails
-	// to pull, confirming nil fetcher doesn't panic.
+	// With nil fetcher, PullWithFetcher uses the local-then-remote fallback
+	// which will try the daemon and then a real registry. Use an invalid
+	// ref that parses but fails to pull, confirming nil fetcher doesn't panic.
 	_, err := PullWithFetcher(context.Background(), "localhost:1/nonexistent:latest", nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pull image")

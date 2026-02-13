@@ -62,7 +62,7 @@ type config struct {
 	runnerPath            string
 	virtioFS              []VirtioFSMount
 	imageCache            *image.Cache
-	imageFetcher          image.ImageFetcher // nil = default CraneFetcher
+	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
 	spawner               runner.Spawner     // nil = default runner.Spawn
 }
 
@@ -224,7 +224,8 @@ func WithImageCache(cache *image.Cache) Option {
 }
 
 // WithImageFetcher sets a custom image fetcher for OCI image retrieval.
-// When nil (default), the standard crane-based fetcher is used.
+// When nil (default), a local-then-remote fallback fetcher is used that tries
+// the Docker/Podman daemon first, then falls back to remote registry pull.
 func WithImageFetcher(f image.ImageFetcher) Option {
 	return optionFunc(func(c *config) { c.imageFetcher = f })
 }
