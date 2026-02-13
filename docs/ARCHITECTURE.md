@@ -495,8 +495,8 @@ The `state` package provides persistent VM state with file-based locking.
 
 ```
 ~/.config/propolis/           (or $PROPOLIS_DATA_DIR, or WithDataDir path)
-    state.json                <-- VM state (atomic JSON)
-    state.lock                <-- flock for exclusive access
+    propolis-state.json       <-- VM state (atomic JSON)
+    propolis-state.lock       <-- flock for exclusive access
     cache/
         sha256-abc123.../     <-- cached rootfs by digest
         sha256-def456.../
@@ -539,8 +539,8 @@ The `state` package provides persistent VM state with file-based locking.
 
 The `state.Manager` provides atomic load-and-lock semantics:
 
-1. `LoadAndLock(ctx)` acquires an exclusive `flock` on `state.lock`
-2. Reads and parses `state.json` (or returns a default State if the file
+1. `LoadAndLock(ctx)` acquires an exclusive `flock` on `propolis-state.lock`
+2. Reads and parses `propolis-state.json` (or returns a default State if the file
    does not exist)
 3. Returns a `LockedState` that holds the lock
 
@@ -571,7 +571,7 @@ for cases where another process may hold the lock temporarily.
 
 1. Marshals the state to JSON with indentation
 2. Writes to a temporary file in the same directory (`state-*.json.tmp`)
-3. Calls `os.Rename()` to atomically replace `state.json`
+3. Calls `os.Rename()` to atomically replace `propolis-state.json`
 
 If a crash occurs during write, either the old state remains intact or the
 new state is fully written -- never a partial file. The `flock` ensures only
