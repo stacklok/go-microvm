@@ -67,6 +67,16 @@ func (c *Cache) Put(digest string, rootfsPath string) error {
 	return nil
 }
 
+// TempDir creates a temporary directory inside the cache's base directory.
+// This ensures os.Rename in Put stays on the same filesystem, avoiding
+// cross-device link errors (e.g. /tmp on tmpfs vs cache on a different mount).
+func (c *Cache) TempDir() (string, error) {
+	if err := os.MkdirAll(c.baseDir, 0o700); err != nil {
+		return "", fmt.Errorf("create cache dir: %w", err)
+	}
+	return os.MkdirTemp(c.baseDir, "tmp-rootfs-*")
+}
+
 // pathFor converts a digest like "sha256:abc123..." into a filesystem path
 // inside the cache directory. The colon is replaced to avoid filesystem issues.
 func (c *Cache) pathFor(digest string) string {

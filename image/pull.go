@@ -78,8 +78,15 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		return nil, fmt.Errorf("extract OCI config: %w", err)
 	}
 
-	// Create a temporary directory for extraction.
-	tmpDir, err := os.MkdirTemp("", "propolis-rootfs-*")
+	// Create a temporary directory for extraction. When a cache is
+	// available, create it inside the cache directory so that the
+	// subsequent os.Rename stays on the same filesystem.
+	var tmpDir string
+	if cache != nil {
+		tmpDir, err = cache.TempDir()
+	} else {
+		tmpDir, err = os.MkdirTemp("", "propolis-rootfs-*")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir for rootfs: %w", err)
 	}
