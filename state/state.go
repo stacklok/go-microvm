@@ -26,10 +26,13 @@ const (
 	stateVersion = 1
 
 	// stateFileName is the name of the state JSON file within the data directory.
-	stateFileName = "state.json"
+	// Named "propolis-state.json" to avoid collision with the caller's own
+	// state file (e.g. toolhive-appliance's "state.json") when both share
+	// the same dataDir.
+	stateFileName = "propolis-state.json"
 
 	// lockFileName is the name of the lock file within the data directory.
-	lockFileName = "state.lock"
+	lockFileName = "propolis-state.lock"
 
 	// retryInterval is the interval between lock acquisition retries.
 	retryInterval = 500 * time.Millisecond
@@ -61,6 +64,11 @@ type State struct {
 	// NetProviderPID is the process ID of the network provider (e.g.
 	// gvproxy), or 0 if not running.
 	NetProviderPID int `json:"net_provider_pid,omitempty"`
+
+	// NetProviderBinary is the path to the net provider binary (e.g.
+	// "/usr/bin/gvproxy" or "gvproxy"). Used during crash recovery to
+	// verify that a persisted PID still belongs to the expected process.
+	NetProviderBinary string `json:"net_provider_binary,omitempty"`
 
 	// CreatedAt is the time the VM state was first created.
 	CreatedAt time.Time `json:"created_at"`

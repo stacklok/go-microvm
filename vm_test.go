@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/propolis/net"
+	"github.com/stacklok/propolis/state"
 )
 
 // mockProcessHandle is a test double for runner.ProcessHandle.
@@ -38,6 +39,7 @@ type mockNetProvider struct {
 	pid        int
 	stopped    bool
 	startCalls int
+	binaryPath string
 }
 
 func (m *mockNetProvider) Start(_ context.Context, _ net.Config) error {
@@ -47,7 +49,13 @@ func (m *mockNetProvider) Start(_ context.Context, _ net.Config) error {
 
 func (m *mockNetProvider) SocketPath() string { return m.sockPath }
 func (m *mockNetProvider) PID() int           { return m.pid }
-func (m *mockNetProvider) Stop()              { m.stopped = true }
+func (m *mockNetProvider) BinaryPath() string {
+	if m.binaryPath == "" {
+		return "/mock/gvproxy"
+	}
+	return m.binaryPath
+}
+func (m *mockNetProvider) Stop() { m.stopped = true }
 
 func TestVM_Stop(t *testing.T) {
 	t.Parallel()
@@ -183,4 +191,40 @@ func TestVM_Accessors(t *testing.T) {
 	assert.Equal(t, 100, vm.NetProviderPID())
 	require.Len(t, vm.Ports(), 1)
 	assert.Equal(t, uint16(8080), vm.Ports()[0].Host)
+}
+
+func TestVM_Stop_ClearsState(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	proc := &mockProcessHandle{pid: 42, alive: true}
+	netProv := &mockNetProvider{pid: 100}
+
+	vm := &VM{
+		name:    "test-vm",
+		proc:    proc,
+		netProv: netProv,
+		dataDir: dataDir,
+	}
+
+	// Pre-populate state as Run() would.
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 42
+	ls.State.NetProviderPID = 100
+	ls.State.NetProviderBinary = "/usr/bin/gvproxy"
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	err = vm.Stop(context.Background())
+	require.NoError(t, err)
+
+	loaded, loadErr := mgr.Load()
+	require.NoError(t, loadErr)
+	assert.False(t, loaded.Active)
+	assert.Equal(t, 0, loaded.PID)
+	assert.Equal(t, 0, loaded.NetProviderPID)
+	assert.Empty(t, loaded.NetProviderBinary)
 }

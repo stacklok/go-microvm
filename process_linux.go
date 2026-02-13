@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build darwin
+//go:build linux
 
-package runner
+package propolis
 
 import "github.com/stacklok/propolis/internal/procutil"
 

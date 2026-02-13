@@ -120,6 +120,24 @@ func TestSocketPath_AfterSet(t *testing.T) {
 	assert.Equal(t, "/tmp/test.sock", p.SocketPath())
 }
 
+func TestBinaryPath_Default(t *testing.T) {
+	t.Parallel()
+	p := &Provider{}
+	assert.Equal(t, "gvproxy", p.BinaryPath())
+}
+
+func TestBinaryPath_WithPath(t *testing.T) {
+	t.Parallel()
+	p := &Provider{binaryPath: "/opt/runtime/gvproxy"}
+	assert.Equal(t, "/opt/runtime/gvproxy", p.BinaryPath())
+}
+
+func TestBinaryPath_CustomBinary(t *testing.T) {
+	t.Parallel()
+	p := &Provider{binaryPath: "/usr/local/bin/custom-net-provider"}
+	assert.Equal(t, "/usr/local/bin/custom-net-provider", p.BinaryPath())
+}
+
 func TestStart_NoBinary(t *testing.T) {
 	t.Parallel()
 	p := &Provider{dataDir: t.TempDir()}

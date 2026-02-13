@@ -162,6 +162,16 @@ func TestWithVirtioFS_Appends(t *testing.T) {
 	assert.Equal(t, "second", cfg.virtioFS[1].Tag)
 }
 
+func TestWithNetProviderBinaryPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	assert.Empty(t, cfg.netProviderBinaryPath)
+
+	WithNetProviderBinaryPath("/opt/bin/gvproxy").apply(cfg)
+	assert.Equal(t, "/opt/bin/gvproxy", cfg.netProviderBinaryPath)
+}
+
 func TestMultipleOptionsApplied(t *testing.T) {
 	t.Parallel()
 

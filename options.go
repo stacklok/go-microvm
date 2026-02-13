@@ -44,23 +44,24 @@ type VirtioFSMount struct {
 
 // config holds all resolved VM configuration.
 type config struct {
-	name          string
-	cpus          uint32
-	memory        uint32 // MiB
-	ports         []PortForward
-	initOverride  []string
-	rootfsPath    string // pre-built rootfs directory; skips OCI image pull when set
-	rootfsHooks   []RootFSHook
-	netProvider   net.Provider
-	preflight     preflight.Checker
-	postBootHooks []PostBootHook
-	libDir        string
-	dataDir       string
-	runnerPath    string
-	virtioFS      []VirtioFSMount
-	imageCache    *image.Cache
-	imageFetcher  image.ImageFetcher // nil = default CraneFetcher
-	spawner       runner.Spawner     // nil = default runner.Spawn
+	name                  string
+	cpus                  uint32
+	memory                uint32 // MiB
+	ports                 []PortForward
+	initOverride          []string
+	rootfsPath            string // pre-built rootfs directory; skips OCI image pull when set
+	rootfsHooks           []RootFSHook
+	netProvider           net.Provider
+	netProviderBinaryPath string // explicit path to the net provider binary (e.g. gvproxy)
+	preflight             preflight.Checker
+	postBootHooks         []PostBootHook
+	libDir                string
+	dataDir               string
+	runnerPath            string
+	virtioFS              []VirtioFSMount
+	imageCache            *image.Cache
+	imageFetcher          image.ImageFetcher // nil = default CraneFetcher
+	spawner               runner.Spawner     // nil = default runner.Spawn
 }
 
 func defaultConfig() *config {
@@ -145,6 +146,15 @@ func WithRootFSHook(hooks ...RootFSHook) Option {
 // WithNetProvider replaces the default gvproxy network provider.
 func WithNetProvider(p net.Provider) Option {
 	return optionFunc(func(c *config) { c.netProvider = p })
+}
+
+// WithNetProviderBinaryPath sets an explicit path to the net provider binary
+// (e.g. gvproxy). When set and no custom net.Provider is given via
+// [WithNetProvider], propolis uses this path to create the default gvproxy
+// provider. This is an escape hatch for cases where auto-discovery from the
+// runner directory is not appropriate.
+func WithNetProviderBinaryPath(path string) Option {
+	return optionFunc(func(c *config) { c.netProviderBinaryPath = path })
 }
 
 // WithPreflightChecker replaces the entire preflight checker. Use this when

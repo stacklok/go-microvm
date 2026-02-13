@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/propolis/net"
 	"github.com/stacklok/propolis/runner"
+	"github.com/stacklok/propolis/state"
 )
 
 // VM represents a running microVM.
@@ -45,6 +46,23 @@ func (vm *VM) Stop(ctx context.Context) error {
 	}
 
 	vm.netProv.Stop()
+
+	// Best-effort state cleanup. Use context.Background() so cleanup
+	// succeeds even if the caller's context is already canceling.
+	// Use LoadAndLockWithRetry with a bounded timeout so Stop() never
+	// blocks forever if something unexpected holds the flock.
+	if vm.dataDir != "" {
+		stateMgr := state.NewManager(vm.dataDir)
+		if ls, stateErr := stateMgr.LoadAndLockWithRetry(context.Background(), 10*time.Second); stateErr == nil {
+			defer ls.Release()
+			ls.State.Active = false
+			ls.State.PID = 0
+			ls.State.NetProviderPID = 0
+			ls.State.NetProviderBinary = ""
+			_ = ls.Save()
+		}
+	}
+
 	return nil
 }
 

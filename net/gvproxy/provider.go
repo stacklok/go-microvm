@@ -190,6 +190,16 @@ func (p *Provider) SocketPath() string {
 	return p.sockPath
 }
 
+// BinaryPath returns the path to the gvproxy binary. Returns the full path
+// if one was provided, or "gvproxy" as a fallback when the binary was found
+// via PATH lookup.
+func (p *Provider) BinaryPath() string {
+	if p.binaryPath == "" {
+		return "gvproxy"
+	}
+	return p.binaryPath
+}
+
 // PID returns the process ID of the gvproxy instance, or 0 if not running.
 func (p *Provider) PID() int {
 	return p.pid

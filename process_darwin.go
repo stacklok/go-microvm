@@ -3,7 +3,7 @@
 
 //go:build darwin
 
-package runner
+package propolis
 
 import "github.com/stacklok/propolis/internal/procutil"
 

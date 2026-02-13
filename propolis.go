@@ -25,6 +25,13 @@ import (
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net/gvproxy"
 	"github.com/stacklok/propolis/runner"
+	"github.com/stacklok/propolis/state"
+)
+
+const (
+	// defaultNetProviderBinary is the binary name used for auto-discovery
+	// of the network provider next to the runner binary.
+	defaultNetProviderBinary = "gvproxy"
 )
 
 // Run pulls an OCI image and boots it as a microVM. It is the primary entry
@@ -74,8 +81,28 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 
 	// 5. Start networking (lazy-init default provider if not set by caller).
+	//
+	// Resolution order:
+	//   1. WithNetProvider(p) — fully custom provider (unchanged)
+	//   2. WithNetProviderBinaryPath(path) — explicit binary path
+	//   3. Auto-discover: look for gvproxy next to the runner binary
+	//   4. gvproxy.New() — PATH search fallback
 	if cfg.netProvider == nil {
-		cfg.netProvider = gvproxy.New(cfg.dataDir)
+		binaryPath := ""
+		if cfg.netProviderBinaryPath != "" {
+			binaryPath = cfg.netProviderBinaryPath
+		} else if cfg.runnerPath != "" {
+			candidate := filepath.Join(filepath.Dir(cfg.runnerPath), defaultNetProviderBinary)
+			if info, err := os.Stat(candidate); err == nil &&
+				info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+				binaryPath = candidate
+			}
+		}
+		if binaryPath != "" {
+			cfg.netProvider = gvproxy.NewWithBinaryPath(binaryPath, cfg.dataDir)
+		} else {
+			cfg.netProvider = gvproxy.New(cfg.dataDir)
+		}
 	}
 	slog.Debug("starting network provider")
 	netCfg := cfg.buildNetConfig()
@@ -114,6 +141,21 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		dataDir:    cfg.dataDir,
 		rootfsPath: rootfs.Path,
 		ports:      cfg.ports,
+	}
+
+	// Best-effort state persistence for crash recovery.
+	// NOTE: we must release the lock before post-boot hooks run, because
+	// a failing hook calls vm.Stop() which also acquires the state lock.
+	// Using explicit Release() instead of defer to avoid deadlock.
+	stateMgr := state.NewManager(cfg.dataDir)
+	if ls, stateErr := stateMgr.LoadAndLock(ctx); stateErr == nil {
+		ls.State.Active = true
+		ls.State.Name = cfg.name
+		ls.State.PID = proc.PID()
+		ls.State.NetProviderPID = cfg.netProvider.PID()
+		ls.State.NetProviderBinary = cfg.netProvider.BinaryPath()
+		_ = ls.Save()
+		ls.Release()
 	}
 
 	// 7. Post-boot hooks (no-op on happy path).

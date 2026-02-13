@@ -36,6 +36,12 @@ type Provider interface {
 	// is not running.
 	PID() int
 
+	// BinaryPath returns the path to the network provider binary
+	// (e.g. "/usr/bin/gvproxy" or just "gvproxy" if found via PATH).
+	// This is persisted in state for crash recovery to verify that a
+	// PID still belongs to the expected process.
+	BinaryPath() string
+
 	// Stop terminates the network provider process.
 	Stop()
 }
