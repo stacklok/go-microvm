@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -103,6 +104,8 @@ func createTarBuffer(t *testing.T, entries []tarEntry) *bytes.Buffer {
 			Mode:     e.mode,
 			Size:     int64(len(e.content)),
 			Linkname: e.linkname,
+			Uid:      e.uid,
+			Gid:      e.gid,
 		}
 
 		err := tw.WriteHeader(hdr)
@@ -126,6 +129,8 @@ type tarEntry struct {
 	mode     int64
 	content  string
 	linkname string
+	uid      int
+	gid      int
 }
 
 func TestExtractTar_DirectoriesAndFiles(t *testing.T) {
@@ -307,6 +312,73 @@ func TestExtractTar_SkipsPathTraversal(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dst, "good.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "good content", string(data))
+}
+
+func TestExtractTar_PreservesOwnershipBestEffort(t *testing.T) {
+	t.Parallel()
+
+	entries := []tarEntry{
+		{
+			name:     "root-owned/",
+			typeflag: tar.TypeDir,
+			mode:     0o755,
+			uid:      0,
+			gid:      0,
+		},
+		{
+			name:     "root-owned/file.txt",
+			typeflag: tar.TypeReg,
+			mode:     0o644,
+			content:  "owned by root",
+			uid:      0,
+			gid:      0,
+		},
+		{
+			name:     "user-owned/",
+			typeflag: tar.TypeDir,
+			mode:     0o755,
+			uid:      1000,
+			gid:      1000,
+		},
+		{
+			name:     "user-owned/file.txt",
+			typeflag: tar.TypeReg,
+			mode:     0o644,
+			content:  "owned by user",
+			uid:      1000,
+			gid:      1000,
+		},
+	}
+
+	buf := createTarBuffer(t, entries)
+	dst := t.TempDir()
+
+	err := extractTar(buf, dst)
+	require.NoError(t, err)
+
+	// Verify files were extracted regardless of uid/gid.
+	data, err := os.ReadFile(filepath.Join(dst, "root-owned", "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "owned by root", string(data))
+
+	data, err = os.ReadFile(filepath.Join(dst, "user-owned", "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "owned by user", string(data))
+
+	// When running as root, verify ownership is actually preserved.
+	if os.Geteuid() == 0 {
+		info, err := os.Lstat(filepath.Join(dst, "root-owned", "file.txt"))
+		require.NoError(t, err)
+		stat := info.Sys().(*syscall.Stat_t)
+		assert.Equal(t, uint32(0), stat.Uid)
+		assert.Equal(t, uint32(0), stat.Gid)
+
+		info, err = os.Lstat(filepath.Join(dst, "user-owned", "file.txt"))
+		require.NoError(t, err)
+		stat = info.Sys().(*syscall.Stat_t)
+		assert.Equal(t, uint32(1000), stat.Uid)
+		assert.Equal(t, uint32(1000), stat.Gid)
+	}
 }
 
 // mockFetcher is a test double for ImageFetcher.
