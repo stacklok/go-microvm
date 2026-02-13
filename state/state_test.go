@@ -54,28 +54,6 @@ func TestManager_SaveLoad_RoundTrip(t *testing.T) {
 	assert.Equal(t, stateVersion, loaded.Version)
 }
 
-func TestManager_SaveLoad_NetProviderFields(t *testing.T) {
-	t.Parallel()
-
-	dataDir := t.TempDir()
-	mgr := NewManager(dataDir)
-	ctx := context.Background()
-
-	ls, err := mgr.LoadAndLock(ctx)
-	require.NoError(t, err)
-
-	ls.State.NetProviderPID = 9876
-	ls.State.NetProviderBinary = "/usr/bin/gvproxy"
-
-	require.NoError(t, ls.Save())
-	ls.Release()
-
-	loaded, err := mgr.Load()
-	require.NoError(t, err)
-	assert.Equal(t, 9876, loaded.NetProviderPID)
-	assert.Equal(t, "/usr/bin/gvproxy", loaded.NetProviderBinary)
-}
-
 func TestManager_LoadAndLock_SaveUnderLock(t *testing.T) {
 	t.Parallel()
 

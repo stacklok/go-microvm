@@ -7,7 +7,6 @@ propolis supports macOS on Apple Silicon (arm64) using Hypervisor.framework.
 - **Apple Silicon** (M1/M2/M3/M4) -- Intel Macs are not supported
 - **macOS 11+** -- Hypervisor.framework requires Big Sur or later
 - **libkrun** and **libkrunfw** -- install via Homebrew or build from source
-- **gvproxy** -- for networking (built from source or Homebrew)
 
 ## Key Platform Differences
 

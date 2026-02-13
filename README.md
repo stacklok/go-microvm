@@ -4,7 +4,7 @@ Run OCI container images as microVMs with libkrun.
 
 propolis is a Go library and runner binary that turns any OCI container image
 into a lightweight virtual machine. It pulls the image, flattens its layers
-into a rootfs, configures networking via gvproxy, and boots the result using
+into a rootfs, configures in-process networking, and boots the result using
 [libkrun](https://github.com/containers/libkrun) -- all in a single function
 call.
 
@@ -38,8 +38,8 @@ propolis requires hardware virtualization support and a few system packages.
 ### Linux -- Fedora
 
 ```bash
-# Install libkrun development headers and gvproxy
-sudo dnf install libkrun-devel gvisor-tap-vsock
+# Install libkrun development headers
+sudo dnf install libkrun-devel
 
 # Ensure your user has KVM access
 sudo usermod -aG kvm $USER
@@ -62,14 +62,6 @@ make
 sudo make install
 sudo ldconfig
 
-# Install gvproxy (part of gvisor-tap-vsock)
-# Option 1: from the Go source
-go install github.com/containers/gvisor-tap-vsock/cmd/gvproxy@latest
-sudo cp $(go env GOPATH)/bin/gvproxy /usr/local/bin/
-
-# Option 2: if your distribution packages it
-sudo apt install golang-github-containers-gvisor-tap-vsock
-
 # Ensure your user has KVM access
 sudo usermod -aG kvm $USER
 ```
@@ -85,10 +77,6 @@ git clone https://github.com/containers/libkrun.git
 cd libkrun
 make
 sudo make install
-
-# Install gvproxy
-brew install gvisor-tap-vsock
-# Or: go install github.com/containers/gvisor-tap-vsock/cmd/gvproxy@latest
 ```
 
 On macOS, Hypervisor.framework provides hardware virtualization and is available
@@ -278,7 +266,9 @@ func main() {
 | `WithInitOverride(cmd...)` | Replace OCI ENTRYPOINT/CMD | OCI config |
 | `WithRootFSHook(...)` | Modify rootfs before boot | none |
 | `WithPostBoot(...)` | Run logic after VM process starts | none |
-| `WithNetProvider(p)` | Replace default gvproxy networking | `gvproxy.New()` |
+| `WithNetProvider(p)` | Replace default in-process networking | in-process vnet |
+| `WithFirewallRules(...)` | Firewall rules for frame-level packet filtering | none |
+| `WithFirewallDefaultAction(action)` | Default firewall action when no rule matches | `Allow` |
 | `WithPreflightChecks(...)` | Add custom pre-boot checks | KVM + resources |
 | `WithVirtioFS(...)` | Host directory mounts via virtio-fs | none |
 | `WithDataDir(p)` | State, cache, and log directory | `~/.config/propolis` |
@@ -294,7 +284,7 @@ func main() {
 | `image` | No | OCI image pull via crane, layer flattening, rootfs extraction, `KrunConfig` |
 | `krun` | **Yes** | CGO bindings to libkrun C API (context, VM config, `StartEnter`) |
 | `net` | No | `Provider` interface and `Config`/`PortForward` types |
-| `net/gvproxy` | No | Default `net.Provider` implementation using gvproxy binary |
+| `net/firewall` | No | Frame-level packet filtering with stateful connection tracking |
 | `preflight` | No | `Checker` interface, `Check` struct, built-in KVM/HVF and port checks |
 | `runner` | No | `Spawn()` / `Process` for managing the propolis-runner subprocess |
 | `runner/cmd/propolis-runner` | **Yes** | The runner binary (calls `krun.StartEnter`, never returns) |
@@ -351,7 +341,7 @@ propolis uses a **two-process model**:
 |  Pure Go, no CGO          |         |  2. krun.CreateContext()  |
 |                           |         |  3. SetVMConfig, SetRoot  |
 |  Monitors runner PID      |         |  4. AddNetUnixStream      |
-|  Manages gvproxy          |         |  5. krun_start_enter()    |
+|  In-process networking    |         |  5. krun_start_enter()    |
 |  Runs hooks               |         |     (never returns)       |
 +---------------------------+         +---------------------------+
          |                                      |
@@ -385,7 +375,7 @@ Go runtime.
        |
   Write /.krun_config.json
        |
-  Start gvproxy (networking)
+  Start networking (in-process vnet)
        |
   Spawn propolis-runner subprocess
        |
@@ -400,23 +390,27 @@ Go runtime.
 +-------------------+     Unix socket      +-------------------+
 |   Host machine    | (SOCK_STREAM, 4-byte |   Guest VM        |
 |                   |  BE length-prefix)   |                   |
-|  gvproxy ------------>  virtio-net  -------> eth0            |
-|  192.168.127.1    |                      |  192.168.127.2    |
-|                   |                      |                   |
-|  Port forwards:   |                      |  DHCP from        |
-|  localhost:8080 --|--------------------->|  gvproxy gateway   |
+|  VirtualNetwork ------>  virtio-net  -------> eth0            |
+|  (in-process)     |                      |  192.168.127.2    |
+|  192.168.127.1    |                      |                   |
+|                   |                      |  DHCP from        |
+|  Port forwards:   |                      |  VirtualNetwork   |
+|  localhost:8080 --|--------------------->|  gateway           |
 |       -> guest:80 |                      |                   |
 +-------------------+                      +-------------------+
 ```
 
-gvproxy provides a virtual network (192.168.127.0/24), DHCP, DNS, and TCP port
-forwarding between host and guest. It communicates with the VM over a Unix
-domain socket using the QEMU transport (SOCK_STREAM with 4-byte big-endian
-length-prefixed Ethernet frames).
+The in-process VirtualNetwork (gvisor-tap-vsock) provides a virtual network
+(192.168.127.0/24), DHCP, DNS, and TCP port forwarding between host and guest.
+It communicates with the VM over a Unix domain socket using the QEMU transport
+(SOCK_STREAM with 4-byte big-endian length-prefixed Ethernet frames). An
+optional frame-level firewall with stateful connection tracking can be enabled
+via `WithFirewallRules()`. See [docs/NETWORKING.md](docs/NETWORKING.md) for
+a deep dive.
 
 ### Extension Points
 
-- **`net.Provider`** -- replace gvproxy with any networking backend
+- **`net.Provider`** -- replace default in-process networking
 - **`preflight.Checker`** -- add custom pre-boot validations
 - **`RootFSHook`** -- modify the rootfs before `.krun_config.json` is written
 - **`PostBootHook`** -- run logic after the VM process is confirmed alive
@@ -474,10 +468,7 @@ cat ~/.config/propolis/console.log
 # 3. Check runner stderr for host-side errors
 cat ~/.config/propolis/vm.log
 
-# 4. Check gvproxy logs for networking issues
-cat ~/.config/propolis/gvproxy.log
-
-# 5. Verify the runner binary is available
+# 4. Verify the runner binary is available
 which propolis-runner
 # Or check next to your binary
 ```
@@ -503,19 +494,6 @@ ss -tlnp | grep ':8080'
 
 # Or use the propolis preflight check directly:
 # propolis.WithPreflightChecks(preflight.PortCheck(8080))
-```
-
-### gvproxy Socket Not Ready
-
-```bash
-# Check if gvproxy is running
-ps aux | grep gvproxy
-
-# Check for stale socket files
-ls -la ~/.config/propolis/gvproxy.sock
-
-# Remove stale socket and retry
-rm -f ~/.config/propolis/gvproxy.sock
 ```
 
 ### macOS-Specific Issues

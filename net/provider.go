@@ -3,7 +3,11 @@
 
 package net
 
-import "context"
+import (
+	"context"
+
+	"github.com/stacklok/propolis/net/firewall"
+)
 
 // PortForward describes a TCP port forwarding rule from host to guest.
 type PortForward struct {
@@ -18,11 +22,21 @@ type Config struct {
 
 	// Forwards defines TCP port forwards from the host to the guest VM.
 	Forwards []PortForward
+
+	// FirewallRules defines optional packet filtering rules applied to
+	// VM traffic. When non-empty, a relay with frame-level filtering is
+	// inserted between the VM socket and the virtual network.
+	FirewallRules []firewall.Rule
+
+	// FirewallDefaultAction is the action taken when no firewall rule
+	// matches a packet. Only used when FirewallRules is non-empty.
+	// Defaults to Allow (zero value).
+	FirewallDefaultAction firewall.Action
 }
 
 // Provider abstracts the networking backend for a libkrun VM.
 // Implementations manage the lifecycle of a userspace network stack
-// (e.g. gvproxy) that provides connectivity between host and guest.
+// that provides connectivity between host and guest.
 type Provider interface {
 	// Start launches the network provider with the given configuration.
 	// It must block until the provider is ready to accept connections.
@@ -32,16 +46,6 @@ type Provider interface {
 	// VM runner should use to connect to this network provider.
 	SocketPath() string
 
-	// PID returns the process ID of the network provider, or 0 if it
-	// is not running.
-	PID() int
-
-	// BinaryPath returns the path to the network provider binary
-	// (e.g. "/usr/bin/gvproxy" or just "gvproxy" if found via PATH).
-	// This is persisted in state for crash recovery to verify that a
-	// PID still belongs to the expected process.
-	BinaryPath() string
-
-	// Stop terminates the network provider process.
+	// Stop terminates the network provider and cleans up resources.
 	Stop()
 }

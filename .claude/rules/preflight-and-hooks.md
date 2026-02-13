@@ -13,10 +13,10 @@ paths:
 - Register via `propolis.WithPreflightChecks()` or add to `registerPlatformChecks()` for defaults
 
 ## Adding a Network Provider
-- Implement the `net.Provider` interface (Start, SocketPath, PID, Stop)
+- Implement the `net.Provider` interface (Start, SocketPath, Stop)
 - `Start` must block until the Unix socket is ready to accept connections
 - Socket must use SOCK_STREAM with 4-byte big-endian length-prefixed Ethernet frames (QEMU transport protocol)
-- See `net/gvproxy/provider.go` for the reference implementation
+- See `net/provider_impl.go` for the reference implementation
 
 ## Rootfs Hooks
 - Type: `func(rootfsPath string, cfg *image.OCIConfig) error`

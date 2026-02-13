@@ -23,15 +23,8 @@ import (
 	"path/filepath"
 
 	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/net/gvproxy"
 	"github.com/stacklok/propolis/runner"
 	"github.com/stacklok/propolis/state"
-)
-
-const (
-	// defaultNetProviderBinary is the binary name used for auto-discovery
-	// of the network provider next to the runner binary.
-	defaultNetProviderBinary = "gvproxy"
 )
 
 // Run pulls an OCI image and boots it as a microVM. It is the primary entry
@@ -80,48 +73,37 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		return nil, fmt.Errorf("write krun config: %w", err)
 	}
 
-	// 5. Start networking (lazy-init default provider if not set by caller).
+	// 5. Start networking.
 	//
-	// Resolution order:
-	//   1. WithNetProvider(p) — fully custom provider (unchanged)
-	//   2. WithNetProviderBinaryPath(path) — explicit binary path
-	//   3. Auto-discover: look for gvproxy next to the runner binary
-	//   4. gvproxy.New() — PATH search fallback
-	if cfg.netProvider == nil {
-		binaryPath := ""
-		if cfg.netProviderBinaryPath != "" {
-			binaryPath = cfg.netProviderBinaryPath
-		} else if cfg.runnerPath != "" {
-			candidate := filepath.Join(filepath.Dir(cfg.runnerPath), defaultNetProviderBinary)
-			if info, err := os.Stat(candidate); err == nil &&
-				info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-				binaryPath = candidate
-			}
+	// Default path: port forwards are passed to the runner, which creates
+	// an in-process VirtualNetwork (gvisor-tap-vsock) alongside the VM.
+	// This ensures networking lives as long as the runner process.
+	//
+	// Custom provider path: if WithNetProvider() was used, start the
+	// external provider and pass its socket path to the runner instead.
+	var netSocket string
+	if cfg.netProvider != nil {
+		slog.Debug("starting custom network provider")
+		netCfg := cfg.buildNetConfig()
+		if err := cfg.netProvider.Start(ctx, netCfg); err != nil {
+			return nil, fmt.Errorf("networking: %w", err)
 		}
-		if binaryPath != "" {
-			cfg.netProvider = gvproxy.NewWithBinaryPath(binaryPath, cfg.dataDir)
-		} else {
-			cfg.netProvider = gvproxy.New(cfg.dataDir)
-		}
-	}
-	slog.Debug("starting network provider")
-	netCfg := cfg.buildNetConfig()
-	if err := cfg.netProvider.Start(ctx, netCfg); err != nil {
-		return nil, fmt.Errorf("networking: %w", err)
+		netSocket = cfg.netProvider.SocketPath()
 	}
 
 	// 6. Spawn VM runner subprocess.
 	slog.Debug("spawning VM")
 	runCfg := runner.Config{
-		RootPath:   rootfs.Path,
-		NumVCPUs:   cfg.cpus,
-		RAMMiB:     cfg.memory,
-		NetSocket:  cfg.netProvider.SocketPath(),
-		VirtioFS:   toRunnerVirtioFS(cfg.virtioFS),
-		ConsoleLog: filepath.Join(cfg.dataDir, "console.log"),
-		LibDir:     cfg.libDir,
-		RunnerPath: cfg.runnerPath,
-		VMLogPath:  filepath.Join(cfg.dataDir, "vm.log"),
+		RootPath:     rootfs.Path,
+		NumVCPUs:     cfg.cpus,
+		RAMMiB:       cfg.memory,
+		NetSocket:    netSocket,
+		PortForwards: toRunnerPortForwards(cfg.ports),
+		VirtioFS:     toRunnerVirtioFS(cfg.virtioFS),
+		ConsoleLog:   filepath.Join(cfg.dataDir, "console.log"),
+		LibDir:       cfg.libDir,
+		RunnerPath:   cfg.runnerPath,
+		VMLogPath:    filepath.Join(cfg.dataDir, "vm.log"),
 	}
 
 	spawner := cfg.spawner
@@ -130,7 +112,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 	proc, err := spawner.Spawn(ctx, runCfg)
 	if err != nil {
-		cfg.netProvider.Stop()
+		if cfg.netProvider != nil {
+			cfg.netProvider.Stop()
+		}
 		return nil, fmt.Errorf("spawn vm: %w", err)
 	}
 
@@ -152,22 +136,32 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		ls.State.Active = true
 		ls.State.Name = cfg.name
 		ls.State.PID = proc.PID()
-		ls.State.NetProviderPID = cfg.netProvider.PID()
-		ls.State.NetProviderBinary = cfg.netProvider.BinaryPath()
-		_ = ls.Save()
+		if saveErr := ls.Save(); saveErr != nil {
+			slog.Warn("failed to persist VM state", "error", saveErr)
+		}
 		ls.Release()
 	}
 
 	// 7. Post-boot hooks (no-op on happy path).
 	for _, hook := range cfg.postBootHooks {
 		if err := hook(ctx, vm); err != nil {
-			_ = vm.Stop(ctx)
+			if stopErr := vm.Stop(ctx); stopErr != nil {
+				slog.Warn("failed to stop VM after post-boot hook failure", "error", stopErr)
+			}
 			return nil, fmt.Errorf("post-boot hook: %w", err)
 		}
 	}
 
 	slog.Info("VM running", "name", cfg.name, "pid", proc.PID())
 	return vm, nil
+}
+
+func toRunnerPortForwards(ports []PortForward) []runner.PortForward {
+	out := make([]runner.PortForward, len(ports))
+	for i, p := range ports {
+		out[i] = runner.PortForward{Host: p.Host, Guest: p.Guest}
+	}
+	return out
 }
 
 func toRunnerVirtioFS(mounts []VirtioFSMount) []runner.VirtioFSMount {

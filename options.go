@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net"
+	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/preflight"
 	"github.com/stacklok/propolis/runner"
 )
@@ -52,7 +53,8 @@ type config struct {
 	rootfsPath            string // pre-built rootfs directory; skips OCI image pull when set
 	rootfsHooks           []RootFSHook
 	netProvider           net.Provider
-	netProviderBinaryPath string // explicit path to the net provider binary (e.g. gvproxy)
+	firewallRules         []firewall.Rule
+	firewallDefaultAction firewall.Action
 	preflight             preflight.Checker
 	postBootHooks         []PostBootHook
 	libDir                string
@@ -95,8 +97,10 @@ func (c *config) buildNetConfig() net.Config {
 		forwards[i] = net.PortForward{Host: p.Host, Guest: p.Guest}
 	}
 	return net.Config{
-		LogDir:   c.dataDir,
-		Forwards: forwards,
+		LogDir:                c.dataDir,
+		Forwards:              forwards,
+		FirewallRules:         c.firewallRules,
+		FirewallDefaultAction: c.firewallDefaultAction,
 	}
 }
 
@@ -143,18 +147,25 @@ func WithRootFSHook(hooks ...RootFSHook) Option {
 	return optionFunc(func(c *config) { c.rootfsHooks = append(c.rootfsHooks, hooks...) })
 }
 
-// WithNetProvider replaces the default gvproxy network provider.
+// WithNetProvider replaces the default in-process network provider.
 func WithNetProvider(p net.Provider) Option {
 	return optionFunc(func(c *config) { c.netProvider = p })
 }
 
-// WithNetProviderBinaryPath sets an explicit path to the net provider binary
-// (e.g. gvproxy). When set and no custom net.Provider is given via
-// [WithNetProvider], propolis uses this path to create the default gvproxy
-// provider. This is an escape hatch for cases where auto-discovery from the
-// runner directory is not appropriate.
-func WithNetProviderBinaryPath(path string) Option {
-	return optionFunc(func(c *config) { c.netProviderBinaryPath = path })
+// WithFirewallRules adds firewall rules for the in-process network provider.
+// Rules are evaluated first-match-wins. When rules are configured, a relay
+// with frame-level filtering is inserted between the VM and the virtual
+// network. Connection tracking is automatic: return traffic for allowed
+// connections is permitted without explicit rules.
+func WithFirewallRules(rules ...firewall.Rule) Option {
+	return optionFunc(func(c *config) { c.firewallRules = append(c.firewallRules, rules...) })
+}
+
+// WithFirewallDefaultAction sets the default action when no firewall rule
+// matches a packet. Defaults to Allow (zero value). Set to Deny for a
+// default-deny policy where only explicitly allowed traffic passes.
+func WithFirewallDefaultAction(action firewall.Action) Option {
+	return optionFunc(func(c *config) { c.firewallDefaultAction = action })
 }
 
 // WithPreflightChecker replaces the entire preflight checker. Use this when

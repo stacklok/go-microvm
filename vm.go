@@ -45,7 +45,9 @@ func (vm *VM) Stop(ctx context.Context) error {
 		return fmt.Errorf("stop vm process: %w", err)
 	}
 
-	vm.netProv.Stop()
+	if vm.netProv != nil {
+		vm.netProv.Stop()
+	}
 
 	// Best-effort state cleanup. Use context.Background() so cleanup
 	// succeeds even if the caller's context is already canceling.
@@ -57,9 +59,9 @@ func (vm *VM) Stop(ctx context.Context) error {
 			defer ls.Release()
 			ls.State.Active = false
 			ls.State.PID = 0
-			ls.State.NetProviderPID = 0
-			ls.State.NetProviderBinary = ""
-			_ = ls.Save()
+			if saveErr := ls.Save(); saveErr != nil {
+				slog.Warn("failed to persist state during stop", "error", saveErr)
+			}
 		}
 	}
 
@@ -103,6 +105,3 @@ func (vm *VM) RootFSPath() string { return vm.rootfsPath }
 
 // Ports returns the configured port forwards.
 func (vm *VM) Ports() []PortForward { return vm.ports }
-
-// NetProviderPID returns the process ID of the network provider (e.g., gvproxy).
-func (vm *VM) NetProviderPID() int { return vm.netProv.PID() }

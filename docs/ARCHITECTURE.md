@@ -37,14 +37,14 @@ propolis solves this with two processes:
 |   3. Extract layers to rootfs    | JSON  |   3. krun.CreateContext()         |
 |   4. Run rootfs hooks            | config|   4. SetVMConfig(vCPUs, RAM)      |
 |   5. Write .krun_config.json     |       |   5. SetRoot(rootfsPath)          |
-|   6. Start gvproxy (networking)  |       |   6. AddNetUnixStream(socket)     |
+|   6. Start networking (in-proc)  |       |   6. AddNetUnixStream(socket)     |
 |   7. Spawn propolis-runner       |       |   7. AddVirtioFS (for each mount) |
 |   8. Run post-boot hooks         |       |   8. SetConsoleOutput(logPath)    |
 |   9. Return *VM handle           |       |   9. krun_start_enter()           |
 |                                  |       |      (NEVER RETURNS ON SUCCESS)   |
 |   Pure Go, no CGO                |       |                                  |
 |   Monitors runner PID            |       |   Process becomes VM supervisor   |
-|   Manages gvproxy lifecycle      |       |   Exits when guest shuts down     |
+|   In-process networking stack    |       |   Exits when guest shuts down     |
 +----------------------------------+       +----------------------------------+
          |                                              |
          |  SIGTERM (graceful) / SIGKILL (30s timeout)  |
@@ -74,8 +74,9 @@ in `propolis.Run()`:
    config (Entrypoint, Cmd, Env, WorkingDir), applying `WithInitOverride` if
    set. Writes the JSON file to `/.krun_config.json` in the rootfs.
 
-5. **Start networking** -- Calls `net.Provider.Start()` which launches gvproxy
-   (or a custom provider), waits for the Unix socket to be ready, and returns.
+5. **Start networking** -- Calls `net.Provider.Start()` which creates an
+   in-process VirtualNetwork (gvisor-tap-vsock), starts a Unix socket
+   listener, and returns once the socket is ready.
 
 6. **Spawn runner** -- Serializes `runner.Config` as JSON and spawns
    `propolis-runner` as a detached subprocess (`setsid` for new session). The
@@ -156,8 +157,8 @@ Step 8: KRUN CONFIG
   }
        |
 Step 9: NETWORKING
-  gvproxy.Start() or custom provider
-  Writes gvproxy.yaml config, launches process, polls for socket
+  net.Provider.Start() (default: in-process VirtualNetwork)
+  Creates userspace network stack, starts Unix socket listener
        |
 Step 10: SPAWN
   runner.Spawn() --> propolis-runner subprocess
@@ -244,9 +245,18 @@ This is the same mechanism used by krunvm and podman machine.
 
 ## Networking
 
-propolis uses gvproxy for host-guest networking by default. The networking
-layer is abstracted behind the `net.Provider` interface, allowing alternative
-implementations.
+propolis runs an in-process userspace network stack powered by
+[gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock). All VM
+traffic flows through a single Unix domain socket as Ethernet frames. No
+kernel networking is involved between host and guest, and no separate
+binary is needed.
+
+The networking layer is abstracted behind the `net.Provider` interface,
+allowing alternative implementations. An optional frame-level firewall can
+be enabled via `WithFirewallRules()`.
+
+For a thorough deep dive on the networking and firewall subsystem, see
+[docs/NETWORKING.md](NETWORKING.md).
 
 ### Network Topology
 
@@ -254,70 +264,38 @@ implementations.
 +---------------------------------------------------+
 |                   Host Machine                     |
 |                                                    |
-|  +-----------+     Unix socket     +-----------+   |
-|  |  gvproxy  |---(SOCK_STREAM)--->|  libkrun  |   |
-|  |           |   4-byte BE len    |  virtio-  |   |
-|  | Gateway:  |   prefix frames    |  net      |   |
-|  | 192.168.  |                    |           |   |
-|  | 127.1     |                    +-----------+   |
-|  |           |                         |          |
-|  | DHCP      |                    +----v------+   |
-|  | DNS       |                    | Guest VM  |   |
-|  | Port fwd  |                    |           |   |
-|  +-----------+                    | eth0:     |   |
-|       |                           | 192.168.  |   |
-|       |  Port forwards:           | 127.2     |   |
-|       |  localhost:8080            |           |   |
-|       +-----> guest:80            +-----------+   |
-|       |  localhost:2222                           |
-|       +-----> guest:22                            |
+|  +---------------+    Unix socket   +-----------+  |
+|  | VirtualNetwork|---(SOCK_STREAM)->|  libkrun  |  |
+|  | (in-process)  |  4-byte BE len  |  virtio-  |  |
+|  |               |  prefix frames  |  net      |  |
+|  | Gateway:      |                 |           |  |
+|  | 192.168.127.1 |                 +-----------+  |
+|  |               |                      |         |
+|  | DHCP server   |                 +----v-----+   |
+|  | DNS server    |                 | Guest VM |   |
+|  | Port forwards |                 |          |   |
+|  +---------------+                 | eth0:    |   |
+|        |                           | 192.168. |   |
+|        |  Port forwards:           | 127.2    |   |
+|        |  localhost:8080           |          |   |
+|        +-----> guest:80            +----------+   |
+|        |  localhost:2222                          |
+|        +-----> guest:22                           |
 +---------------------------------------------------+
 ```
-
-### gvproxy Configuration
-
-The `net/gvproxy` package writes a YAML config file and launches gvproxy
-with `-config` pointing at it:
-
-```yaml
-interfaces:
-  qemu: unix:///path/to/gvproxy.sock
-stack:
-  forwards:
-    "127.0.0.1:8080": "192.168.127.2:80"
-    "127.0.0.1:2222": "192.168.127.2:22"
-```
-
-We use `interfaces.qemu` because both gvproxy's QEMU transport and libkrun's
-`krun_add_net_unixstream` use identical wire format: `SOCK_STREAM` with 4-byte
-big-endian length prefix per Ethernet frame. The vfkit transport
-(`unixgram`) is macOS-only in gvproxy, but the QEMU transport works on all
-platforms.
 
 ### Network Details
 
 | Property | Value |
 |----------|-------|
-| Gateway | 192.168.127.1 (gvproxy) |
+| Gateway | 192.168.127.1 (VirtualNetwork, in-process) |
 | Guest IP | 192.168.127.2 (DHCP assigned) |
 | Subnet | 192.168.127.0/24 |
 | Socket type | Unix domain, SOCK_STREAM |
 | Wire format | 4-byte big-endian length prefix + Ethernet frame |
-| DHCP | Built into gvproxy |
-| DNS | Built into gvproxy |
+| DHCP | Built into VirtualNetwork |
+| DNS | Built into VirtualNetwork |
 | Port forwarding | TCP, host-to-guest only |
-
-### gvproxy Lifecycle
-
-1. `Start()` removes any stale socket file from a previous run
-2. Writes the YAML config with socket path and port forwards
-3. Launches gvproxy with `-config` as a detached process (`setsid`)
-4. Polls for the socket file to appear (100ms intervals, 10s timeout)
-5. Returns once the socket is ready
-6. If gvproxy exits prematurely, returns an error with the exit code
-
-`Stop()` sends SIGTERM, falls back to SIGKILL, reaps the process, and
-cleans up the socket file.
 
 ### The net.Provider Interface
 
@@ -329,9 +307,6 @@ type Provider interface {
     // SocketPath returns the Unix socket for virtio-net.
     SocketPath() string
 
-    // PID returns the provider process ID, or 0 if not running.
-    PID() int
-
     // Stop terminates the provider and cleans up.
     Stop()
 }
@@ -341,10 +316,10 @@ type Provider interface {
 - `LogDir` -- directory for log files
 - `Forwards` -- slice of `PortForward{Host, Guest}` for TCP forwarding
 
-To replace gvproxy with a different networking backend (e.g., passt, slirp4netns,
-a custom bridge), implement this interface and pass it via
-`propolis.WithNetProvider()`. The `SocketPath()` return value is passed to the
-runner as the Unix socket path for `krun_add_net_unixstream`.
+To replace the default in-process networking with a different backend
+(e.g., passt, slirp4netns, a custom bridge), implement this interface and
+pass it via `propolis.WithNetProvider()`. The `SocketPath()` return value is
+passed to the runner as the Unix socket path for `krun_add_net_unixstream`.
 
 ## Extension Points
 
@@ -354,8 +329,8 @@ runner as the Unix socket path for `krun_add_net_unixstream`.
             +------------+------------+
             |                         |
      preflight.Checker          net.Provider
-     (KVM, ports, resources,    (gvproxy, custom)
-      disk space, custom)             |
+     (KVM, ports, resources,    (in-process vnet,
+      disk space, custom)        + optional firewall)
             |                         |
             v                         v
       Pull & Extract            Start networking
@@ -406,7 +381,7 @@ propolis.WithInitOverride("/sbin/my-init", "--flag")
 
 ### Network Provider
 
-Replace gvproxy with a custom networking backend:
+Replace the default in-process networking:
 ```go
 propolis.WithNetProvider(myProvider)
 ```
@@ -502,9 +477,7 @@ The `state` package provides persistent VM state with file-based locking.
         sha256-def456.../
     console.log               <-- guest console output (kernel, init)
     vm.log                    <-- propolis-runner stdout/stderr
-    gvproxy.sock              <-- gvproxy Unix domain socket
-    gvproxy.yaml              <-- gvproxy config (generated)
-    gvproxy.log               <-- gvproxy stdout/stderr
+    vnet.sock                 <-- networking Unix domain socket
 ```
 
 ### State JSON Schema
@@ -518,7 +491,6 @@ The `state` package provides persistent VM state with file-based locking.
   "cpus": 2,
   "memory_mb": 1024,
   "pid": 12345,
-  "net_provider_pid": 12346,
   "created_at": "2025-01-15T10:00:00Z"
 }
 ```
@@ -532,7 +504,6 @@ The `state` package provides persistent VM state with file-based locking.
 | `cpus` | uint32 | Number of vCPUs |
 | `memory_mb` | uint32 | RAM in MiB |
 | `pid` | int | Runner process ID (0 if not running) |
-| `net_provider_pid` | int | Network provider PID (0 if not running) |
 | `created_at` | RFC 3339 | When the state was first created |
 
 ### Locking Protocol

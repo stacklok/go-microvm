@@ -33,14 +33,16 @@ hypervisor entitlement. See [docs/MACOS.md](MACOS.md).
 
 ## Log Files
 
-propolis writes several log files to the data directory
+propolis writes log files to the data directory
 (`~/.config/propolis/` by default, or the path set via `WithDataDir()`):
 
 | File | Contents |
 |------|----------|
 | `console.log` | Guest console output (kernel messages, init script) |
 | `vm.log` | propolis-runner stdout/stderr (libkrun errors) |
-| `gvproxy.log` | gvproxy networking daemon output |
+
+Networking logs are emitted via `log/slog` and appear in the application's
+structured logging output rather than a separate file.
 
 ```bash
 # Check for guest-side errors (kernel, init script)
@@ -48,9 +50,6 @@ cat ~/.config/propolis/console.log
 
 # Check for host-side runner errors
 cat ~/.config/propolis/vm.log
-
-# Check for networking errors
-cat ~/.config/propolis/gvproxy.log
 ```
 
 ## Port Conflicts
@@ -67,27 +66,14 @@ lsof -iTCP:8080 -sTCP:LISTEN
 
 ## Networking Issues
 
-### Stale gvproxy socket
-
-If gvproxy fails to start with a socket error, a stale socket from a
-previous run may exist. propolis cleans stale sockets automatically, but
-if the data directory was corrupted:
-
-```bash
-rm ~/.config/propolis/gvproxy.sock
-```
-
 ### Guest has no network
 
-Check that gvproxy is running and the socket exists:
+The guest should get IP `192.168.127.2` via DHCP from the in-process
+VirtualNetwork. Check `console.log` for DHCP client output.
 
-```bash
-ls -la ~/.config/propolis/gvproxy.sock
-ps aux | grep gvproxy
-```
-
-The guest should get IP `192.168.127.2` via DHCP from gvproxy. Check
-`console.log` for DHCP client output.
+If the guest has no network, verify that the networking provider started
+successfully by checking the application's log output for errors from
+`net.Provider.Start()`.
 
 ## Runner Binary Not Found
 

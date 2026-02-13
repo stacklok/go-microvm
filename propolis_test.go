@@ -201,7 +201,7 @@ func TestRun_Success(t *testing.T) {
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
 
 	proc := &mockProcessHandle{pid: 1234, alive: true}
-	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock", pid: 5678}
+	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
 
 	vm, err := Run(context.Background(), "test:latest",
 		WithDataDir(dataDir),
@@ -218,7 +218,6 @@ func TestRun_Success(t *testing.T) {
 
 	assert.Equal(t, "test-vm", vm.Name())
 	assert.Equal(t, 1234, vm.PID())
-	assert.Equal(t, 5678, vm.NetProviderPID())
 	assert.Equal(t, rootfsDir, vm.RootFSPath())
 
 	// Verify state was persisted for crash recovery.
@@ -228,8 +227,6 @@ func TestRun_Success(t *testing.T) {
 	assert.True(t, loaded.Active)
 	assert.Equal(t, "test-vm", loaded.Name)
 	assert.Equal(t, 1234, loaded.PID)
-	assert.Equal(t, 5678, loaded.NetProviderPID)
-	assert.Equal(t, "/mock/gvproxy", loaded.NetProviderBinary)
 }
 
 func TestRun_WithRootFSPath_SkipsImagePull(t *testing.T) {
@@ -325,39 +322,6 @@ func TestRun_RootfsHookError(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rootfs hook")
-}
-
-func TestRun_NetProviderAutoDiscovery(t *testing.T) {
-	t.Parallel()
-
-	dataDir := t.TempDir()
-	rootfsDir := filepath.Join(dataDir, "rootfs")
-	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
-
-	// Create a fake runner directory with a fake gvproxy binary.
-	runtimeDir := filepath.Join(dataDir, "runtime")
-	require.NoError(t, os.MkdirAll(runtimeDir, 0o755))
-	runnerPath := filepath.Join(runtimeDir, "propolis-runner")
-	gvproxyPath := filepath.Join(runtimeDir, "gvproxy")
-	require.NoError(t, os.WriteFile(runnerPath, []byte("#!/bin/sh\n"), 0o755))
-	require.NoError(t, os.WriteFile(gvproxyPath, []byte("#!/bin/sh\n"), 0o755))
-
-	// When WithRunnerPath is set and no WithNetProvider is given,
-	// Run() should auto-discover gvproxy next to the runner.
-	// It will fail to start gvproxy (not a real binary), which proves
-	// auto-discovery found it.
-	_, err := Run(context.Background(), "test:latest",
-		WithDataDir(dataDir),
-		WithPreflightChecker(preflight.NewEmpty()),
-		WithRootFSPath(rootfsDir),
-		WithRunnerPath(runnerPath),
-		// No WithNetProvider — triggers auto-discovery
-	)
-	require.Error(t, err)
-	// The error should come from networking (gvproxy failed to start),
-	// not from "gvproxy binary not found".
-	assert.Contains(t, err.Error(), "networking")
-	assert.NotContains(t, err.Error(), "not found")
 }
 
 func TestRun_NetworkingError(t *testing.T) {

@@ -28,7 +28,8 @@ Run a single test: `go test -v -race -run TestName ./path/to/package`
 - `runner/` -- `Spawn()` launches detached propolis-runner subprocess via setsid
 - `runner/cmd/propolis-runner/` -- CGO binary: calls `krun.StartEnter`, never returns
 - `krun/` -- CGO bindings to libkrun C API
-- `net/` -- `Provider` interface; `net/gvproxy/` is the default implementation
+- `net/` -- `Provider` interface; default in-process VirtualNetwork (gvisor-tap-vsock)
+- `net/firewall/` -- Frame-level packet filtering, connection tracking, relay
 - `preflight/` -- `Checker` interface, platform-specific checks via build tags
 - `ssh/` -- ECDSA P-256 keygen and SSH client for guest communication
 - `state/` -- flock-based atomic JSON state persistence
@@ -78,5 +79,6 @@ When tests fail, fix the implementation, not the tests.
 ## Reference Docs
 
 - @docs/ARCHITECTURE.md -- Deep technical architecture, security model
+- @docs/NETWORKING.md -- In-process networking, firewall, wire protocol
 - @docs/MACOS.md -- macOS support, code signing, Hypervisor.framework
 - @docs/TROUBLESHOOTING.md -- Common issues, log files, resource limits

@@ -61,15 +61,6 @@ type State struct {
 	// PID is the process ID of the VM runner, or 0 if not running.
 	PID int `json:"pid,omitempty"`
 
-	// NetProviderPID is the process ID of the network provider (e.g.
-	// gvproxy), or 0 if not running.
-	NetProviderPID int `json:"net_provider_pid,omitempty"`
-
-	// NetProviderBinary is the path to the net provider binary (e.g.
-	// "/usr/bin/gvproxy" or "gvproxy"). Used during crash recovery to
-	// verify that a persisted PID still belongs to the expected process.
-	NetProviderBinary string `json:"net_provider_binary,omitempty"`
-
 	// CreatedAt is the time the VM state was first created.
 	CreatedAt time.Time `json:"created_at"`
 }

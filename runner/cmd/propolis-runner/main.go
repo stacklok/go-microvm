@@ -11,11 +11,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
+
+	"github.com/containers/gvisor-tap-vsock/pkg/types"
+	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
 	"github.com/stacklok/propolis/krun"
 )
@@ -25,6 +31,12 @@ var (
 	errLibkrunContext = errors.New("libkrun context creation failed")
 	errStartupFailed  = errors.New("VM failed to start")
 )
+
+// PortForward describes a TCP port forwarding rule from host to guest.
+type PortForward struct {
+	Host  uint16 `json:"host"`
+	Guest uint16 `json:"guest"`
+}
 
 // Config contains the configuration for running a VM.
 // This is passed as a JSON argument to the helper binary.
@@ -36,10 +48,12 @@ type Config struct {
 	NumVCPUs uint32 `json:"num_vcpus"`
 	// RAMMiB is the amount of RAM in MiB.
 	RAMMiB uint32 `json:"ram_mib"`
-	// NetSockPath is a Unix socket path for virtio-net (gvproxy).
-	// When set, the socket is passed to krun_add_net_unixstream via its
-	// path parameter (fd=-1).
+	// NetSockPath is a Unix socket path for an external networking provider.
+	// Mutually exclusive with PortForwards.
 	NetSockPath string `json:"net_sock_path,omitempty"`
+	// PortForwards configures in-process networking. When set and NetSockPath
+	// is empty, the runner creates a VirtualNetwork and connects it via socketpair.
+	PortForwards []PortForward `json:"port_forwards,omitempty"`
 	// VirtioFSMounts contains virtio-fs mounts as tag:path entries.
 	VirtioFSMounts []VirtioFSMount `json:"virtiofs_mounts,omitempty"`
 	// ConsoleLogPath is the path to write console output (optional).
@@ -155,13 +169,26 @@ func runVM(config *Config) error {
 	// libkrun's built-in init process reads /.krun_config.json from the rootfs
 	// to determine what program to execute. This is the approach used by krunvm.
 
-	// Configure networking: virtio-net via gvproxy or TSI port mapping.
-	if config.NetSockPath != "" {
-		// gvproxy QEMU mode: SOCK_STREAM with 4-byte BE length-prefixed frames.
-		// flags must be 0 for unixstream (no flags supported).
+	// Configure networking.
+	switch {
+	case config.NetSockPath != "":
+		// External provider: connect to a pre-existing Unix socket.
 		if err := ctx.AddNetUnixStream(-1, config.NetSockPath, nil, krun.CompatNetFeatures, 0); err != nil {
 			_ = ctx.Free()
-			return fmt.Errorf("add virtio-net (gvproxy): %w", err)
+			return fmt.Errorf("add virtio-net (external socket): %w", err)
+		}
+
+	case len(config.PortForwards) > 0:
+		// In-process networking: create a VirtualNetwork and connect via socketpair.
+		vmFD, err := setupInProcessNetworking(config.PortForwards)
+		if err != nil {
+			_ = ctx.Free()
+			return fmt.Errorf("setup in-process networking: %w", err)
+		}
+		if err := ctx.AddNetUnixStream(vmFD, "", nil, krun.CompatNetFeatures, 0); err != nil {
+			_ = ctx.Free()
+			_ = syscall.Close(vmFD)
+			return fmt.Errorf("add virtio-net (in-process): %w", err)
 		}
 	}
 
@@ -190,6 +217,70 @@ func runVM(config *Config) error {
 
 	// Should never reach here.
 	return fmt.Errorf("unexpected return from krun_start_enter")
+}
+
+// setupInProcessNetworking creates a gvisor-tap-vsock VirtualNetwork with
+// the given port forwards and returns a file descriptor for the VM side
+// of a socketpair. The VirtualNetwork runs in background goroutines that
+// persist alongside krun_start_enter() until the process exits.
+func setupInProcessNetworking(ports []PortForward) (int, error) {
+	const (
+		defaultSubnet     = "192.168.127.0/24"
+		defaultGatewayIP  = "192.168.127.1"
+		defaultGatewayMAC = "5a:94:ef:e4:0c:ee"
+		defaultGuestIP    = "192.168.127.2"
+		defaultMTU        = 1500
+	)
+
+	// Build port forward map: "127.0.0.1:<host>" -> "<guest>:<guest>"
+	forwards := make(map[string]string, len(ports))
+	for _, pf := range ports {
+		hostAddr := fmt.Sprintf("127.0.0.1:%d", pf.Host)
+		guestAddr := fmt.Sprintf("%s:%d", defaultGuestIP, pf.Guest)
+		forwards[hostAddr] = guestAddr
+	}
+
+	// Create the virtual network stack.
+	vn, err := virtualnetwork.New(&types.Configuration{
+		Subnet:            defaultSubnet,
+		GatewayIP:         defaultGatewayIP,
+		GatewayMacAddress: defaultGatewayMAC,
+		MTU:               defaultMTU,
+		Forwards:          forwards,
+	})
+	if err != nil {
+		return -1, fmt.Errorf("create virtual network: %w", err)
+	}
+
+	// Create a socketpair. One end goes to the VirtualNetwork (QEMU
+	// transport), the other is passed to libkrun via its fd parameter.
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return -1, fmt.Errorf("create socketpair: %w", err)
+	}
+
+	// Wrap the network side fd as a net.Conn for AcceptQemu.
+	netFile := os.NewFile(uintptr(fds[0]), "vnet-network")
+	netConn, err := net.FileConn(netFile)
+	// FileConn dups the fd, so close the original.
+	_ = netFile.Close()
+	if err != nil {
+		_ = syscall.Close(fds[1])
+		return -1, fmt.Errorf("create net.Conn from socketpair: %w", err)
+	}
+
+	// Start AcceptQemu in a background goroutine. This goroutine will
+	// run alongside krun_start_enter() on a separate OS thread and handle
+	// all Ethernet frame I/O between the virtual network and the VM.
+	go func() {
+		if qErr := vn.AcceptQemu(context.Background(), netConn); qErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: virtual network ended: %v\n", qErr)
+		}
+	}()
+
+	// Return the VM side fd. libkrun will use this directly via
+	// krun_add_net_unixstream(fd, ...).
+	return fds[1], nil
 }
 
 // exitCodeForError maps known error types to specific exit codes for
