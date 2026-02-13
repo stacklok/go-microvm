@@ -4,9 +4,16 @@
 package gvproxy
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/propolis/net"
 )
 
 func TestNew_SetsDataDir(t *testing.T) {
@@ -33,4 +40,90 @@ func TestNewWithBinaryPath_SkipsLookPath(t *testing.T) {
 	p := NewWithBinaryPath("/nonexistent/gvproxy", "/tmp/data")
 
 	assert.Equal(t, "/nonexistent/gvproxy", p.binaryPath)
+}
+
+func TestWriteConfig_NoPorts(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	p := &Provider{
+		sockPath:   filepath.Join(tmpDir, "gvproxy.sock"),
+		configPath: filepath.Join(tmpDir, "gvproxy.yaml"),
+	}
+
+	err := p.writeConfig(nil)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(p.configPath)
+	require.NoError(t, err)
+
+	content := string(data)
+	assert.Contains(t, content, "interfaces:")
+	assert.Contains(t, content, "qemu: unix://")
+	assert.Contains(t, content, "stack:")
+	assert.Contains(t, content, "forwards:")
+}
+
+func TestWriteConfig_WithPorts(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	p := &Provider{
+		sockPath:   filepath.Join(tmpDir, "gvproxy.sock"),
+		configPath: filepath.Join(tmpDir, "gvproxy.yaml"),
+	}
+
+	ports := []net.PortForward{
+		{Host: 8080, Guest: 80},
+		{Host: 2222, Guest: 22},
+	}
+
+	err := p.writeConfig(ports)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(p.configPath)
+	require.NoError(t, err)
+
+	content := string(data)
+	assert.Contains(t, content, `"127.0.0.1:8080": "192.168.127.2:80"`)
+	assert.Contains(t, content, `"127.0.0.1:2222": "192.168.127.2:22"`)
+}
+
+func TestStop_NilCmd(t *testing.T) {
+	t.Parallel()
+	p := &Provider{} // cmd is nil
+	// Should not panic.
+	p.Stop()
+}
+
+func TestStop_NilProcess(t *testing.T) {
+	t.Parallel()
+	p := &Provider{
+		cmd: &exec.Cmd{}, // Process is nil
+	}
+	p.Stop()
+}
+
+func TestSocketPath_Default(t *testing.T) {
+	t.Parallel()
+	p := &Provider{}
+	assert.Empty(t, p.SocketPath())
+}
+
+func TestPID_Default(t *testing.T) {
+	t.Parallel()
+	p := &Provider{}
+	assert.Equal(t, 0, p.PID())
+}
+
+func TestSocketPath_AfterSet(t *testing.T) {
+	t.Parallel()
+	p := &Provider{sockPath: "/tmp/test.sock"}
+	assert.Equal(t, "/tmp/test.sock", p.SocketPath())
+}
+
+func TestStart_NoBinary(t *testing.T) {
+	t.Parallel()
+	p := &Provider{dataDir: t.TempDir()}
+	err := p.Start(context.Background(), net.Config{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gvproxy binary not found")
 }

@@ -25,21 +25,61 @@ const (
 	stopPollInterval = 250 * time.Millisecond
 )
 
+// processDeps holds injectable system-level operations used by Process.
+// Tests inject fakes; production code uses the defaults from newProcessDeps().
+type processDeps struct {
+	kill        func(pid int, sig syscall.Signal) error
+	findProcess func(pid int) (*os.Process, error)
+}
+
+func newProcessDeps() processDeps {
+	return processDeps{
+		kill:        func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
+		findProcess: os.FindProcess,
+	}
+}
+
+// runnerFinder locates the propolis-runner binary with injectable lookups.
+type runnerFinder struct {
+	stat       func(string) (os.FileInfo, error)
+	lookPath   func(string) (string, error)
+	executable func() (string, error)
+}
+
+func newRunnerFinder() runnerFinder {
+	return runnerFinder{
+		stat:       os.Stat,
+		lookPath:   exec.LookPath,
+		executable: os.Executable,
+	}
+}
+
 // Process represents a running VM runner subprocess.
 type Process struct {
-	// PID is the process ID of the runner subprocess.
-	PID int
+	// pid is the process ID of the runner subprocess.
+	pid int
 	// runnerPath is the resolved path to the runner binary, used to verify
 	// process identity before sending signals (prevents signaling recycled PIDs).
 	runnerPath string
 	cmd        *exec.Cmd
+	deps       processDeps
 }
 
+// PID returns the process ID (implements ProcessHandle).
+func (p *Process) PID() int { return p.pid }
+
 // Spawn starts the propolis-runner binary as a detached subprocess.
+// Deprecated: Use SpawnProcess or DefaultSpawner instead.
+func Spawn(ctx context.Context, cfg Config) (*Process, error) {
+	return SpawnProcess(ctx, cfg)
+}
+
+// SpawnProcess starts the propolis-runner binary as a detached subprocess.
 // The runner binary receives the VM configuration as a JSON string in argv[1].
 // On success, the returned Process can be used to monitor and stop the VM.
-func Spawn(ctx context.Context, cfg Config) (*Process, error) {
-	runnerPath, err := findRunner(cfg.RunnerPath)
+func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
+	finder := newRunnerFinder()
+	runnerPath, err := finder.find(cfg.RunnerPath)
 	if err != nil {
 		return nil, fmt.Errorf("runner binary not found: %w", err)
 	}
@@ -81,9 +121,10 @@ func Spawn(ctx context.Context, cfg Config) (*Process, error) {
 	}
 
 	proc := &Process{
-		PID:        cmd.Process.Pid,
+		pid:        cmd.Process.Pid,
 		runnerPath: runnerPath,
 		cmd:        cmd,
+		deps:       newProcessDeps(),
 	}
 
 	// Start a goroutine to reap the child process when it exits. This prevents
@@ -114,19 +155,19 @@ func (p *Process) Stop(ctx context.Context) error {
 
 	// Verify process identity before signaling to avoid killing a recycled PID
 	// that now belongs to an unrelated process.
-	if p.runnerPath != "" && !isExpectedProcess(p.PID, p.runnerPath) {
+	if p.runnerPath != "" && !isExpectedProcess(p.pid, p.runnerPath) {
 		slog.Warn("PID no longer belongs to the expected runner binary, skipping signal",
-			"pid", p.PID,
+			"pid", p.pid,
 			"expected_binary", p.runnerPath,
 		)
 		return nil
 	}
 
 	// Send SIGTERM for graceful shutdown.
-	if err := syscall.Kill(p.PID, syscall.SIGTERM); err != nil {
+	if err := p.deps.kill(p.pid, syscall.SIGTERM); err != nil {
 		// If the process is already gone, that is fine.
 		if !isNoSuchProcess(err) {
-			return fmt.Errorf("send SIGTERM to pid %d: %w", p.PID, err)
+			return fmt.Errorf("send SIGTERM to pid %d: %w", p.pid, err)
 		}
 		return nil
 	}
@@ -140,7 +181,7 @@ func (p *Process) Stop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			// Context canceled — force kill.
-			_ = syscall.Kill(p.PID, syscall.SIGKILL)
+			_ = p.deps.kill(p.pid, syscall.SIGKILL)
 			return ctx.Err()
 		case <-ticker.C:
 			if !p.IsAlive() {
@@ -148,8 +189,8 @@ func (p *Process) Stop(ctx context.Context) error {
 			}
 			if time.Now().After(deadline) {
 				// Timeout — force kill.
-				if err := syscall.Kill(p.PID, syscall.SIGKILL); err != nil && !isNoSuchProcess(err) {
-					return fmt.Errorf("send SIGKILL to pid %d: %w", p.PID, err)
+				if err := p.deps.kill(p.pid, syscall.SIGKILL); err != nil && !isNoSuchProcess(err) {
+					return fmt.Errorf("send SIGKILL to pid %d: %w", p.pid, err)
 				}
 				return nil
 			}
@@ -161,10 +202,10 @@ func (p *Process) Stop(ctx context.Context) error {
 // When a runner path is known, it also verifies the PID still belongs to the
 // expected binary (prevents false positives from PID reuse).
 func (p *Process) IsAlive() bool {
-	if p.PID <= 0 {
+	if p.pid <= 0 {
 		return false
 	}
-	process, err := os.FindProcess(p.PID)
+	process, err := p.deps.findProcess(p.pid)
 	if err != nil {
 		return false
 	}
@@ -173,34 +214,34 @@ func (p *Process) IsAlive() bool {
 	}
 	// If we know the runner path, verify the PID still belongs to it.
 	if p.runnerPath != "" {
-		return isExpectedProcess(p.PID, p.runnerPath)
+		return isExpectedProcess(p.pid, p.runnerPath)
 	}
 	return true
 }
 
-// findRunner locates the propolis-runner binary. It checks, in order:
+// find locates the propolis-runner binary. It checks, in order:
 // 1. The explicit path provided in cfg.RunnerPath
 // 2. The system PATH
 // 3. Next to the current executable
-func findRunner(explicit string) (string, error) {
+func (f *runnerFinder) find(explicit string) (string, error) {
 	// 1. Explicit path.
 	if explicit != "" {
-		if _, err := os.Stat(explicit); err == nil {
+		if _, err := f.stat(explicit); err == nil {
 			return explicit, nil
 		}
 		return "", fmt.Errorf("explicit runner path not found: %s", explicit)
 	}
 
 	// 2. System PATH.
-	if p, err := exec.LookPath(runnerBinaryName); err == nil {
+	if p, err := f.lookPath(runnerBinaryName); err == nil {
 		return p, nil
 	}
 
 	// 3. Next to the current executable.
-	execPath, err := os.Executable()
+	execPath, err := f.executable()
 	if err == nil {
 		candidate := filepath.Join(filepath.Dir(execPath), runnerBinaryName)
-		if _, err := os.Stat(candidate); err == nil {
+		if _, err := f.stat(candidate); err == nil {
 			return candidate, nil
 		}
 	}

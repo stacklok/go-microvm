@@ -54,7 +54,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	} else {
 		slog.Debug("pulling image", "ref", imageRef)
 		var err error
-		rootfs, err = image.Pull(ctx, imageRef, cfg.imageCache)
+		rootfs, err = image.PullWithFetcher(ctx, imageRef, cfg.imageCache, cfg.imageFetcher)
 		if err != nil {
 			return nil, fmt.Errorf("pull image: %w", err)
 		}
@@ -86,18 +86,22 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	// 6. Spawn VM runner subprocess.
 	slog.Debug("spawning VM")
 	runCfg := runner.Config{
-		RootPath:    rootfs.Path,
-		NumVCPUs:    cfg.cpus,
-		RAMMiB:      cfg.memory,
-		NetSocket:   cfg.netProvider.SocketPath(),
-		VirtioFS:    toRunnerVirtioFS(cfg.virtioFS),
-		ConsoleLog:  filepath.Join(cfg.dataDir, "console.log"),
-		LibDir:      cfg.libDir,
-		RunnerPath:  cfg.runnerPath,
-		VMLogPath:   filepath.Join(cfg.dataDir, "vm.log"),
+		RootPath:   rootfs.Path,
+		NumVCPUs:   cfg.cpus,
+		RAMMiB:     cfg.memory,
+		NetSocket:  cfg.netProvider.SocketPath(),
+		VirtioFS:   toRunnerVirtioFS(cfg.virtioFS),
+		ConsoleLog: filepath.Join(cfg.dataDir, "console.log"),
+		LibDir:     cfg.libDir,
+		RunnerPath: cfg.runnerPath,
+		VMLogPath:  filepath.Join(cfg.dataDir, "vm.log"),
 	}
 
-	proc, err := runner.Spawn(ctx, runCfg)
+	spawner := cfg.spawner
+	if spawner == nil {
+		spawner = runner.DefaultSpawner{}
+	}
+	proc, err := spawner.Spawn(ctx, runCfg)
 	if err != nil {
 		cfg.netProvider.Stop()
 		return nil, fmt.Errorf("spawn vm: %w", err)
@@ -120,7 +124,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		}
 	}
 
-	slog.Info("VM running", "name", cfg.name, "pid", proc.PID)
+	slog.Info("VM running", "name", cfg.name, "pid", proc.PID())
 	return vm, nil
 }
 

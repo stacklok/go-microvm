@@ -14,12 +14,26 @@ import (
 
 const kvmDevicePath = "/dev/kvm"
 
+// kvmChecker holds injectable dependencies for KVM verification.
+type kvmChecker struct {
+	stat     func(string) (os.FileInfo, error)
+	openFile func(string, int, os.FileMode) (*os.File, error)
+}
+
+func newKVMChecker() *kvmChecker {
+	return &kvmChecker{
+		stat:     os.Stat,
+		openFile: os.OpenFile,
+	}
+}
+
 // registerPlatformChecks adds Linux-specific preflight checks.
 func registerPlatformChecks(c *checker) {
+	kvm := newKVMChecker()
 	c.Register(Check{
 		Name:        "kvm",
 		Description: "Verify KVM is available and accessible",
-		Run:         checkKVM,
+		Run:         kvm.check,
 		Required:    true,
 	})
 
@@ -28,10 +42,10 @@ func registerPlatformChecks(c *checker) {
 	c.Register(ResourceCheck(1, 1.0))
 }
 
-// checkKVM verifies that /dev/kvm exists, is a character device, and is
+// check verifies that /dev/kvm exists, is a character device, and is
 // accessible by the current user.
-func checkKVM(_ context.Context) error {
-	info, err := os.Stat(kvmDevicePath)
+func (k *kvmChecker) check(_ context.Context) error {
+	info, err := k.stat(kvmDevicePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%s does not exist: ensure KVM kernel modules are loaded "+
@@ -51,7 +65,7 @@ func checkKVM(_ context.Context) error {
 	}
 
 	// Verify we can open it for read/write.
-	f, err := os.OpenFile(kvmDevicePath, os.O_RDWR, 0)
+	f, err := k.openFile(kvmDevicePath, os.O_RDWR, 0)
 	if err != nil {
 		if os.IsPermission(err) {
 			return fmt.Errorf("permission denied accessing %s: add your user to the 'kvm' group "+

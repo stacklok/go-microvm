@@ -16,7 +16,7 @@ import (
 // VM represents a running microVM.
 type VM struct {
 	name       string
-	proc       *runner.Process
+	proc       runner.ProcessHandle
 	netProv    net.Provider
 	dataDir    string
 	rootfsPath string
@@ -54,7 +54,7 @@ func (vm *VM) Status(_ context.Context) (*VMInfo, error) {
 	return &VMInfo{
 		Name:   vm.name,
 		Active: alive,
-		PID:    vm.proc.PID,
+		PID:    vm.proc.PID(),
 		Ports:  vm.ports,
 	}, nil
 }
@@ -75,7 +75,7 @@ func (vm *VM) Remove(ctx context.Context) error {
 func (vm *VM) Name() string { return vm.name }
 
 // PID returns the runner process ID.
-func (vm *VM) PID() int { return vm.proc.PID }
+func (vm *VM) PID() int { return vm.proc.PID() }
 
 // DataDir returns the base data directory for this VM.
 func (vm *VM) DataDir() string { return vm.dataDir }

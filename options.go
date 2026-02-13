@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net"
 	"github.com/stacklok/propolis/preflight"
+	"github.com/stacklok/propolis/runner"
 )
 
 // Option configures a VM. Use the With* functions to create options.
@@ -58,19 +59,21 @@ type config struct {
 	runnerPath    string
 	virtioFS      []VirtioFSMount
 	imageCache    *image.Cache
+	imageFetcher  image.ImageFetcher // nil = default CraneFetcher
+	spawner       runner.Spawner     // nil = default runner.Spawn
 }
 
 func defaultConfig() *config {
 	dataDir := defaultDataDir()
 	return &config{
-		name:       "propolis",
-		cpus:       1,
-		memory:     512,
-		ports:      nil,
+		name:        "propolis",
+		cpus:        1,
+		memory:      512,
+		ports:       nil,
 		netProvider: nil, // lazy-initialized in Run() if not set by WithNetProvider
-		preflight:  preflight.Default(),
-		imageCache: image.NewCache(filepath.Join(dataDir, "cache")),
-		dataDir:    dataDir,
+		preflight:   preflight.Default(),
+		imageCache:  image.NewCache(filepath.Join(dataDir, "cache")),
+		dataDir:     dataDir,
 	}
 }
 
@@ -197,4 +200,16 @@ func WithVirtioFS(mounts ...VirtioFSMount) Option {
 // WithImageCache sets a custom image cache.
 func WithImageCache(cache *image.Cache) Option {
 	return optionFunc(func(c *config) { c.imageCache = cache })
+}
+
+// WithImageFetcher sets a custom image fetcher for OCI image retrieval.
+// When nil (default), the standard crane-based fetcher is used.
+func WithImageFetcher(f image.ImageFetcher) Option {
+	return optionFunc(func(c *config) { c.imageFetcher = f })
+}
+
+// WithSpawner sets a custom spawner for the runner subprocess.
+// When nil (default), the standard runner.Spawn is used.
+func WithSpawner(s runner.Spawner) Option {
+	return optionFunc(func(c *config) { c.spawner = s })
 }

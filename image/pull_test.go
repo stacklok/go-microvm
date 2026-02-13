@@ -6,12 +6,16 @@ package image
 import (
 	"archive/tar"
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -303,4 +307,143 @@ func TestExtractTar_SkipsPathTraversal(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dst, "good.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "good content", string(data))
+}
+
+// mockFetcher is a test double for ImageFetcher.
+type mockFetcher struct {
+	img v1.Image
+	err error
+}
+
+func (m *mockFetcher) Pull(_ context.Context, _ string) (v1.Image, error) {
+	return m.img, m.err
+}
+
+func TestExtractOCIConfig_WithConfig(t *testing.T) {
+	t.Parallel()
+
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+
+	cfg, err := extractOCIConfig(fakeImg)
+	require.NoError(t, err)
+	assert.NotNil(t, cfg)
+}
+
+func TestExtractOCIConfig_ReturnsEmptyForNilConfig(t *testing.T) {
+	t.Parallel()
+
+	// random.Image always has a config, so we test the non-nil path.
+	// The nil branch is defensive; verify that a valid image returns
+	// a non-nil OCIConfig with populated or empty fields.
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+
+	cfg, err := extractOCIConfig(fakeImg)
+	require.NoError(t, err)
+	assert.NotNil(t, cfg)
+	// random images have empty config fields
+	assert.Empty(t, cfg.Entrypoint)
+	assert.Empty(t, cfg.Cmd)
+	assert.Empty(t, cfg.WorkingDir)
+	assert.Empty(t, cfg.User)
+}
+
+func TestPullWithFetcher_CacheHit(t *testing.T) {
+	t.Parallel()
+
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+
+	digest, err := fakeImg.Digest()
+	require.NoError(t, err)
+
+	cacheDir := t.TempDir()
+	cache := NewCache(cacheDir)
+
+	// Pre-populate the cache by creating the expected directory.
+	cachedRootfs := t.TempDir()
+	err = os.WriteFile(filepath.Join(cachedRootfs, "marker"), []byte("cached"), 0o644)
+	require.NoError(t, err)
+	err = cache.Put(digest.String(), cachedRootfs)
+	require.NoError(t, err)
+
+	fetcher := &mockFetcher{img: fakeImg}
+
+	rootfs, err := PullWithFetcher(context.Background(), "example.com/test:latest", cache, fetcher)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rootfs.Path)
+	assert.DirExists(t, rootfs.Path)
+
+	// Verify we got the cached path (contains our marker file).
+	markerData, err := os.ReadFile(filepath.Join(rootfs.Path, "marker"))
+	require.NoError(t, err)
+	assert.Equal(t, "cached", string(markerData))
+}
+
+func TestPullWithFetcher_CacheMiss(t *testing.T) {
+	t.Parallel()
+
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+
+	fetcher := &mockFetcher{img: fakeImg}
+	cache := NewCache(t.TempDir())
+
+	rootfs, err := PullWithFetcher(context.Background(), "example.com/test:latest", cache, fetcher)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rootfs.Path)
+	assert.DirExists(t, rootfs.Path)
+	assert.NotNil(t, rootfs.Config)
+}
+
+func TestPullWithFetcher_NilCache(t *testing.T) {
+	t.Parallel()
+
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+
+	fetcher := &mockFetcher{img: fakeImg}
+
+	rootfs, err := PullWithFetcher(context.Background(), "example.com/test:latest", nil, fetcher)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rootfs.Path)
+	assert.DirExists(t, rootfs.Path)
+	assert.NotNil(t, rootfs.Config)
+
+	// Clean up extracted rootfs since there's no cache managing it.
+	_ = os.RemoveAll(rootfs.Path)
+}
+
+func TestPullWithFetcher_ParseError(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &mockFetcher{}
+
+	_, err := PullWithFetcher(context.Background(), ":::invalid", nil, fetcher)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse image reference")
+}
+
+func TestPullWithFetcher_FetchError(t *testing.T) {
+	t.Parallel()
+
+	fetchErr := errors.New("network timeout")
+	fetcher := &mockFetcher{err: fetchErr}
+
+	_, err := PullWithFetcher(context.Background(), "example.com/test:latest", nil, fetcher)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pull image")
+	assert.ErrorIs(t, err, fetchErr)
+}
+
+func TestPullWithFetcher_NilFetcher(t *testing.T) {
+	t.Parallel()
+
+	// With nil fetcher, PullWithFetcher uses CraneFetcher which will try
+	// to reach a real registry. Use an invalid ref that parses but fails
+	// to pull, confirming nil fetcher doesn't panic.
+	_, err := PullWithFetcher(context.Background(), "localhost:1/nonexistent:latest", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pull image")
 }

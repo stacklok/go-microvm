@@ -32,16 +32,26 @@ type Client struct {
 	port    uint16
 	user    string
 	keyPath string
+
+	// readFile reads a file from disk. Defaults to os.ReadFile.
+	// Injected for testability.
+	readFile func(string) ([]byte, error)
+
+	// writeFile writes a file to disk. Defaults to os.WriteFile.
+	// Injected for testability.
+	writeFile func(string, []byte, os.FileMode) error
 }
 
 // NewClient creates a new SSH Client configured to connect to the given
 // host and port using the specified user and private key file.
 func NewClient(host string, port uint16, user, keyPath string) *Client {
 	return &Client{
-		host:    host,
-		port:    port,
-		user:    user,
-		keyPath: keyPath,
+		host:      host,
+		port:      port,
+		user:      user,
+		keyPath:   keyPath,
+		readFile:  os.ReadFile,
+		writeFile: os.WriteFile,
 	}
 }
 
@@ -97,7 +107,7 @@ func (c *Client) RunStream(ctx context.Context, cmd string, stdout, stderr io.Wr
 // using cat over SSH. The file permissions on the remote side are set to
 // the provided mode.
 func (c *Client) CopyTo(ctx context.Context, localPath, remotePath string, mode os.FileMode) error {
-	data, err := os.ReadFile(localPath)
+	data, err := c.readFile(localPath)
 	if err != nil {
 		return fmt.Errorf("read local file %s: %w", localPath, err)
 	}
@@ -135,7 +145,7 @@ func (c *Client) CopyFrom(ctx context.Context, remotePath, localPath string) err
 		return fmt.Errorf("copy from %s: %w", remotePath, err)
 	}
 
-	if err := os.WriteFile(localPath, []byte(output), 0o644); err != nil {
+	if err := c.writeFile(localPath, []byte(output), 0o644); err != nil {
 		return fmt.Errorf("write local file %s: %w", localPath, err)
 	}
 
@@ -222,7 +232,7 @@ func (c *Client) newSession(ctx context.Context) (*ssh.Session, *ssh.Client, err
 
 // sshConfig builds an ssh.ClientConfig from the client's settings.
 func (c *Client) sshConfig() (*ssh.ClientConfig, error) {
-	keyData, err := os.ReadFile(c.keyPath)
+	keyData, err := c.readFile(c.keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read SSH key %s: %w", c.keyPath, err)
 	}

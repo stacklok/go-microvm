@@ -14,24 +14,40 @@ import (
 	"syscall"
 )
 
+// resourceChecker holds injectable dependencies for resource verification.
+type resourceChecker struct {
+	statfs  func(path string, buf *syscall.Statfs_t) error
+	sysinfo func(info *syscall.Sysinfo_t) error
+	numCPU  func() int
+}
+
+func newResourceChecker() *resourceChecker {
+	return &resourceChecker{
+		statfs:  syscall.Statfs,
+		sysinfo: syscall.Sysinfo,
+		numCPU:  runtime.NumCPU,
+	}
+}
+
 // DiskSpaceCheck returns an advisory Check that verifies at least minFreeGB
 // of disk space is available on the filesystem containing dataDir.
 // If dataDir does not exist yet, the check walks up the directory tree
 // to find the nearest existing ancestor and checks that filesystem instead.
 // An empty dataDir defaults to "/".
 func DiskSpaceCheck(dataDir string, minFreeGB float64) Check {
+	rc := newResourceChecker()
 	return Check{
 		Name:        "disk-space",
 		Description: fmt.Sprintf("Verify at least %.1f GB free disk space", minFreeGB),
 		Run: func(_ context.Context) error {
-			return checkDiskSpace(dataDir, minFreeGB)
+			return rc.checkDiskSpace(dataDir, minFreeGB)
 		},
 		Required: false,
 	}
 }
 
 // checkDiskSpace verifies sufficient free disk space at the given path.
-func checkDiskSpace(dataDir string, minFreeGB float64) error {
+func (rc *resourceChecker) checkDiskSpace(dataDir string, minFreeGB float64) error {
 	dir := dataDir
 	if dir == "" {
 		dir = "/"
@@ -52,7 +68,7 @@ func checkDiskSpace(dataDir string, minFreeGB float64) error {
 	}
 
 	var stat syscall.Statfs_t
-	if err := syscall.Statfs(dir, &stat); err != nil {
+	if err := rc.statfs(dir, &stat); err != nil {
 		return fmt.Errorf("cannot check disk space on %s: %w", dir, err)
 	}
 
@@ -68,25 +84,26 @@ func checkDiskSpace(dataDir string, minFreeGB float64) error {
 // ResourceCheck returns an advisory Check that verifies the host has at least
 // minCPUs logical CPU cores and minMemoryGiB of total RAM.
 func ResourceCheck(minCPUs int, minMemoryGiB float64) Check {
+	rc := newResourceChecker()
 	return Check{
 		Name:        "resources",
 		Description: fmt.Sprintf("Verify minimum resources (%d CPUs, %.1f GiB RAM)", minCPUs, minMemoryGiB),
 		Run: func(_ context.Context) error {
-			return checkResources(minCPUs, minMemoryGiB)
+			return rc.checkResources(minCPUs, minMemoryGiB)
 		},
 		Required: false,
 	}
 }
 
 // checkResources verifies CPU and memory meet minimum requirements.
-func checkResources(minCPUs int, minMemoryGiB float64) error {
-	cpuCores := runtime.NumCPU()
+func (rc *resourceChecker) checkResources(minCPUs int, minMemoryGiB float64) error {
+	cpuCores := rc.numCPU()
 	if cpuCores < minCPUs {
 		return fmt.Errorf("CPU cores (%d) is below recommended minimum (%d)", cpuCores, minCPUs)
 	}
 
 	var si syscall.Sysinfo_t
-	if err := syscall.Sysinfo(&si); err != nil {
+	if err := rc.sysinfo(&si); err != nil {
 		return fmt.Errorf("cannot check system memory: %w", err)
 	}
 

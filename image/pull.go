@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -28,6 +27,16 @@ const maxExtractSize int64 = 30 << 30 // 30 GiB
 // If a Cache is provided, results are cached by image digest. The returned
 // RootFS contains the extraction path and parsed OCI config.
 func Pull(ctx context.Context, imageRef string, cache *Cache) (*RootFS, error) {
+	return PullWithFetcher(ctx, imageRef, cache, nil)
+}
+
+// PullWithFetcher is like Pull but uses the provided ImageFetcher instead of crane.
+// If fetcher is nil, the default CraneFetcher is used.
+func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher ImageFetcher) (*RootFS, error) {
+	if fetcher == nil {
+		fetcher = CraneFetcher{}
+	}
+
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("parse image reference %q: %w", imageRef, err)
@@ -35,7 +44,7 @@ func Pull(ctx context.Context, imageRef string, cache *Cache) (*RootFS, error) {
 
 	slog.Debug("pulling image", "ref", ref.String())
 
-	img, err := crane.Pull(ref.String(), crane.WithContext(ctx))
+	img, err := fetcher.Pull(ctx, ref.String())
 	if err != nil {
 		return nil, fmt.Errorf("pull image %q: %w", imageRef, err)
 	}
