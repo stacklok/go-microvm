@@ -1,0 +1,22 @@
+# Build artifacts
+bin/
+.task/
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
