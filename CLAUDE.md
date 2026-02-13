@@ -78,7 +78,8 @@ When tests fail, fix the implementation, not the tests.
 
 ## Reference Docs
 
-- @docs/ARCHITECTURE.md -- Deep technical architecture, security model
+- @docs/ARCHITECTURE.md -- Deep technical architecture
+- @docs/SECURITY.md -- Trust boundaries, guest escape analysis, hardening
 - @docs/NETWORKING.md -- In-process networking, firewall, wire protocol
 - @docs/MACOS.md -- macOS support, code signing, Hypervisor.framework
 - @docs/TROUBLESHOOTING.md -- Common issues, log files, resource limits
