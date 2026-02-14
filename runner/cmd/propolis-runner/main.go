@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build (linux || darwin) && cgo
+
 // Package main provides the propolis-runner helper binary.
 // This binary is spawned as a subprocess by the propolis framework
 // to run VMs using libkrun's CGO bindings.
