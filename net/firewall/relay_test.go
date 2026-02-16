@@ -8,12 +8,27 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mockDNSHook is a configurable DNSHook for testing relay DNS interception.
+type mockDNSHook struct {
+	egressResult InterceptResult
+	ingressCalls atomic.Int32
+}
+
+func (m *mockDNSHook) HandleEgress(_ []byte, _ *PacketHeader) InterceptResult {
+	return m.egressResult
+}
+
+func (m *mockDNSHook) HandleIngress(_ []byte, _ *PacketHeader) {
+	m.ingressCalls.Add(1)
+}
 
 // buildPrefixedFrame constructs a wire-format frame: 4-byte BE length prefix
 // followed by a raw Ethernet frame.
@@ -278,6 +293,263 @@ func TestRelay_Bidirectional(t *testing.T) {
 
 	m := relay.Metrics()
 	assert.Equal(t, uint64(2), m.FramesForwarded.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestNewRelayWithDNSHook_InterceptForward(t *testing.T) {
+	t.Parallel()
+
+	hook := &mockDNSHook{
+		egressResult: InterceptResult{Action: InterceptForward},
+	}
+	filter := NewFilter(nil, Allow)
+	relay := NewRelayWithDNSHook(filter, hook)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Build a DNS egress frame (UDP port 53).
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{192, 168, 127, 1}
+	dnsFrame := buildEthIPv4Frame(srcIP, dstIP, 17, 40000, 53, 5)
+
+	_, err := vmApp.Write(buildPrefixedFrame(dnsFrame))
+	require.NoError(t, err)
+
+	// InterceptForward: frame passes through normal filtering and arrives.
+	got := readPrefixedFrame(t, netApp)
+	assert.Equal(t, dnsFrame, got)
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(0), m.FramesDropped.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestRelay_DNSHook_InterceptDrop(t *testing.T) {
+	t.Parallel()
+
+	hook := &mockDNSHook{
+		egressResult: InterceptResult{Action: InterceptDrop},
+	}
+	filter := NewFilter(nil, Allow)
+	relay := NewRelayWithDNSHook(filter, hook)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// DNS frame should be dropped.
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{192, 168, 127, 1}
+	dnsFrame := buildEthIPv4Frame(srcIP, dstIP, 17, 40000, 53, 5)
+	_, err := vmApp.Write(buildPrefixedFrame(dnsFrame))
+	require.NoError(t, err)
+
+	// Non-DNS TCP frame should pass through.
+	tcpFrame := buildEthIPv4Frame(srcIP, [4]byte{93, 184, 216, 34}, 6, 54321, 80, 5)
+	_, err = vmApp.Write(buildPrefixedFrame(tcpFrame))
+	require.NoError(t, err)
+
+	// Only the TCP frame should arrive on the network side.
+	got := readPrefixedFrame(t, netApp)
+	assert.Equal(t, tcpFrame, got)
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(1), m.FramesDropped.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestRelay_DNSHook_InterceptRespond(t *testing.T) {
+	t.Parallel()
+
+	// Build a fake NXDOMAIN response frame.
+	nxdomainFrame := []byte("fake-nxdomain-response")
+	hook := &mockDNSHook{
+		egressResult: InterceptResult{
+			Action:        InterceptRespond,
+			ResponseFrame: nxdomainFrame,
+		},
+	}
+	filter := NewFilter(nil, Allow)
+	relay := NewRelayWithDNSHook(filter, hook)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, _ := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Send a DNS egress frame.
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{192, 168, 127, 1}
+	dnsFrame := buildEthIPv4Frame(srcIP, dstIP, 17, 40000, 53, 5)
+	_, err := vmApp.Write(buildPrefixedFrame(dnsFrame))
+	require.NoError(t, err)
+
+	// The NXDOMAIN response should be written back to the VM side.
+	got := readPrefixedFrame(t, vmApp)
+	assert.Equal(t, nxdomainFrame, got)
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(0), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(1), m.FramesDropped.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestRelay_DNSHook_IngressSnooping(t *testing.T) {
+	t.Parallel()
+
+	hook := &mockDNSHook{
+		egressResult: InterceptResult{Action: InterceptForward},
+	}
+	filter := NewFilter(nil, Allow)
+	relay := NewRelayWithDNSHook(filter, hook)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Build an ingress DNS response frame (from port 53).
+	srcIP := [4]byte{192, 168, 127, 1}
+	dstIP := [4]byte{10, 0, 0, 1}
+	dnsResponseFrame := buildEthIPv4Frame(srcIP, dstIP, 17, 53, 40000, 5)
+
+	_, err := netApp.Write(buildPrefixedFrame(dnsResponseFrame))
+	require.NoError(t, err)
+
+	// Frame should be forwarded to VM.
+	got := readPrefixedFrame(t, vmApp)
+	assert.Equal(t, dnsResponseFrame, got)
+
+	// HandleIngress should have been called.
+	assert.Equal(t, int32(1), hook.ingressCalls.Load())
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestRelay_DNSHook_DropsIPv6(t *testing.T) {
+	t.Parallel()
+
+	hook := &mockDNSHook{
+		egressResult: InterceptResult{Action: InterceptForward},
+	}
+	filter := NewFilter(nil, Allow)
+	relay := NewRelayWithDNSHook(filter, hook)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Build an IPv6 frame (EtherType 0x86DD). ParseHeaders returns nil for this.
+	ipv6Frame := make([]byte, 60)
+	binary.BigEndian.PutUint16(ipv6Frame[12:14], 0x86DD)
+
+	_, err := vmApp.Write(buildPrefixedFrame(ipv6Frame))
+	require.NoError(t, err)
+
+	// Send a valid IPv4 frame afterward so we can synchronize.
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{93, 184, 216, 34}
+	ipv4Frame := buildEthIPv4Frame(srcIP, dstIP, 6, 54321, 80, 5)
+	_, err = vmApp.Write(buildPrefixedFrame(ipv4Frame))
+	require.NoError(t, err)
+
+	// Only the IPv4 frame should arrive; IPv6 should be dropped.
+	got := readPrefixedFrame(t, netApp)
+	assert.Equal(t, ipv4Frame, got)
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(1), m.FramesDropped.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestRelay_DNSHook_AllowsARP(t *testing.T) {
+	t.Parallel()
+
+	hook := &mockDNSHook{
+		egressResult: InterceptResult{Action: InterceptForward},
+	}
+	filter := NewFilter(nil, Allow)
+	relay := NewRelayWithDNSHook(filter, hook)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Build an ARP frame (EtherType 0x0806).
+	arpFrame := make([]byte, 42)
+	binary.BigEndian.PutUint16(arpFrame[12:14], 0x0806)
+	arpFrame[14] = 0x00
+	arpFrame[15] = 0x01
+
+	_, err := vmApp.Write(buildPrefixedFrame(arpFrame))
+	require.NoError(t, err)
+
+	// ARP should pass through even with DNS hook active.
+	got := readPrefixedFrame(t, netApp)
+	assert.Equal(t, arpFrame, got)
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(0), m.FramesDropped.Load())
 
 	cancel()
 	<-errCh

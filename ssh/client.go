@@ -25,6 +25,26 @@ const (
 	defaultSSHTimeout = 10 * time.Second
 )
 
+// remoteSession abstracts the operations needed from an SSH session.
+type remoteSession interface {
+	Run(cmd string) error
+	SetStdout(w io.Writer)
+	SetStderr(w io.Writer)
+	SetStdin(r io.Reader)
+	Close() error
+}
+
+// sshSessionAdapter wraps *ssh.Session to implement remoteSession.
+type sshSessionAdapter struct {
+	sess *ssh.Session
+}
+
+func (s *sshSessionAdapter) Run(cmd string) error  { return s.sess.Run(cmd) }
+func (s *sshSessionAdapter) SetStdout(w io.Writer) { s.sess.Stdout = w }
+func (s *sshSessionAdapter) SetStderr(w io.Writer) { s.sess.Stderr = w }
+func (s *sshSessionAdapter) SetStdin(r io.Reader)  { s.sess.Stdin = r }
+func (s *sshSessionAdapter) Close() error          { return s.sess.Close() }
+
 // Client provides a high-level SSH interface for communicating with a
 // microVM guest.
 type Client struct {
@@ -40,12 +60,16 @@ type Client struct {
 	// writeFile writes a file to disk. Defaults to os.WriteFile.
 	// Injected for testability.
 	writeFile func(string, []byte, os.FileMode) error
+
+	// createSession creates a remote session and returns a cleanup function.
+	// Defaults to real SSH via newSession. Injected for testability.
+	createSession func(ctx context.Context) (remoteSession, func(), error)
 }
 
 // NewClient creates a new SSH Client configured to connect to the given
 // host and port using the specified user and private key file.
 func NewClient(host string, port uint16, user, keyPath string) *Client {
-	return &Client{
+	c := &Client{
 		host:      host,
 		port:      port,
 		user:      user,
@@ -53,21 +77,33 @@ func NewClient(host string, port uint16, user, keyPath string) *Client {
 		readFile:  os.ReadFile,
 		writeFile: os.WriteFile,
 	}
+	c.createSession = func(ctx context.Context) (remoteSession, func(), error) {
+		sess, client, err := c.newSession(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		cleanup := func() {
+			_ = sess.Close()
+			_ = client.Close()
+		}
+		return &sshSessionAdapter{sess: sess}, cleanup, nil
+	}
+	return c
 }
 
 // Run executes a command on the remote host and returns its combined
 // stdout and stderr output.
 func (c *Client) Run(ctx context.Context, cmd string) (string, error) {
-	session, client, err := c.newSession(ctx)
+	session, cleanup, err := c.createSession(ctx)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = client.Close() }()
+	defer cleanup()
 	defer func() { _ = session.Close() }()
 
 	var output bytes.Buffer
-	session.Stdout = &output
-	session.Stderr = &output
+	session.SetStdout(&output)
+	session.SetStderr(&output)
 
 	if err := session.Run(cmd); err != nil {
 		return output.String(), fmt.Errorf("ssh command %q: %w (output: %s)",
@@ -86,15 +122,15 @@ func (c *Client) RunSudo(ctx context.Context, cmd string) (string, error) {
 // RunStream executes a command on the remote host and streams its stdout
 // and stderr to the provided writers. It blocks until the command completes.
 func (c *Client) RunStream(ctx context.Context, cmd string, stdout, stderr io.Writer) error {
-	session, client, err := c.newSession(ctx)
+	session, cleanup, err := c.createSession(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer cleanup()
 	defer func() { _ = session.Close() }()
 
-	session.Stdout = stdout
-	session.Stderr = stderr
+	session.SetStdout(stdout)
+	session.SetStderr(stderr)
 
 	if err := session.Run(cmd); err != nil {
 		return fmt.Errorf("ssh stream command %q: %w", cmd, err)
@@ -116,18 +152,18 @@ func (c *Client) CopyTo(ctx context.Context, localPath, remotePath string, mode 
 	cmd := fmt.Sprintf("cat > %s && chmod %o %s",
 		ShellEscape(remotePath), mode, ShellEscape(remotePath))
 
-	session, client, err := c.newSession(ctx)
+	session, cleanup, err := c.createSession(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer cleanup()
 	defer func() { _ = session.Close() }()
 
-	session.Stdin = bytes.NewReader(data)
+	session.SetStdin(bytes.NewReader(data))
 
 	var output bytes.Buffer
-	session.Stdout = &output
-	session.Stderr = &output
+	session.SetStdout(&output)
+	session.SetStderr(&output)
 
 	if err := session.Run(cmd); err != nil {
 		return fmt.Errorf("copy to %s: %w (output: %s)", remotePath, err, output.String())
@@ -186,11 +222,11 @@ func (c *Client) WaitForReady(ctx context.Context) error {
 // probe attempts a single SSH connection to verify the server is accepting
 // connections and authenticating correctly.
 func (c *Client) probe(ctx context.Context) error {
-	session, client, err := c.newSession(ctx)
+	session, cleanup, err := c.createSession(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer cleanup()
 	defer func() { _ = session.Close() }()
 
 	// Run a trivial command to verify the connection works end-to-end.

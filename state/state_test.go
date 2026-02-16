@@ -5,11 +5,15 @@ package state
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -209,4 +213,196 @@ func TestState_CreatedAt(t *testing.T) {
 	assert.True(t, ls.State.CreatedAt.Before(after), "CreatedAt should be before test end")
 
 	ls.Release()
+}
+
+func TestManager_LoadAndLockWithRetry_ImmediateSuccess(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	ctx := context.Background()
+
+	ls, err := mgr.LoadAndLockWithRetry(ctx, 5*time.Second)
+	require.NoError(t, err)
+	defer ls.Release()
+
+	assert.NotNil(t, ls.State)
+	assert.Equal(t, stateVersion, ls.State.Version)
+}
+
+func TestManager_LoadAndLockWithRetry_WaitsForLock(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	ctx := context.Background()
+
+	// Acquire the lock externally using flock to simulate contention.
+	lockPath := filepath.Join(dataDir, lockFileName)
+	require.NoError(t, os.MkdirAll(dataDir, 0o700))
+	fl := flock.New(lockPath)
+	locked, err := fl.TryLock()
+	require.NoError(t, err)
+	require.True(t, locked)
+
+	// Release the external lock after a short delay so the retry succeeds.
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+		_ = fl.Unlock()
+	}()
+
+	ls, err := mgr.LoadAndLockWithRetry(ctx, 5*time.Second)
+	require.NoError(t, err)
+	defer ls.Release()
+
+	assert.NotNil(t, ls.State)
+}
+
+func TestManager_LoadAndLockWithRetry_Timeout(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	ctx := context.Background()
+
+	// Hold the lock for the entire duration so the retry always fails.
+	lockPath := filepath.Join(dataDir, lockFileName)
+	require.NoError(t, os.MkdirAll(dataDir, 0o700))
+	fl := flock.New(lockPath)
+	locked, err := fl.TryLock()
+	require.NoError(t, err)
+	require.True(t, locked)
+	defer fl.Unlock()
+
+	_, err = mgr.LoadAndLockWithRetry(ctx, 500*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout")
+}
+
+func TestManager_Load_CorruptJSON(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	// Write garbage bytes to the state file.
+	statePath := filepath.Join(dataDir, stateFileName)
+	require.NoError(t, os.WriteFile(statePath, []byte("{corrupt!!!"), 0o600))
+
+	_, err := mgr.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse state file")
+}
+
+func TestManager_LoadAndLock_CorruptJSON_ReleasesLock(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	ctx := context.Background()
+
+	// Write corrupt JSON to the state file.
+	statePath := filepath.Join(dataDir, stateFileName)
+	require.NoError(t, os.MkdirAll(dataDir, 0o700))
+	require.NoError(t, os.WriteFile(statePath, []byte("not-json"), 0o600))
+
+	// LoadAndLock should fail due to corrupt JSON.
+	_, err := mgr.LoadAndLock(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse state file")
+
+	// Fix the state file so a subsequent load succeeds.
+	validState, err := json.Marshal(&State{Version: 1, Name: "recovered"})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(statePath, validState, 0o600))
+
+	// The lock should have been released, so we can acquire it again.
+	ls, err := mgr.LoadAndLock(ctx)
+	require.NoError(t, err)
+	defer ls.Release()
+
+	assert.Equal(t, "recovered", ls.State.Name)
+}
+
+func TestLockedState_Save_SetsVersion(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	ctx := context.Background()
+
+	ls, err := mgr.LoadAndLock(ctx)
+	require.NoError(t, err)
+	defer ls.Release()
+
+	// Zero out the version to verify Save sets it.
+	ls.State.Version = 0
+	ls.State.Name = "version-test"
+
+	err = ls.Save()
+	require.NoError(t, err)
+
+	// Read back and verify version is set to stateVersion.
+	loaded, err := mgr.Load()
+	require.NoError(t, err)
+	assert.Equal(t, stateVersion, loaded.Version)
+	assert.Equal(t, "version-test", loaded.Name)
+}
+
+func TestManager_ConcurrentLoadAndLock(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	const goroutines = 10
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			ls, err := mgr.LoadAndLockWithRetry(ctx, 30*time.Second)
+			if err != nil {
+				errs <- fmt.Errorf("goroutine %d lock: %w", idx, err)
+				return
+			}
+
+			// Modify and save state under lock.
+			ls.State.Name = fmt.Sprintf("vm-%d", idx)
+			ls.State.CPUs = uint32(idx + 1)
+			ls.State.Active = true
+
+			if err := ls.Save(); err != nil {
+				ls.Release()
+				errs <- fmt.Errorf("goroutine %d save: %w", idx, err)
+				return
+			}
+
+			ls.Release()
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	// Final state should be valid JSON written by one of the goroutines.
+	loaded, err := mgr.Load()
+	require.NoError(t, err)
+	assert.True(t, loaded.Active)
+	assert.Equal(t, stateVersion, loaded.Version)
+	assert.NotEmpty(t, loaded.Name)
 }

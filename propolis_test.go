@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/propolis/image"
+	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/preflight"
 	"github.com/stacklok/propolis/runner"
 	"github.com/stacklok/propolis/state"
@@ -341,6 +342,161 @@ func TestRun_NetworkingError(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "networking")
+}
+
+// --- buildNetConfig tests ---
+
+func TestBuildNetConfig_WithPorts(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.ports = []PortForward{
+		{Host: 8080, Guest: 80},
+		{Host: 2222, Guest: 22},
+	}
+
+	netCfg := cfg.buildNetConfig()
+
+	require.Len(t, netCfg.Forwards, 2)
+	assert.Equal(t, uint16(8080), netCfg.Forwards[0].Host)
+	assert.Equal(t, uint16(80), netCfg.Forwards[0].Guest)
+	assert.Equal(t, uint16(2222), netCfg.Forwards[1].Host)
+	assert.Equal(t, uint16(22), netCfg.Forwards[1].Guest)
+}
+
+func TestBuildNetConfig_WithEgressPolicy(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.egressPolicy = &EgressPolicy{
+		AllowedHosts: []EgressHost{
+			{Name: "api.github.com", Ports: []uint16{443}, Protocol: 6},
+			{Name: "*.docker.io"},
+		},
+	}
+
+	netCfg := cfg.buildNetConfig()
+
+	require.NotNil(t, netCfg.EgressPolicy)
+	require.Len(t, netCfg.EgressPolicy.AllowedHosts, 2)
+	assert.Equal(t, "api.github.com", netCfg.EgressPolicy.AllowedHosts[0].Name)
+	assert.Equal(t, []uint16{443}, netCfg.EgressPolicy.AllowedHosts[0].Ports)
+	assert.Equal(t, uint8(6), netCfg.EgressPolicy.AllowedHosts[0].Protocol)
+	assert.Equal(t, "*.docker.io", netCfg.EgressPolicy.AllowedHosts[1].Name)
+	assert.Empty(t, netCfg.EgressPolicy.AllowedHosts[1].Ports)
+	assert.Equal(t, uint8(0), netCfg.EgressPolicy.AllowedHosts[1].Protocol)
+}
+
+func TestBuildNetConfig_Empty(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+
+	netCfg := cfg.buildNetConfig()
+
+	assert.Empty(t, netCfg.Forwards)
+	assert.Nil(t, netCfg.EgressPolicy)
+	assert.Empty(t, netCfg.FirewallRules)
+	assert.Equal(t, firewall.Allow, netCfg.FirewallDefaultAction)
+}
+
+// --- Egress validation tests ---
+
+func TestRun_EgressPolicy_EmptyHosts(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	_, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithEgressPolicy(EgressPolicy{AllowedHosts: nil}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AllowedHosts must not be empty")
+}
+
+func TestRun_EgressPolicy_EmptyName(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	_, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithEgressPolicy(EgressPolicy{
+			AllowedHosts: []EgressHost{{Name: ""}},
+		}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Name must not be empty")
+}
+
+func TestRun_EgressPolicy_OverlyBroadWildcard(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	_, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithEgressPolicy(EgressPolicy{
+			AllowedHosts: []EgressHost{{Name: "*.com"}},
+		}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wildcard must have at least two domain labels")
+}
+
+func TestRun_EgressPolicy_ValidWildcard(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+
+	proc := &mockProcessHandle{pid: 99, alive: true}
+
+	// ValidWildcard should pass egress validation and proceed.
+	// We use a mock spawner to prevent the actual VM spawn from failing
+	// for unrelated reasons (no runner binary, etc.).
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithSpawner(&mockSpawner{proc: proc}),
+		WithEgressPolicy(EgressPolicy{
+			AllowedHosts: []EgressHost{{Name: "*.example.com"}},
+		}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, vm)
+}
+
+// --- toRunnerPortForwards tests ---
+
+func TestToRunnerPortForwards(t *testing.T) {
+	t.Parallel()
+
+	ports := []PortForward{
+		{Host: 8080, Guest: 80},
+		{Host: 2222, Guest: 22},
+		{Host: 3000, Guest: 3000},
+	}
+
+	result := toRunnerPortForwards(ports)
+
+	require.Len(t, result, 3)
+	assert.Equal(t, uint16(8080), result[0].Host)
+	assert.Equal(t, uint16(80), result[0].Guest)
+	assert.Equal(t, uint16(2222), result[1].Host)
+	assert.Equal(t, uint16(22), result[1].Guest)
+	assert.Equal(t, uint16(3000), result[2].Host)
+	assert.Equal(t, uint16(3000), result[2].Guest)
+}
+
+func TestToRunnerPortForwards_Nil(t *testing.T) {
+	t.Parallel()
+
+	result := toRunnerPortForwards(nil)
+	assert.Empty(t, result)
 }
 
 // --- Option tests for new DI options ---

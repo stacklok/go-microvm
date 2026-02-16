@@ -4,10 +4,15 @@
 package propolis
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/propolis/image"
+	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/propolis/preflight"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -185,4 +190,90 @@ func TestMultipleOptionsApplied(t *testing.T) {
 	require.Len(t, cfg.ports, 1)
 	assert.Equal(t, uint16(2222), cfg.ports[0].Host)
 	assert.Equal(t, []string{"/sbin/custom-init"}, cfg.initOverride)
+}
+
+func TestWithFirewallRules(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	assert.Empty(t, cfg.firewallRules)
+
+	rules := []firewall.Rule{
+		{Direction: firewall.Egress, Action: firewall.Allow, DstPort: 443, Comment: "allow HTTPS"},
+		{Direction: firewall.Egress, Action: firewall.Deny, Comment: "deny all other egress"},
+	}
+	WithFirewallRules(rules...).apply(cfg)
+
+	require.Len(t, cfg.firewallRules, 2)
+	assert.Equal(t, uint16(443), cfg.firewallRules[0].DstPort)
+	assert.Equal(t, firewall.Allow, cfg.firewallRules[0].Action)
+	assert.Equal(t, "allow HTTPS", cfg.firewallRules[0].Comment)
+	assert.Equal(t, firewall.Deny, cfg.firewallRules[1].Action)
+}
+
+func TestWithFirewallDefaultAction(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	assert.Equal(t, firewall.Allow, cfg.firewallDefaultAction)
+
+	WithFirewallDefaultAction(firewall.Deny).apply(cfg)
+	assert.Equal(t, firewall.Deny, cfg.firewallDefaultAction)
+}
+
+func TestWithEgressPolicy(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	assert.Nil(t, cfg.egressPolicy)
+
+	policy := EgressPolicy{
+		AllowedHosts: []EgressHost{
+			{Name: "api.github.com", Ports: []uint16{443}, Protocol: 6},
+		},
+	}
+	WithEgressPolicy(policy).apply(cfg)
+
+	require.NotNil(t, cfg.egressPolicy)
+	require.Len(t, cfg.egressPolicy.AllowedHosts, 1)
+	assert.Equal(t, "api.github.com", cfg.egressPolicy.AllowedHosts[0].Name)
+	assert.Equal(t, []uint16{443}, cfg.egressPolicy.AllowedHosts[0].Ports)
+	assert.Equal(t, uint8(6), cfg.egressPolicy.AllowedHosts[0].Protocol)
+}
+
+func TestWithPreflightChecks(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.preflight = preflight.NewEmpty()
+
+	ran := false
+	check := preflight.Check{
+		Name:        "test-check",
+		Description: "a test check",
+		Required:    true,
+		Run: func(_ context.Context) error {
+			ran = true
+			return nil
+		},
+	}
+	WithPreflightChecks(check).apply(cfg)
+
+	// Verify the check was registered by running all checks.
+	err := cfg.preflight.RunAll(context.Background())
+	require.NoError(t, err)
+	assert.True(t, ran)
+}
+
+func TestWithImageCache(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	originalCache := cfg.imageCache
+
+	newCache := image.NewCache(t.TempDir())
+	WithImageCache(newCache).apply(cfg)
+
+	assert.NotEqual(t, originalCache, cfg.imageCache)
+	assert.Equal(t, newCache, cfg.imageCache)
 }

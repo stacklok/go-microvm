@@ -6,8 +6,13 @@
 package runner
 
 import (
+	"context"
 	"os"
+	"syscall"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsExpectedProcess_Self(t *testing.T) {
@@ -56,4 +61,48 @@ func TestIsExpectedProcess_ZeroPID(t *testing.T) {
 	if isExpectedProcess(0, "/usr/bin/anything") {
 		t.Error("isExpectedProcess should return false for PID 0")
 	}
+}
+
+func TestProcess_Stop_SkipsSignalOnPIDRecycle(t *testing.T) {
+	t.Parallel()
+
+	// Simulate PID recycling: the process at our PID is alive, but the binary
+	// path doesn't match runnerPath. Stop should detect the mismatch via
+	// isExpectedProcess (reads /proc/PID/exe) and skip sending any signal.
+	var signalSent bool
+	p := &Process{
+		pid:        os.Getpid(),
+		runnerPath: "/usr/bin/definitely-not-this-binary",
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				return os.FindProcess(os.Getpid())
+			},
+			kill: func(_ int, _ syscall.Signal) error {
+				signalSent = true
+				return nil
+			},
+		},
+	}
+
+	err := p.Stop(context.Background())
+	require.NoError(t, err)
+	assert.False(t, signalSent, "no signal should be sent when PID belongs to a different binary")
+}
+
+func TestProcess_IsAlive_RunnerPathMismatch(t *testing.T) {
+	t.Parallel()
+
+	// The process exists and responds to Signal(0), but the binary at the PID
+	// doesn't match runnerPath. IsAlive should return false.
+	p := &Process{
+		pid:        os.Getpid(),
+		runnerPath: "/usr/bin/definitely-not-this-binary",
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				return os.FindProcess(os.Getpid())
+			},
+		},
+	}
+
+	assert.False(t, p.IsAlive())
 }

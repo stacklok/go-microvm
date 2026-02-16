@@ -5,10 +5,12 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"runtime"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,6 +196,98 @@ func TestProcess_PID(t *testing.T) {
 	t.Parallel()
 	p := &Process{pid: 42, deps: newProcessDeps()}
 	assert.Equal(t, 42, p.PID())
+}
+
+func TestProcess_Stop_SIGTERMError_ESRCH(t *testing.T) {
+	t.Parallel()
+
+	// Process appears alive via findProcess + Signal(0), but kill returns ESRCH
+	// (process disappeared between the liveness check and the kill call).
+	// Stop should treat this as success and return nil.
+	p := &Process{
+		pid: 12345,
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				return os.FindProcess(os.Getpid())
+			},
+			kill: func(_ int, _ syscall.Signal) error {
+				return syscall.ESRCH
+			},
+		},
+	}
+
+	err := p.Stop(context.Background())
+	require.NoError(t, err)
+}
+
+func TestProcess_Stop_SIGTERMError_EPERM(t *testing.T) {
+	t.Parallel()
+
+	// Process appears alive, but kill returns EPERM (permission denied).
+	// Stop should return an error wrapping EPERM.
+	p := &Process{
+		pid: 12345,
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				return os.FindProcess(os.Getpid())
+			},
+			kill: func(_ int, _ syscall.Signal) error {
+				return syscall.EPERM
+			},
+		},
+	}
+
+	err := p.Stop(context.Background())
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, syscall.EPERM), "error should wrap EPERM, got: %v", err)
+	assert.Contains(t, err.Error(), "SIGTERM")
+}
+
+func TestProcess_Stop_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	// Process stays alive forever: kill succeeds but process never exits.
+	// A short-lived context should cause Stop to return the context error.
+	var killCalls []syscall.Signal
+	p := &Process{
+		pid: 12345,
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				return os.FindProcess(os.Getpid())
+			},
+			kill: func(_ int, sig syscall.Signal) error {
+				killCalls = append(killCalls, sig)
+				return nil
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := p.Stop(ctx)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded),
+		"expected context.DeadlineExceeded, got: %v", err)
+	// SIGTERM should have been sent, and SIGKILL on context cancellation.
+	require.GreaterOrEqual(t, len(killCalls), 2)
+	assert.Equal(t, syscall.SIGTERM, killCalls[0])
+	assert.Equal(t, syscall.SIGKILL, killCalls[len(killCalls)-1])
+}
+
+func TestProcess_IsAlive_SignalFails(t *testing.T) {
+	t.Parallel()
+
+	// findProcess succeeds but Signal(0) fails (process doesn't actually exist).
+	// IsAlive should return false.
+	p := &Process{
+		pid: 99999999,
+		deps: processDeps{
+			findProcess: os.FindProcess,
+		},
+	}
+
+	assert.False(t, p.IsAlive())
 }
 
 // --- Pure function tests ---

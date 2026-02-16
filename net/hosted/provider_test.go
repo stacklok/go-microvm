@@ -188,3 +188,58 @@ func TestPortForwardMap(t *testing.T) {
 	require.NoError(t, err, "forwarded host port should be reachable")
 	_ = conn.Close()
 }
+
+func TestProvider_StartWithEgressPolicy(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	p := NewProvider()
+
+	err := p.Start(context.Background(), propnet.Config{
+		LogDir: dir,
+		EgressPolicy: &propnet.EgressPolicy{
+			AllowedHosts: []propnet.EgressHost{
+				{Name: "api.github.com", Ports: []uint16{443}, Protocol: 6},
+			},
+		},
+	})
+	require.NoError(t, err)
+	defer p.Stop()
+
+	// buildEgressRelay should have created a relay with a DNS hook.
+	assert.NotNil(t, p.Relay(), "Relay should be non-nil with EgressPolicy")
+	assert.NotNil(t, p.VirtualNetwork())
+}
+
+func TestProvider_StartWithEgressPolicy_ImplicitRules(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	p := NewProvider()
+	hostPort := freePort(t)
+
+	err := p.Start(context.Background(), propnet.Config{
+		LogDir: dir,
+		Forwards: []propnet.PortForward{
+			{Host: hostPort, Guest: 22},
+		},
+		EgressPolicy: &propnet.EgressPolicy{
+			AllowedHosts: []propnet.EgressHost{
+				{Name: "example.com"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	defer p.Stop()
+
+	// The relay should exist, confirming that buildEgressRelay ran
+	// (which creates implicit DNS/DHCP rules + port forward rules).
+	relay := p.Relay()
+	require.NotNil(t, relay, "Relay should be non-nil with EgressPolicy")
+
+	// Verify the forwarded host port is still reachable (port forward
+	// integration works alongside egress policy).
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	require.NoError(t, err, "forwarded host port should be reachable with egress policy")
+	_ = conn.Close()
+}

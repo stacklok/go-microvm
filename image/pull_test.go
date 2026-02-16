@@ -519,3 +519,347 @@ func TestPullWithFetcher_NilFetcher(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pull image")
 }
+
+// ---------------------------------------------------------------------------
+// extractHardlink tests
+// ---------------------------------------------------------------------------
+
+func TestExtractHardlink_ValidLink(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	entries := []tarEntry{
+		{name: "original.txt", typeflag: tar.TypeReg, mode: 0o644, content: "hello"},
+		{name: "link.txt", typeflag: tar.TypeLink, mode: 0o644, linkname: "original.txt"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.NoError(t, err)
+
+	origInfo, err := os.Lstat(filepath.Join(dst, "original.txt"))
+	require.NoError(t, err)
+	linkInfo, err := os.Lstat(filepath.Join(dst, "link.txt"))
+	require.NoError(t, err)
+
+	origStat := origInfo.Sys().(*syscall.Stat_t)
+	linkStat := linkInfo.Sys().(*syscall.Stat_t)
+	assert.Equal(t, origStat.Ino, linkStat.Ino, "hardlink should share the same inode")
+}
+
+func TestExtractHardlink_SourceOutsideRootfs(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	entries := []tarEntry{
+		{name: "escape.txt", typeflag: tar.TypeLink, mode: 0o644, linkname: "../../etc/passwd"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hardlink")
+	assert.Contains(t, err.Error(), "outside rootfs")
+}
+
+func TestExtractHardlink_SourceIsSymlink(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	// Pre-create a symlink as the source.
+	err := os.Symlink("nonexistent", filepath.Join(dst, "sym"))
+	require.NoError(t, err)
+
+	entries := []tarEntry{
+		{name: "link.txt", typeflag: tar.TypeLink, mode: 0o644, linkname: "sym"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err = extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing hardlink to symlink")
+}
+
+func TestExtractHardlink_SourceIsDirectory(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	// Pre-create a directory as the source.
+	err := os.Mkdir(filepath.Join(dst, "mydir"), 0o755)
+	require.NoError(t, err)
+
+	entries := []tarEntry{
+		{name: "link.txt", typeflag: tar.TypeLink, mode: 0o644, linkname: "mydir"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err = extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing hardlink to non-regular file")
+}
+
+func TestExtractHardlink_SourceNotExtracted(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	entries := []tarEntry{
+		{name: "link.txt", typeflag: tar.TypeLink, mode: 0o644, linkname: "does-not-exist.txt"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stat hardlink source")
+}
+
+func TestExtractHardlink_TargetIsExistingSymlink(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	// Create the real file that will be the hardlink source.
+	err := os.WriteFile(filepath.Join(dst, "original.txt"), []byte("data"), 0o644)
+	require.NoError(t, err)
+
+	// Pre-create a symlink at the target location.
+	err = os.Symlink("original.txt", filepath.Join(dst, "link.txt"))
+	require.NoError(t, err)
+
+	entries := []tarEntry{
+		{name: "link.txt", typeflag: tar.TypeLink, mode: 0o644, linkname: "original.txt"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err = extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to write through symlink")
+}
+
+// ---------------------------------------------------------------------------
+// extractSymlink edge-case tests
+// ---------------------------------------------------------------------------
+
+func TestExtractSymlink_AbsoluteEscapeAttempt(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	entries := []tarEntry{
+		{name: "escape", typeflag: tar.TypeSymlink, mode: 0o777, linkname: "/../../../etc/passwd"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "points outside rootfs")
+}
+
+func TestExtractSymlink_RelativeEscapeAttempt(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	entries := []tarEntry{
+		{name: "escape", typeflag: tar.TypeSymlink, mode: 0o777, linkname: "../../../../../../etc/passwd"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "points outside rootfs")
+}
+
+func TestExtractSymlink_ReplacesExistingFile(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	// Extract a regular file, then a symlink at the same path.
+	entries := []tarEntry{
+		{name: "target.txt", typeflag: tar.TypeReg, mode: 0o644, content: "real content"},
+		{name: "overwrite", typeflag: tar.TypeReg, mode: 0o644, content: "old"},
+		{name: "overwrite", typeflag: tar.TypeSymlink, mode: 0o777, linkname: "target.txt"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.NoError(t, err)
+
+	// "overwrite" should now be a symlink to "target.txt".
+	linkTarget, err := os.Readlink(filepath.Join(dst, "overwrite"))
+	require.NoError(t, err)
+	assert.Equal(t, "target.txt", linkTarget)
+
+	data, err := os.ReadFile(filepath.Join(dst, "overwrite"))
+	require.NoError(t, err)
+	assert.Equal(t, "real content", string(data))
+}
+
+func TestExtractSymlink_RefusesToReplaceDirectory(t *testing.T) {
+	t.Parallel()
+
+	dst := t.TempDir()
+
+	// Create a directory first, then attempt to replace it with a symlink.
+	entries := []tarEntry{
+		{name: "mydir/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "mydir", typeflag: tar.TypeSymlink, mode: 0o777, linkname: "somewhere"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to replace directory with symlink")
+}
+
+// ---------------------------------------------------------------------------
+// mkdirAllNoSymlink tests
+// ---------------------------------------------------------------------------
+
+func TestMkdirAllNoSymlink_SymlinkInPath(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+
+	// Create base/a as a symlink to /tmp.
+	err := os.Symlink(os.TempDir(), filepath.Join(base, "a"))
+	require.NoError(t, err)
+
+	err = mkdirAllNoSymlink(base, filepath.Join(base, "a", "b"), 0o755)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to traverse symlink")
+}
+
+func TestMkdirAllNoSymlink_NonDirInPath(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+
+	// Create a regular file where a directory is expected.
+	err := os.WriteFile(filepath.Join(base, "notdir"), []byte("file"), 0o644)
+	require.NoError(t, err)
+
+	err = mkdirAllNoSymlink(base, filepath.Join(base, "notdir", "child"), 0o755)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path component is not a directory")
+}
+
+func TestMkdirAllNoSymlink_TargetOutsideBase(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+
+	err := mkdirAllNoSymlink(base, "/tmp/outside", 0o755)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid target directory")
+}
+
+func TestMkdirAllNoSymlink_TargetEqualsBase(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+
+	// Target equals base should be a no-op (returns nil).
+	err := mkdirAllNoSymlink(base, base, 0o755)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// validateNoSymlinkLeaf tests (table-driven)
+// ---------------------------------------------------------------------------
+
+func TestValidateNoSymlinkLeaf(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+
+	// Set up fixtures.
+	symPath := filepath.Join(base, "sym")
+	err := os.Symlink("nonexistent", symPath)
+	require.NoError(t, err)
+
+	dirPath := filepath.Join(base, "dir")
+	err = os.Mkdir(dirPath, 0o755)
+	require.NoError(t, err)
+
+	filePath := filepath.Join(base, "file")
+	err = os.WriteFile(filePath, []byte("data"), 0o644)
+	require.NoError(t, err)
+
+	nonexistentPath := filepath.Join(base, "nonexistent")
+
+	tests := []struct {
+		name      string
+		target    string
+		wantErr   bool
+		errSubstr string
+	}{
+		{name: "existing symlink", target: symPath, wantErr: true, errSubstr: "refusing to write through symlink"},
+		{name: "existing directory", target: dirPath, wantErr: true, errSubstr: "refusing to overwrite directory with file"},
+		{name: "existing regular file", target: filePath, wantErr: false},
+		{name: "non-existent path", target: nonexistentPath, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateNoSymlinkLeaf(tt.target)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errSubstr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Other extractTar tests
+// ---------------------------------------------------------------------------
+
+func TestExtractTar_EmptyArchive(t *testing.T) {
+	t.Parallel()
+
+	// Create an empty tar archive (no entries).
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := tw.Close()
+	require.NoError(t, err)
+
+	dst := t.TempDir()
+	err = extractTar(&buf, dst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty or contains no valid entries")
+}
+
+func TestExtractTar_UnsupportedEntryType(t *testing.T) {
+	t.Parallel()
+
+	entries := []tarEntry{
+		// FIFO (unsupported) -- should be skipped.
+		{name: "myfifo", typeflag: tar.TypeFifo, mode: 0o644},
+		// Regular file -- should be extracted.
+		{name: "good.txt", typeflag: tar.TypeReg, mode: 0o644, content: "valid"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	dst := t.TempDir()
+	err := extractTar(buf, dst)
+	require.NoError(t, err)
+
+	// FIFO should not exist.
+	_, err = os.Lstat(filepath.Join(dst, "myfifo"))
+	assert.True(t, os.IsNotExist(err), "FIFO should not have been extracted")
+
+	// Regular file should exist.
+	data, err := os.ReadFile(filepath.Join(dst, "good.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "valid", string(data))
+}
