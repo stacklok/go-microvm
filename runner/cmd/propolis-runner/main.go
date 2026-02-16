@@ -26,6 +26,7 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
 	"github.com/stacklok/propolis/krun"
+	"github.com/stacklok/propolis/net/topology"
 )
 
 // sentinel errors for classifying exit codes.
@@ -226,28 +227,20 @@ func runVM(config *Config) error {
 // of a socketpair. The VirtualNetwork runs in background goroutines that
 // persist alongside krun_start_enter() until the process exits.
 func setupInProcessNetworking(ports []PortForward) (int, error) {
-	const (
-		defaultSubnet     = "192.168.127.0/24"
-		defaultGatewayIP  = "192.168.127.1"
-		defaultGatewayMAC = "5a:94:ef:e4:0c:ee"
-		defaultGuestIP    = "192.168.127.2"
-		defaultMTU        = 1500
-	)
-
 	// Build port forward map: "127.0.0.1:<host>" -> "<guest>:<guest>"
 	forwards := make(map[string]string, len(ports))
 	for _, pf := range ports {
 		hostAddr := fmt.Sprintf("127.0.0.1:%d", pf.Host)
-		guestAddr := fmt.Sprintf("%s:%d", defaultGuestIP, pf.Guest)
+		guestAddr := fmt.Sprintf("%s:%d", topology.GuestIP, pf.Guest)
 		forwards[hostAddr] = guestAddr
 	}
 
 	// Create the virtual network stack.
 	vn, err := virtualnetwork.New(&types.Configuration{
-		Subnet:            defaultSubnet,
-		GatewayIP:         defaultGatewayIP,
-		GatewayMacAddress: defaultGatewayMAC,
-		MTU:               defaultMTU,
+		Subnet:            topology.Subnet,
+		GatewayIP:         topology.GatewayIP,
+		GatewayMacAddress: topology.GatewayMAC,
+		MTU:               topology.MTU,
 		Forwards:          forwards,
 	})
 	if err != nil {
