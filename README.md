@@ -1,6 +1,19 @@
-# propolis
+<div align="center">
+  <img src="assets/propolis.png" alt="propolis mascot" width="250" />
 
-Run OCI container images as microVMs with libkrun.
+  <h1>propolis</h1>
+
+  <p><strong>Run OCI container images as microVMs with libkrun.</strong></p>
+
+  <p>
+    <a href="#quick-start">Quick Start</a> &middot;
+    <a href="#architecture">Architecture</a> &middot;
+    <a href="docs/ARCHITECTURE.md">Docs</a> &middot;
+    <a href="#license">License</a>
+  </p>
+</div>
+
+---
 
 propolis is a Go library and runner binary that turns any OCI container image
 into a lightweight virtual machine. It pulls the image, flattens its layers
