@@ -10,6 +10,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.20.3
 	github.com/miekg/dns v1.1.72
+	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.47.0
 	golang.org/x/sync v0.19.0
@@ -46,7 +47,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
 	github.com/vbatts/tar-split v0.11.6 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

@@ -275,7 +275,7 @@ func TestManager_LoadAndLockWithRetry_Timeout(t *testing.T) {
 	locked, err := fl.TryLock()
 	require.NoError(t, err)
 	require.True(t, locked)
-	defer fl.Unlock()
+	defer func() { _ = fl.Unlock() }()
 
 	_, err = mgr.LoadAndLockWithRetry(ctx, 500*time.Millisecond)
 	require.Error(t, err)
