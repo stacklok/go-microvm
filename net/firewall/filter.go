@@ -16,10 +16,15 @@ const (
 // Filter evaluates packets against an ordered rule list with stateful
 // connection tracking. Rules are evaluated in order and the first match
 // wins. If no rule matches, the default action is applied.
+//
+// When dynamic rules are configured, they are checked after static rules
+// but before the default action. This allows DNS-snooped IPs to be
+// permitted without static rules for every possible IP.
 type Filter struct {
 	rules         []Rule
 	defaultAction Action
 	conntrack     *ConnTracker
+	dynamicRules  *DynamicRules
 }
 
 // NewFilter creates a filter with the given rules and default action.
@@ -29,6 +34,17 @@ func NewFilter(rules []Rule, defaultAction Action) *Filter {
 		rules:         rules,
 		defaultAction: defaultAction,
 		conntrack:     NewConnTracker(),
+	}
+}
+
+// NewFilterWithDynamic creates a filter with static rules, a default action,
+// and a dynamic rule set for time-limited rules (e.g. from DNS snooping).
+func NewFilterWithDynamic(rules []Rule, defaultAction Action, dr *DynamicRules) *Filter {
+	return &Filter{
+		rules:         rules,
+		defaultAction: defaultAction,
+		conntrack:     NewConnTracker(),
+		dynamicRules:  dr,
 	}
 }
 
@@ -48,7 +64,7 @@ func (f *Filter) Verdict(dir Direction, hdr *PacketHeader) Action {
 		return Allow
 	}
 
-	// Walk rules in order; first match wins.
+	// Walk static rules in order; first match wins.
 	for i := range f.rules {
 		if f.rules[i].Matches(dir, hdr) {
 			if f.rules[i].Action == Allow {
@@ -58,12 +74,37 @@ func (f *Filter) Verdict(dir Direction, hdr *PacketHeader) Action {
 		}
 	}
 
+	// Check dynamic rules (e.g. DNS-snooped IPs) before default action.
+	if f.dynamicRules != nil {
+		if action, ok := f.dynamicRules.Match(dir, hdr); ok {
+			if action == Allow {
+				f.conntrack.Track(dir, hdr)
+			}
+			return action
+		}
+	}
+
 	return f.defaultAction
 }
 
-// StartExpiry starts the background conntrack entry expiry goroutine.
-// It sweeps expired entries every 30 seconds and stops when ctx is
+// StartExpiry starts a background goroutine that periodically sweeps
+// expired conntrack entries and dynamic rules. It stops when ctx is
 // cancelled.
 func (f *Filter) StartExpiry(ctx context.Context) {
-	f.conntrack.StartExpiry(ctx, defaultExpiryInterval)
+	go func() {
+		ticker := time.NewTicker(defaultExpiryInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				f.conntrack.sweep()
+				if f.dynamicRules != nil {
+					f.dynamicRules.Sweep()
+				}
+			}
+		}
+	}()
 }

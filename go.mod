@@ -9,6 +9,7 @@ require (
 	github.com/containers/gvisor-tap-vsock v0.8.8
 	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.20.3
+	github.com/miekg/dns v1.1.72
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.47.0
 	golang.org/x/sync v0.19.0
@@ -38,7 +39,6 @@ require (
 	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect

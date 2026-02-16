@@ -21,8 +21,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/stacklok/propolis/image"
+	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/propolis/net/hosted"
 	"github.com/stacklok/propolis/runner"
 	"github.com/stacklok/propolis/state"
 )
@@ -38,6 +41,36 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 
 	if err := os.MkdirAll(cfg.dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+
+	// Egress policy validation.
+	if cfg.egressPolicy != nil {
+		if len(cfg.egressPolicy.AllowedHosts) == 0 {
+			return nil, fmt.Errorf("egress policy: AllowedHosts must not be empty")
+		}
+		for i, h := range cfg.egressPolicy.AllowedHosts {
+			if h.Name == "" {
+				return nil, fmt.Errorf("egress policy: AllowedHosts[%d].Name must not be empty", i)
+			}
+			// Reject wildcards without at least two domain labels after "*."
+			// to prevent overly broad patterns like "*." or "*.com".
+			if strings.HasPrefix(h.Name, "*.") {
+				domain := strings.TrimSuffix(h.Name[2:], ".")
+				if !strings.Contains(domain, ".") {
+					return nil, fmt.Errorf(
+						"egress policy: AllowedHosts[%d].Name %q wildcard must have at least two domain labels (e.g. *.example.com)",
+						i, h.Name,
+					)
+				}
+			}
+		}
+		if cfg.firewallDefaultAction == firewall.Allow {
+			slog.Warn("egress policy overrides firewall default action to Deny")
+		}
+		cfg.firewallDefaultAction = firewall.Deny
+		if cfg.netProvider == nil {
+			cfg.netProvider = hosted.NewProvider()
+		}
 	}
 
 	// 1. Preflight checks.

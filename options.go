@@ -43,6 +43,20 @@ type VirtioFSMount struct {
 	HostPath string
 }
 
+// EgressPolicy restricts outbound VM traffic to specific DNS hostnames.
+// When set, only connections to resolved IPs of allowed hosts are permitted.
+// DNS queries for non-allowed hosts receive NXDOMAIN responses.
+type EgressPolicy struct {
+	AllowedHosts []EgressHost
+}
+
+// EgressHost defines a single hostname allowed for egress traffic.
+type EgressHost struct {
+	Name     string   // "api.github.com" or "*.docker.io"
+	Ports    []uint16 // empty = all ports
+	Protocol uint8    // 0 = default (TCP), 6 = TCP, 17 = UDP
+}
+
 // config holds all resolved VM configuration.
 type config struct {
 	name                  string
@@ -60,6 +74,7 @@ type config struct {
 	libDir                string
 	dataDir               string
 	runnerPath            string
+	egressPolicy          *EgressPolicy
 	virtioFS              []VirtioFSMount
 	imageCache            *image.Cache
 	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
@@ -96,12 +111,24 @@ func (c *config) buildNetConfig() net.Config {
 	for i, p := range c.ports {
 		forwards[i] = net.PortForward{Host: p.Host, Guest: p.Guest}
 	}
-	return net.Config{
+	cfg := net.Config{
 		LogDir:                c.dataDir,
 		Forwards:              forwards,
 		FirewallRules:         c.firewallRules,
 		FirewallDefaultAction: c.firewallDefaultAction,
 	}
+	if c.egressPolicy != nil {
+		hosts := make([]net.EgressHost, len(c.egressPolicy.AllowedHosts))
+		for i, h := range c.egressPolicy.AllowedHosts {
+			hosts[i] = net.EgressHost{
+				Name:     h.Name,
+				Ports:    h.Ports,
+				Protocol: h.Protocol,
+			}
+		}
+		cfg.EgressPolicy = &net.EgressPolicy{AllowedHosts: hosts}
+	}
+	return cfg
 }
 
 // --- Option constructors ---
@@ -211,6 +238,18 @@ func WithDataDir(path string) Option {
 // When empty, the runner is found via $PATH or alongside the calling binary.
 func WithRunnerPath(path string) Option {
 	return optionFunc(func(c *config) { c.runnerPath = path })
+}
+
+// WithEgressPolicy restricts outbound VM traffic to the specified hostnames.
+// DNS queries for non-allowed hosts are answered with NXDOMAIN at the relay
+// level. DNS responses for allowed hosts are snooped to learn their IPs,
+// which become temporary firewall rules.
+//
+// When set, the firewall default action is forced to Deny (a warning is
+// logged if it was explicitly set to Allow), and a hosted network provider
+// is auto-created if none was configured.
+func WithEgressPolicy(p EgressPolicy) Option {
+	return optionFunc(func(c *config) { c.egressPolicy = &p })
 }
 
 // WithVirtioFS adds virtio-fs mounts that expose host directories to the guest.

@@ -11,10 +11,39 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 )
+
+// InterceptAction tells the relay what to do with a DNS frame.
+type InterceptAction uint8
+
+const (
+	// InterceptForward lets the frame continue through normal filtering.
+	InterceptForward InterceptAction = iota
+	// InterceptDrop silently drops the frame.
+	InterceptDrop
+	// InterceptRespond drops the original frame and sends a response back.
+	InterceptRespond
+)
+
+// InterceptResult is returned by DNSHook.HandleEgress to control frame handling.
+type InterceptResult struct {
+	Action        InterceptAction
+	ResponseFrame []byte // only set for InterceptRespond
+}
+
+// DNSHook is called by the relay for DNS frames before normal filtering.
+// Implementations intercept DNS queries (egress) and snoop DNS responses
+// (ingress) to implement policy-based egress restrictions.
+type DNSHook interface {
+	// HandleEgress is called for outbound UDP packets to port 53.
+	HandleEgress(frame []byte, hdr *PacketHeader) InterceptResult
+	// HandleIngress is called for inbound UDP packets from port 53.
+	HandleIngress(frame []byte, hdr *PacketHeader)
+}
 
 // Metrics holds atomic counters for relay traffic statistics.
 type Metrics struct {
@@ -24,16 +53,28 @@ type Metrics struct {
 }
 
 // Relay sits between the VM and the network provider, filtering frames
-// through a [Filter] and collecting traffic metrics.
+// through a [Filter] and collecting traffic metrics. An optional DNSHook
+// intercepts DNS traffic for egress policy enforcement.
 type Relay struct {
-	filter  *Filter
-	metrics *Metrics
+	filter    *Filter
+	dnsHook   DNSHook
+	metrics   *Metrics
+	vmWriteMu sync.Mutex // serializes writes to vmConn when dnsHook is set
 }
 
 // NewRelay creates a relay that applies the given filter to all traffic.
 func NewRelay(filter *Filter) *Relay {
 	return &Relay{
 		filter:  filter,
+		metrics: &Metrics{},
+	}
+}
+
+// NewRelayWithDNSHook creates a relay with a DNS interceptor hook.
+func NewRelayWithDNSHook(filter *Filter, hook DNSHook) *Relay {
+	return &Relay{
+		filter:  filter,
+		dnsHook: hook,
 		metrics: &Metrics{},
 	}
 }
@@ -104,6 +145,48 @@ func (r *Relay) forward(ctx context.Context, src, dst net.Conn, dir Direction) e
 
 		// Parse and filter.
 		hdr := ParseHeaders(frameBuf)
+
+		// DNS interception: egress queries and ingress responses.
+		if r.dnsHook != nil && hdr != nil && hdr.Protocol == 17 {
+			if dir == Egress && hdr.DstPort == 53 {
+				result := r.dnsHook.HandleEgress(frameBuf, hdr)
+				switch result.Action {
+				case InterceptDrop:
+					r.metrics.FramesDropped.Add(1)
+					continue
+				case InterceptRespond:
+					// Write NXDOMAIN response back to VM under
+					// the vmWriteMu to avoid interleaving with
+					// ingress writes to the same connection.
+					r.metrics.FramesDropped.Add(1)
+					if err := r.writeVM(src, result.ResponseFrame); err != nil {
+						return r.wrapError(ctx, fmt.Errorf("write NXDOMAIN response: %w", err))
+					}
+					continue
+				}
+				// InterceptForward: fall through to normal filtering.
+			}
+			if dir == Ingress && hdr.SrcPort == 53 {
+				// Snoop response to learn IP mappings — fire-and-forget.
+				r.dnsHook.HandleIngress(frameBuf, hdr)
+				// Always fall through to normal filtering.
+			}
+		}
+
+		// When a DNS hook is active, drop non-IPv4 frames that are not
+		// ARP (EtherType 0x0806). This prevents IPv6 from bypassing the
+		// egress policy. Without a DNS hook, non-IPv4 frames pass through
+		// as before (needed for basic network bootstrapping).
+		if hdr == nil && r.dnsHook != nil {
+			if len(frameBuf) >= 14 {
+				etherType := binary.BigEndian.Uint16(frameBuf[12:14])
+				if etherType != 0x0806 { // not ARP
+					r.metrics.FramesDropped.Add(1)
+					continue
+				}
+			}
+		}
+
 		if hdr != nil {
 			verdict := r.filter.Verdict(dir, hdr)
 			if verdict == Deny {
@@ -123,15 +206,38 @@ func (r *Relay) forward(ctx context.Context, src, dst net.Conn, dir Direction) e
 		r.metrics.FramesForwarded.Add(1)
 		r.metrics.BytesForwarded.Add(uint64(frameLen))
 
-		// Write length prefix + frame.
-		binary.BigEndian.PutUint32(lenBuf[:], frameLen)
-		if _, err := dst.Write(lenBuf[:]); err != nil {
-			return r.wrapError(ctx, fmt.Errorf("write length prefix: %w", err))
-		}
-		if _, err := dst.Write(frameBuf); err != nil {
-			return r.wrapError(ctx, fmt.Errorf("write frame payload: %w", err))
+		// Write length prefix + frame. For ingress (writing to vmConn),
+		// use the vmWriteMu to serialize with NXDOMAIN response writes.
+		if dir == Ingress && r.dnsHook != nil {
+			if err := r.writeVM(dst, frameBuf); err != nil {
+				return r.wrapError(ctx, fmt.Errorf("write frame: %w", err))
+			}
+		} else {
+			binary.BigEndian.PutUint32(lenBuf[:], frameLen)
+			if _, err := dst.Write(lenBuf[:]); err != nil {
+				return r.wrapError(ctx, fmt.Errorf("write length prefix: %w", err))
+			}
+			if _, err := dst.Write(frameBuf); err != nil {
+				return r.wrapError(ctx, fmt.Errorf("write frame payload: %w", err))
+			}
 		}
 	}
+}
+
+// writeVM writes a length-prefixed frame to the VM connection under the
+// vmWriteMu to prevent interleaving between the egress goroutine
+// (NXDOMAIN responses) and the ingress goroutine (forwarded frames).
+func (r *Relay) writeVM(conn net.Conn, frame []byte) error {
+	r.vmWriteMu.Lock()
+	defer r.vmWriteMu.Unlock()
+
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(frame)))
+	if _, err := conn.Write(lenBuf[:]); err != nil {
+		return err
+	}
+	_, err := conn.Write(frame)
+	return err
 }
 
 // wrapError returns ctx.Err() if the context is done, otherwise returns

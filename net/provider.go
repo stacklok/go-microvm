@@ -15,6 +15,18 @@ type PortForward struct {
 	Guest uint16
 }
 
+// EgressPolicy restricts outbound VM traffic to specific DNS hostnames.
+type EgressPolicy struct {
+	AllowedHosts []EgressHost
+}
+
+// EgressHost defines a single hostname allowed for egress traffic.
+type EgressHost struct {
+	Name     string   // "api.github.com" or "*.docker.io"
+	Ports    []uint16 // empty = all ports
+	Protocol uint8    // 0 = default (TCP), 6 = TCP, 17 = UDP
+}
+
 // Config holds networking configuration for a VM.
 type Config struct {
 	// LogDir is the directory where the network provider should write logs.
@@ -32,6 +44,12 @@ type Config struct {
 	// matches a packet. Only used when FirewallRules is non-empty.
 	// Defaults to Allow (zero value).
 	FirewallDefaultAction firewall.Action
+
+	// EgressPolicy restricts outbound VM traffic to the specified
+	// hostnames via DNS-level interception. When non-nil, DNS queries
+	// for non-allowed hosts receive NXDOMAIN responses and dynamic
+	// firewall rules are created from allowed DNS responses.
+	EgressPolicy *EgressPolicy
 }
 
 // Provider abstracts the networking backend for a libkrun VM.

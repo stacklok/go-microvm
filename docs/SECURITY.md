@@ -10,6 +10,7 @@ hardening recommendations for propolis.
 - [Networking Trust Boundary](#networking-trust-boundary)
 - [Guest Escape Blast Radius](#guest-escape-blast-radius)
 - [Hardening Recommendations](#hardening-recommendations)
+- [Egress Policy Security Model](#egress-policy-security-model)
 - [Tar Extraction Defenses](#tar-extraction-defenses)
 - [Process Identity Verification](#process-identity-verification)
 - [File Permissions](#file-permissions)
@@ -200,6 +201,53 @@ This is not the default because it requires the caller's process to
 remain alive for networking to function. For the simplest deployments,
 the default runner-side networking ties the network stack to the VM's
 lifetime with no extra coordination.
+
+## Egress Policy Security Model
+
+The DNS-based egress policy (`WithEgressPolicy()`) restricts VM outbound
+connections to a set of allowed hostnames. It operates at the relay level,
+intercepting DNS traffic between the VM and the VirtualNetwork.
+
+### Threat Model
+
+The egress policy prevents a compromised or untrusted VM from:
+
+- Exfiltrating data to arbitrary external hosts
+- Communicating with command-and-control servers
+- Scanning or connecting to internal network resources
+
+### How It Works
+
+1. DNS queries for non-allowed hostnames receive NXDOMAIN responses
+   directly from the relay — the query never reaches the DNS server.
+2. DNS responses for allowed hostnames are snooped to extract A-record IPs.
+   These IPs become temporary firewall rules with TTLs matching the DNS
+   record TTLs (minimum 60 seconds).
+3. All other egress traffic is denied by the default-deny firewall policy.
+4. Implicit rules allow DNS to the gateway, DHCP, and ingress on
+   port-forwarded ports.
+
+### Bypass Vectors and Mitigations
+
+| Vector | Mitigation |
+|--------|------------|
+| **Hardcoded IPs** | Default-deny blocks connections to IPs not learned from DNS. The VM cannot reach arbitrary IPs without first resolving them through the interceptor. |
+| **DNS-over-HTTPS (DoH)** | HTTPS to DoH providers (e.g., 1.1.1.1, 8.8.8.8) is blocked by default-deny unless the DoH server hostname is in the allowlist. |
+| **DNS-over-TLS (DoT)** | TCP port 853 is blocked by default-deny. |
+| **IP-in-hostname** | The policy matches hostname strings, not resolved IPs. An attacker-controlled DNS server could return arbitrary IPs for an allowed hostname, but the attacker would need to control the DNS server the gateway uses. |
+| **Tunneling over DNS** | DNS queries to allowed domains pass through, so DNS tunneling to an allowed domain is theoretically possible. This is a limitation of DNS-level filtering. |
+| **TTL racing** | After a dynamic rule expires, the connection may survive via conntrack (if already established). This is by design — conntrack ensures established connections are not disrupted by TTL expiry. |
+
+### What It Does NOT Protect Against
+
+- **Established connection survival**: Once a connection is tracked by
+  conntrack, it persists until the conntrack entry expires (5 minutes for
+  TCP, 30 seconds for UDP), even if the dynamic rule has expired.
+- **Same-subnet traffic**: Traffic within the virtual network subnet
+  (192.168.127.0/24) is subject to the same firewall rules but does not
+  typically involve DNS resolution.
+- **IPv6**: AAAA records are not processed. IPv6 traffic is non-IPv4 and
+  passes through the firewall unfiltered (same as ARP).
 
 ## Tar Extraction Defenses
 

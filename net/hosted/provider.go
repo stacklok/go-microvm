@@ -16,6 +16,7 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
 	propnet "github.com/stacklok/propolis/net"
+	"github.com/stacklok/propolis/net/egress"
 	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/net/topology"
 )
@@ -30,6 +31,7 @@ type Provider struct {
 	listener        net.Listener
 	sockPath        string
 	relay           *firewall.Relay
+	bgCtx           context.Context
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
 	pendingServices []Service
@@ -91,17 +93,17 @@ func (p *Provider) Start(ctx context.Context, cfg propnet.Config) error {
 	}
 	p.listener = listener
 
-	// Set up optional firewall relay.
-	if len(cfg.FirewallRules) > 0 {
+	// Set up firewall relay (with optional egress policy).
+	bgCtx, cancel := context.WithCancel(ctx)
+	p.bgCtx = bgCtx
+	p.cancel = cancel
+
+	if cfg.EgressPolicy != nil {
+		p.relay = p.buildEgressRelay(bgCtx, cfg)
+	} else if len(cfg.FirewallRules) > 0 {
 		filter := firewall.NewFilter(cfg.FirewallRules, cfg.FirewallDefaultAction)
 		p.relay = firewall.NewRelay(filter)
-
-		bgCtx, cancel := context.WithCancel(ctx)
-		p.cancel = cancel
 		filter.StartExpiry(bgCtx)
-	} else {
-		_, cancel := context.WithCancel(ctx)
-		p.cancel = cancel
 	}
 
 	// Accept connections in the background.
@@ -163,6 +165,68 @@ func (p *Provider) Relay() *firewall.Relay {
 	return p.relay
 }
 
+// buildEgressRelay constructs a relay with DNS-based egress filtering.
+// It creates implicit rules for DNS, DHCP, and port forwards, then
+// wires up a DynamicRules set, Policy, and DNSInterceptor.
+func (p *Provider) buildEgressRelay(ctx context.Context, cfg propnet.Config) *firewall.Relay {
+	_, gatewayNet, _ := net.ParseCIDR(topology.GatewayIP + "/32")
+	_, broadcastNet, _ := net.ParseCIDR("255.255.255.255/32")
+
+	// Build implicit rules that are always needed.
+	implicitRules := []firewall.Rule{
+		// Allow DNS to gateway.
+		{Direction: firewall.Egress, Action: firewall.Allow, Protocol: 17,
+			DstCIDR: *gatewayNet, DstPort: 53},
+		// Allow DHCP (client -> server): to gateway and broadcast.
+		{Direction: firewall.Egress, Action: firewall.Allow, Protocol: 17,
+			DstCIDR: *gatewayNet, DstPort: 67},
+		{Direction: firewall.Egress, Action: firewall.Allow, Protocol: 17,
+			DstCIDR: *broadcastNet, DstPort: 67},
+		// Allow DHCP (server -> client): from gateway only.
+		{Direction: firewall.Ingress, Action: firewall.Allow, Protocol: 17,
+			SrcCIDR: *gatewayNet, SrcPort: 67},
+	}
+
+	// Allow ingress on port-forwarded ports.
+	for _, pf := range cfg.Forwards {
+		implicitRules = append(implicitRules, firewall.Rule{
+			Direction: firewall.Ingress,
+			Action:    firewall.Allow,
+			Protocol:  6,
+			DstPort:   pf.Guest,
+		})
+	}
+
+	// Prepend implicit rules before user-provided rules.
+	allRules := make([]firewall.Rule, 0, len(implicitRules)+len(cfg.FirewallRules))
+	allRules = append(allRules, implicitRules...)
+	allRules = append(allRules, cfg.FirewallRules...)
+
+	// Build egress policy components.
+	hosts := make([]egress.HostSpec, len(cfg.EgressPolicy.AllowedHosts))
+	for i, h := range cfg.EgressPolicy.AllowedHosts {
+		hosts[i] = egress.HostSpec{
+			Name:     h.Name,
+			Ports:    h.Ports,
+			Protocol: h.Protocol,
+		}
+	}
+
+	dynamicRules := firewall.NewDynamicRules()
+	policy := egress.NewPolicy(hosts)
+	interceptor := egress.NewDNSInterceptor(policy, dynamicRules)
+
+	filter := firewall.NewFilterWithDynamic(allRules, firewall.Deny, dynamicRules)
+	filter.StartExpiry(ctx)
+
+	slog.Info("egress policy active",
+		"allowed_hosts", len(cfg.EgressPolicy.AllowedHosts),
+		"implicit_rules", len(implicitRules),
+	)
+
+	return firewall.NewRelayWithDNSHook(filter, interceptor)
+}
+
 // acceptLoop accepts connections from propolis-runner and bridges them
 // to the VirtualNetwork.
 func (p *Provider) acceptLoop() {
@@ -187,6 +251,7 @@ func (p *Provider) handleConn(runnerConn net.Conn) {
 	p.mu.Lock()
 	vn := p.vn
 	relay := p.relay
+	bgCtx := p.bgCtx
 	p.mu.Unlock()
 
 	if relay != nil {
@@ -197,18 +262,18 @@ func (p *Provider) handleConn(runnerConn net.Conn) {
 
 		// Start the relay between runner and the pipe end.
 		go func() {
-			if err := relay.Run(context.Background(), runnerConn, relayConn); err != nil {
+			if err := relay.Run(bgCtx, runnerConn, relayConn); err != nil {
 				slog.Debug("relay ended", "error", err)
 			}
 		}()
 
 		// Bridge pipe's other end to the VirtualNetwork.
-		if err := vn.AcceptQemu(context.Background(), vnConn); err != nil {
+		if err := vn.AcceptQemu(bgCtx, vnConn); err != nil {
 			slog.Debug("AcceptQemu ended", "error", err)
 		}
 	} else {
 		// Without firewall: direct bridge.
-		if err := vn.AcceptQemu(context.Background(), runnerConn); err != nil {
+		if err := vn.AcceptQemu(bgCtx, runnerConn); err != nil {
 			slog.Debug("AcceptQemu ended", "error", err)
 		}
 	}

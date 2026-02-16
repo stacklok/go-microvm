@@ -463,6 +463,61 @@ vm, err := propolis.Run(ctx, "alpine:latest",
 )
 ```
 
+### DNS-Based Egress Policy
+
+`WithEgressPolicy()` restricts VM outbound traffic to a set of allowed DNS
+hostnames. Instead of writing firewall rules for specific IPs (which change
+often), you specify hostnames and let propolis handle the rest.
+
+```go
+vm, err := propolis.Run(ctx, "my-app:latest",
+    propolis.WithPorts(propolis.PortForward{Host: 8080, Guest: 80}),
+    propolis.WithEgressPolicy(propolis.EgressPolicy{
+        AllowedHosts: []propolis.EgressHost{
+            {Name: "api.github.com", Ports: []uint16{443}},
+            {Name: "*.docker.io"},
+            {Name: "ntp.ubuntu.com", Ports: []uint16{123}, Protocol: 17},
+        },
+    }),
+)
+```
+
+**How it works:**
+
+1. The firewall default action is forced to Deny. A hosted network provider
+   is auto-created if none was configured.
+2. Implicit firewall rules are added for DNS (to gateway), DHCP, and
+   port-forwarded ingress ports.
+3. A `DNSInterceptor` is wired into the relay between the VM and the
+   VirtualNetwork.
+4. **Egress DNS queries**: The interceptor parses each outbound DNS query.
+   If the queried hostname is not in the allowlist, it returns an NXDOMAIN
+   response directly to the VM. Allowed queries pass through normally.
+5. **Ingress DNS responses**: For allowed hostnames, the interceptor parses
+   A records from responses and creates temporary firewall rules for those
+   IPs. The rule TTL matches the DNS record TTL (minimum 60 seconds).
+6. The VM can only connect to IPs that were resolved from allowed hostnames.
+   All other egress traffic is denied by the default-deny policy.
+
+**Interaction with static firewall rules:**
+
+Static rules added via `WithFirewallRules()` are evaluated before dynamic
+rules. You can use static rules alongside an egress policy to allow
+additional traffic (e.g., specific IP ranges) that doesn't go through DNS.
+Implicit rules (DNS, DHCP, port forwards) are prepended before user rules.
+
+**Limitations:**
+
+- **Hardcoded IPs bypass DNS**: If the VM connects to an IP directly
+  (without DNS resolution), the egress policy cannot block it unless the
+  default-deny catches it. This is mitigated by the default-deny policy —
+  only IPs learned from allowed DNS responses get dynamic allow rules.
+- **DNS-over-HTTPS (DoH)**: Blocked by the default-deny policy since HTTPS
+  to DoH servers would need to be in the allowlist. Standard DNS over
+  UDP port 53 is the only supported resolution path.
+- **IPv6**: Only IPv4 A records create dynamic rules. AAAA records are
+  ignored.
+
 ## Provider Interface
 
 The networking layer is abstracted behind the `net.Provider` interface:
