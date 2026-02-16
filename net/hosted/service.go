@@ -15,10 +15,14 @@ import (
 )
 
 // Service describes an HTTP service to expose inside the virtual network.
-// The service listens on the gateway IP (192.168.127.1) at the given port,
-// making it reachable from the guest VM without opening a real host socket.
+//
+// Services always bind to the gateway IP ([topology.GatewayIP], 192.168.127.1)
+// because that is the only host-side address reachable from the guest. Callers
+// that need to listen on a different address can use
+// [Provider.VirtualNetwork].Listen directly.
 type Service struct {
-	// Port is the TCP port to listen on inside the virtual network.
+	// Port is the TCP port to listen on at the gateway IP inside the
+	// virtual network.
 	Port uint16
 
 	// Handler is the HTTP handler that serves requests.
