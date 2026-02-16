@@ -20,6 +20,9 @@ func ParseDNSQuery(payload []byte) (txnID uint16, qname string, qtype uint16, er
 	if len(msg.Question) == 0 {
 		return 0, "", 0, fmt.Errorf("DNS query has no question section")
 	}
+	if len(msg.Question) > 1 {
+		return 0, "", 0, fmt.Errorf("DNS query has %d questions, expected 1", len(msg.Question))
+	}
 	return msg.Id, msg.Question[0].Name, msg.Question[0].Qtype, nil
 }
 

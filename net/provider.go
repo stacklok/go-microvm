@@ -24,7 +24,7 @@ type EgressPolicy struct {
 type EgressHost struct {
 	Name     string   // "api.github.com" or "*.docker.io"
 	Ports    []uint16 // empty = all ports
-	Protocol uint8    // 0 = default (TCP), 6 = TCP, 17 = UDP
+	Protocol uint8    // 0 = both TCP+UDP, 6 = TCP only, 17 = UDP only
 }
 
 // Config holds networking configuration for a VM.

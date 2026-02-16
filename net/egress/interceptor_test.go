@@ -57,7 +57,7 @@ func TestDNSInterceptor_AllowedQuery(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "api.github.com"}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	frame := buildDNSQueryFrame(testSrcMAC, testDstMAC, testSrcIP, testDstIP, 12345, "api.github.com")
 	hdr := firewall.ParseHeaders(frame)
@@ -71,7 +71,7 @@ func TestDNSInterceptor_BlockedQuery(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "api.github.com"}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	frame := buildDNSQueryFrame(testSrcMAC, testDstMAC, testSrcIP, testDstIP, 12345, "evil.com")
 	hdr := firewall.ParseHeaders(frame)
@@ -95,7 +95,7 @@ func TestDNSInterceptor_WildcardAllowed(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "*.docker.io"}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	frame := buildDNSQueryFrame(testSrcMAC, testDstMAC, testSrcIP, testDstIP, 12345, "registry-1.docker.io")
 	hdr := firewall.ParseHeaders(frame)
@@ -109,7 +109,7 @@ func TestDNSInterceptor_ResponseSnooping(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "api.github.com", Ports: []uint16{443}}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	ips := []net.IP{net.ParseIP("140.82.121.5"), net.ParseIP("140.82.121.6")}
 	frame := buildDNSResponseFrame(testDstMAC, testSrcMAC, testDstIP, testSrcIP, 12345, "api.github.com", ips, 300)
@@ -117,16 +117,26 @@ func TestDNSInterceptor_ResponseSnooping(t *testing.T) {
 
 	interceptor.HandleIngress(frame, hdr)
 
-	// Should have created dynamic rules for both IPs.
-	assert.Equal(t, 2, dr.Len())
+	// Protocol unset → TCP+UDP per IP. 2 IPs × 2 protocols = 4 rules.
+	assert.Equal(t, 4, dr.Len())
 
-	// Verify that the rules match egress traffic to the IPs.
+	// Verify that the rules match TCP egress traffic to the IPs.
 	hdr1 := &firewall.PacketHeader{
 		DstIP:    [4]byte{140, 82, 121, 5},
 		Protocol: 6,
 		DstPort:  443,
 	}
 	action, ok := dr.Match(firewall.Egress, hdr1)
+	require.True(t, ok)
+	assert.Equal(t, firewall.Allow, action)
+
+	// UDP to the same port should also match.
+	hdr1udp := &firewall.PacketHeader{
+		DstIP:    [4]byte{140, 82, 121, 5},
+		Protocol: 17,
+		DstPort:  443,
+	}
+	action, ok = dr.Match(firewall.Egress, hdr1udp)
 	require.True(t, ok)
 	assert.Equal(t, firewall.Allow, action)
 
@@ -145,13 +155,16 @@ func TestDNSInterceptor_ResponseSnooping_AllPorts(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "example.com"}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	ips := []net.IP{net.ParseIP("93.184.216.34")}
 	frame := buildDNSResponseFrame(testDstMAC, testSrcMAC, testDstIP, testSrcIP, 12345, "example.com", ips, 60)
 	hdr := firewall.ParseHeaders(frame)
 
 	interceptor.HandleIngress(frame, hdr)
+
+	// Protocol unset → TCP+UDP. 1 IP × 2 protocols = 2 rules.
+	assert.Equal(t, 2, dr.Len())
 
 	// Rule should match any port for TCP.
 	hdr1 := &firewall.PacketHeader{
@@ -162,6 +175,16 @@ func TestDNSInterceptor_ResponseSnooping_AllPorts(t *testing.T) {
 	action, ok := dr.Match(firewall.Egress, hdr1)
 	require.True(t, ok)
 	assert.Equal(t, firewall.Allow, action)
+
+	// Rule should also match UDP.
+	hdr1udp := &firewall.PacketHeader{
+		DstIP:    [4]byte{93, 184, 216, 34},
+		Protocol: 17,
+		DstPort:  443,
+	}
+	action, ok = dr.Match(firewall.Egress, hdr1udp)
+	require.True(t, ok)
+	assert.Equal(t, firewall.Allow, action)
 }
 
 func TestDNSInterceptor_ResponseSnooping_NotAllowed(t *testing.T) {
@@ -169,7 +192,7 @@ func TestDNSInterceptor_ResponseSnooping_NotAllowed(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "allowed.com"}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	// Response for a host not in the policy — should be ignored.
 	ips := []net.IP{net.ParseIP("1.2.3.4")}
@@ -186,7 +209,7 @@ func TestDNSInterceptor_ResponseNXDOMAINFrameFormat(t *testing.T) {
 
 	policy := NewPolicy([]HostSpec{{Name: "allowed.com"}})
 	dr := firewall.NewDynamicRules()
-	interceptor := NewDNSInterceptor(policy, dr)
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
 
 	frame := buildDNSQueryFrame(testSrcMAC, testDstMAC, testSrcIP, testDstIP, 54321, "blocked.com")
 	hdr := firewall.ParseHeaders(frame)
@@ -219,4 +242,95 @@ func TestDNSInterceptor_ResponseNXDOMAINFrameFormat(t *testing.T) {
 	ipTotalLen := binary.BigEndian.Uint16(result.ResponseFrame[ipStart+2 : ipStart+4])
 	expectedIPLen := uint16(ihl + 8 + len(result.ResponseFrame) - (ipStart + ihl + 8))
 	assert.Equal(t, expectedIPLen, ipTotalLen)
+}
+
+func TestDNSInterceptor_UnparseableQuery_Dropped(t *testing.T) {
+	t.Parallel()
+
+	policy := NewPolicy([]HostSpec{{Name: "allowed.com"}})
+	dr := firewall.NewDynamicRules()
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
+
+	// Build a frame with valid Ethernet+IP+UDP headers but garbage DNS payload.
+	frame := buildTestUDPFrame(testSrcMAC, testDstMAC, testSrcIP, testDstIP, 12345, 53, []byte{0xDE, 0xAD})
+	hdr := firewall.ParseHeaders(frame)
+
+	result := interceptor.HandleEgress(frame, hdr)
+	assert.Equal(t, firewall.InterceptDrop, result.Action,
+		"unparseable DNS queries must be dropped, not forwarded")
+}
+
+func TestDNSInterceptor_MultipleQuestions_Dropped(t *testing.T) {
+	t.Parallel()
+
+	policy := NewPolicy([]HostSpec{{Name: "allowed.com"}})
+	dr := firewall.NewDynamicRules()
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
+
+	// Build a DNS query with two questions.
+	msg := &mdns.Msg{
+		MsgHdr: mdns.MsgHdr{Id: 0x5678, RecursionDesired: true},
+		Question: []mdns.Question{
+			{Name: mdns.Fqdn("allowed.com"), Qtype: mdns.TypeA, Qclass: mdns.ClassINET},
+			{Name: mdns.Fqdn("evil.com"), Qtype: mdns.TypeA, Qclass: mdns.ClassINET},
+		},
+	}
+	payload, _ := msg.Pack()
+	frame := buildTestUDPFrame(testSrcMAC, testDstMAC, testSrcIP, testDstIP, 12345, 53, payload)
+	hdr := firewall.ParseHeaders(frame)
+
+	result := interceptor.HandleEgress(frame, hdr)
+	assert.Equal(t, firewall.InterceptDrop, result.Action,
+		"queries with multiple questions must be dropped")
+}
+
+func TestDNSInterceptor_ResponseFromNonGateway_Ignored(t *testing.T) {
+	t.Parallel()
+
+	policy := NewPolicy([]HostSpec{{Name: "allowed.com"}})
+	dr := firewall.NewDynamicRules()
+	gatewayIP := [4]byte{192, 168, 127, 1}
+	interceptor := NewDNSInterceptor(policy, dr, gatewayIP)
+
+	// Build a response that looks like it comes from a non-gateway source.
+	nonGatewayIP := [4]byte{10, 0, 0, 99}
+	ips := []net.IP{net.ParseIP("1.2.3.4")}
+	frame := buildDNSResponseFrame(testDstMAC, testSrcMAC, nonGatewayIP, testSrcIP, 12345, "allowed.com", ips, 300)
+	hdr := firewall.ParseHeaders(frame)
+
+	interceptor.HandleIngress(frame, hdr)
+
+	assert.Equal(t, 0, dr.Len(),
+		"DNS responses from non-gateway sources must not create dynamic rules")
+}
+
+func TestDNSInterceptor_ExplicitProtocol_SingleRule(t *testing.T) {
+	t.Parallel()
+
+	// When Protocol is explicitly TCP, only TCP rules should be created.
+	policy := NewPolicy([]HostSpec{{Name: "example.com", Ports: []uint16{443}, Protocol: 6}})
+	dr := firewall.NewDynamicRules()
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP)
+
+	ips := []net.IP{net.ParseIP("93.184.216.34")}
+	frame := buildDNSResponseFrame(testDstMAC, testSrcMAC, testDstIP, testSrcIP, 12345, "example.com", ips, 60)
+	hdr := firewall.ParseHeaders(frame)
+
+	interceptor.HandleIngress(frame, hdr)
+
+	// Explicit TCP → 1 rule per IP.
+	assert.Equal(t, 1, dr.Len())
+
+	// TCP should match.
+	action, ok := dr.Match(firewall.Egress, &firewall.PacketHeader{
+		DstIP: [4]byte{93, 184, 216, 34}, Protocol: 6, DstPort: 443,
+	})
+	require.True(t, ok)
+	assert.Equal(t, firewall.Allow, action)
+
+	// UDP should not match.
+	_, ok = dr.Match(firewall.Egress, &firewall.PacketHeader{
+		DstIP: [4]byte{93, 184, 216, 34}, Protocol: 17, DstPort: 443,
+	})
+	assert.False(t, ok)
 }

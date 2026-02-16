@@ -49,6 +49,24 @@ func TestParseDNSQuery_NoQuestion(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParseDNSQuery_MultipleQuestions(t *testing.T) {
+	t.Parallel()
+
+	msg := &dns.Msg{
+		MsgHdr: dns.MsgHdr{Id: 1},
+		Question: []dns.Question{
+			{Name: "a.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			{Name: "b.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+		},
+	}
+	payload, err := msg.Pack()
+	require.NoError(t, err)
+
+	_, _, _, err = ParseDNSQuery(payload)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "2 questions")
+}
+
 func TestBuildNXDOMAIN(t *testing.T) {
 	t.Parallel()
 

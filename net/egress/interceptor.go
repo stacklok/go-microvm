@@ -25,16 +25,20 @@ type DNSInterceptor struct {
 	policy       *Policy
 	dynamicRules *firewall.DynamicRules
 	minTTL       time.Duration
+	gatewayIP    [4]byte
 }
 
-// NewDNSInterceptor creates an interceptor with the given policy and dynamic
-// rule set. Dynamic rules created from DNS responses will have at least
-// minTTL duration (use 0 for the default of 60 seconds).
-func NewDNSInterceptor(policy *Policy, dr *firewall.DynamicRules) *DNSInterceptor {
+// NewDNSInterceptor creates an interceptor with the given policy, dynamic
+// rule set, and gateway IP. Only DNS responses from the gateway are
+// snooped to prevent spoofed responses from creating dynamic rules.
+// Dynamic rules created from DNS responses will have at least minTTL
+// duration (use 0 for the default of 60 seconds).
+func NewDNSInterceptor(policy *Policy, dr *firewall.DynamicRules, gatewayIP [4]byte) *DNSInterceptor {
 	return &DNSInterceptor{
 		policy:       policy,
 		dynamicRules: dr,
 		minTTL:       defaultMinTTL,
+		gatewayIP:    gatewayIP,
 	}
 }
 
@@ -44,14 +48,14 @@ func NewDNSInterceptor(policy *Policy, dr *firewall.DynamicRules) *DNSIntercepto
 func (d *DNSInterceptor) HandleEgress(frame []byte, hdr *firewall.PacketHeader) firewall.InterceptResult {
 	payload, err := ExtractUDPPayload(frame)
 	if err != nil {
-		slog.Debug("egress: failed to extract UDP payload", "error", err)
-		return firewall.InterceptResult{Action: firewall.InterceptForward}
+		slog.Debug("egress: dropping unparseable UDP frame", "error", err)
+		return firewall.InterceptResult{Action: firewall.InterceptDrop}
 	}
 
 	txnID, qname, qtype, err := ParseDNSQuery(payload)
 	if err != nil {
-		slog.Debug("egress: failed to parse DNS query", "error", err)
-		return firewall.InterceptResult{Action: firewall.InterceptForward}
+		slog.Debug("egress: dropping unparseable DNS query", "error", err)
+		return firewall.InterceptResult{Action: firewall.InterceptDrop}
 	}
 
 	if d.policy.IsAllowed(qname) {
@@ -81,8 +85,16 @@ func (d *DNSInterceptor) HandleEgress(frame []byte, hdr *firewall.PacketHeader) 
 
 // HandleIngress snoops an inbound DNS response to learn IP mappings for
 // allowed hostnames. For each A record in the response, a dynamic
-// firewall rule is created with the TTL from the DNS record.
-func (d *DNSInterceptor) HandleIngress(frame []byte, _ *firewall.PacketHeader) {
+// firewall rule is created with the TTL from the DNS record. Only
+// responses from the gateway IP are processed to prevent spoofed
+// responses from injecting dynamic rules.
+func (d *DNSInterceptor) HandleIngress(frame []byte, hdr *firewall.PacketHeader) {
+	if hdr == nil || hdr.SrcIP != d.gatewayIP {
+		slog.Debug("ingress: ignoring DNS response from non-gateway source",
+			"src_ip", hdr.SrcIP)
+		return
+	}
+
 	payload, err := ExtractUDPPayload(frame)
 	if err != nil {
 		slog.Debug("ingress: failed to extract UDP payload", "error", err)
@@ -109,10 +121,14 @@ func (d *DNSInterceptor) HandleIngress(frame []byte, _ *firewall.PacketHeader) {
 
 	ports, proto := d.policy.HostPorts(qname)
 
-	// Default to TCP when protocol is unspecified.
-	ruleProto := proto
-	if ruleProto == 0 {
-		ruleProto = 6
+	// When protocol is unspecified, create rules for both TCP and UDP
+	// so that callers who omit the protocol field get full connectivity
+	// to the resolved IPs rather than TCP-only.
+	var ruleProtos []uint8
+	if proto == 0 {
+		ruleProtos = []uint8{6, 17} // TCP + UDP
+	} else {
+		ruleProtos = []uint8{proto}
 	}
 
 	for _, ip := range ips {
@@ -126,33 +142,35 @@ func (d *DNSInterceptor) HandleIngress(frame []byte, _ *firewall.PacketHeader) {
 			Mask: net.CIDRMask(32, 32),
 		}
 
-		if len(ports) == 0 {
-			d.dynamicRules.Add(firewall.Rule{
-				Direction: firewall.Egress,
-				Action:    firewall.Allow,
-				Protocol:  ruleProto,
-				DstCIDR:   cidr,
-			}, ttl)
-			slog.Debug("egress: dynamic rule added",
-				"ip", ip4.String(),
-				"proto", ruleProto,
-				"ttl", ttl,
-			)
-		} else {
-			for _, port := range ports {
+		for _, ruleProto := range ruleProtos {
+			if len(ports) == 0 {
 				d.dynamicRules.Add(firewall.Rule{
 					Direction: firewall.Egress,
 					Action:    firewall.Allow,
 					Protocol:  ruleProto,
 					DstCIDR:   cidr,
-					DstPort:   port,
 				}, ttl)
 				slog.Debug("egress: dynamic rule added",
 					"ip", ip4.String(),
-					"port", port,
 					"proto", ruleProto,
 					"ttl", ttl,
 				)
+			} else {
+				for _, port := range ports {
+					d.dynamicRules.Add(firewall.Rule{
+						Direction: firewall.Egress,
+						Action:    firewall.Allow,
+						Protocol:  ruleProto,
+						DstCIDR:   cidr,
+						DstPort:   port,
+					}, ttl)
+					slog.Debug("egress: dynamic rule added",
+						"ip", ip4.String(),
+						"port", port,
+						"proto", ruleProto,
+						"ttl", ttl,
+					)
+				}
 			}
 		}
 	}

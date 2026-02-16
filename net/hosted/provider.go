@@ -212,9 +212,13 @@ func (p *Provider) buildEgressRelay(ctx context.Context, cfg propnet.Config) *fi
 		}
 	}
 
+	gwIP := net.ParseIP(topology.GatewayIP).To4()
+	var gatewayIPAddr [4]byte
+	copy(gatewayIPAddr[:], gwIP)
+
 	dynamicRules := firewall.NewDynamicRules()
 	policy := egress.NewPolicy(hosts)
-	interceptor := egress.NewDNSInterceptor(policy, dynamicRules)
+	interceptor := egress.NewDNSInterceptor(policy, dynamicRules, gatewayIPAddr)
 
 	filter := firewall.NewFilterWithDynamic(allRules, firewall.Deny, dynamicRules)
 	filter.StartExpiry(ctx)
