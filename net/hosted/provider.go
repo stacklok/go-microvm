@@ -197,6 +197,19 @@ func (p *Provider) buildEgressRelay(ctx context.Context, cfg propnet.Config) *fi
 		})
 	}
 
+	// Allow egress to hosted services on the gateway IP.
+	// Services bind inside the VirtualNetwork on the gateway address,
+	// but packets still traverse the firewall relay — same pattern as DNS/DHCP.
+	for _, svc := range p.pendingServices {
+		implicitRules = append(implicitRules, firewall.Rule{
+			Direction: firewall.Egress,
+			Action:    firewall.Allow,
+			Protocol:  6, // TCP
+			DstCIDR:   *gatewayNet,
+			DstPort:   svc.Port,
+		})
+	}
+
 	// Prepend implicit rules before user-provided rules.
 	allRules := make([]firewall.Rule, 0, len(implicitRules)+len(cfg.FirewallRules))
 	allRules = append(allRules, implicitRules...)
