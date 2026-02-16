@@ -21,15 +21,17 @@ Run a single test: `go test -v -race -run TestName ./path/to/package`
 
 ## Architecture
 
-- `propolis.go` -- Entry point: `Run()` orchestrates a 7-step pipeline (pull, extract, hooks, config, net, spawn, boot)
+- `propolis.go` -- Entry point: `Run()` orchestrates the pipeline (preflight, pull, hooks, config, net, spawn, post-boot)
 - `options.go` -- All `With*` option constructors, `config` struct, `defaultConfig()`
 - `vm.go` -- `VM` type returned by `Run()` with `Stop`, `Status`, `Remove`
-- `image/` -- OCI pull via crane, layer flattening, content-addressable cache by manifest digest
-- `runner/` -- `Spawn()` launches detached propolis-runner subprocess via setsid
-- `runner/cmd/propolis-runner/` -- CGO binary: calls `krun.StartEnter`, never returns
+- `image/` -- OCI pull via `ImageFetcher` interface (daemon then remote fallback), layer flattening, content-addressable cache
+- `runner/` -- `Spawner`/`ProcessHandle` interfaces, launches detached propolis-runner subprocess via setsid
+- `runner/cmd/propolis-runner/` -- CGO binary: calls `krun.StartEnter`, never returns; creates in-process VirtualNetwork by default
 - `krun/` -- CGO bindings to libkrun C API
-- `net/` -- `Provider` interface; default in-process VirtualNetwork (gvisor-tap-vsock)
+- `net/` -- `Provider` interface for custom networking backends
 - `net/firewall/` -- Frame-level packet filtering, connection tracking, relay
+- `net/hosted/` -- Hosted `net.Provider` running VirtualNetwork in caller's process with HTTP services on gateway IP
+- `net/topology/` -- Shared network topology constants (subnet, gateway, guest IP, MTU)
 - `preflight/` -- `Checker` interface, platform-specific checks via build tags
 - `ssh/` -- ECDSA P-256 keygen and SSH client for guest communication
 - `state/` -- flock-based atomic JSON state persistence
@@ -80,6 +82,6 @@ When tests fail, fix the implementation, not the tests.
 
 - @docs/ARCHITECTURE.md -- Deep technical architecture
 - @docs/SECURITY.md -- Trust boundaries, guest escape analysis, hardening
-- @docs/NETWORKING.md -- In-process networking, firewall, wire protocol
+- @docs/NETWORKING.md -- Networking modes (runner-side, hosted), firewall, wire protocol
 - @docs/MACOS.md -- macOS support, code signing, Hypervisor.framework
 - @docs/TROUBLESHOOTING.md -- Common issues, log files, resource limits

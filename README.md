@@ -264,29 +264,35 @@ func main() {
 | `WithMemory(mib)` | RAM in MiB | `512` |
 | `WithPorts(...)` | TCP port forwards from host to guest | none |
 | `WithInitOverride(cmd...)` | Replace OCI ENTRYPOINT/CMD | OCI config |
+| `WithRootFSPath(path)` | Use pre-built rootfs directory, skip OCI image pull | none |
 | `WithRootFSHook(...)` | Modify rootfs before boot | none |
 | `WithPostBoot(...)` | Run logic after VM process starts | none |
-| `WithNetProvider(p)` | Replace default in-process networking | in-process vnet |
+| `WithNetProvider(p)` | Replace default runner-side networking with a custom provider | runner-side vnet |
 | `WithFirewallRules(...)` | Firewall rules for frame-level packet filtering | none |
 | `WithFirewallDefaultAction(action)` | Default firewall action when no rule matches | `Allow` |
+| `WithPreflightChecker(c)` | Replace entire preflight checker | platform defaults |
 | `WithPreflightChecks(...)` | Add custom pre-boot checks | KVM + resources |
 | `WithVirtioFS(...)` | Host directory mounts via virtio-fs | none |
 | `WithDataDir(p)` | State, cache, and log directory | `~/.config/propolis` |
 | `WithRunnerPath(p)` | Path to propolis-runner binary | auto-detect |
 | `WithLibDir(p)` | Directory for libkrun/libkrunfw shared libraries | system libs |
 | `WithImageCache(c)` | Custom image cache instance | `$dataDir/cache/` |
+| `WithImageFetcher(f)` | Custom image fetcher for OCI retrieval | local-then-remote |
+| `WithSpawner(s)` | Custom runner subprocess spawner | `DefaultSpawner` |
 
 ## Package Overview
 
 | Package | CGO? | Description |
 |---------|------|-------------|
 | `propolis` (root) | No | Top-level API: `Run()`, `VM` type, functional options, hook types |
-| `image` | No | OCI image pull via crane, layer flattening, rootfs extraction, `KrunConfig` |
+| `image` | No | OCI image pull via `ImageFetcher`, layer flattening, rootfs extraction, `KrunConfig` |
 | `krun` | **Yes** | CGO bindings to libkrun C API (context, VM config, `StartEnter`) |
 | `net` | No | `Provider` interface and `Config`/`PortForward` types |
 | `net/firewall` | No | Frame-level packet filtering with stateful connection tracking |
+| `net/hosted` | No | Hosted `net.Provider` running VirtualNetwork in caller's process with HTTP services |
+| `net/topology` | No | Shared network topology constants (subnet, gateway, IPs, MTU) |
 | `preflight` | No | `Checker` interface, `Check` struct, built-in KVM/HVF and port checks |
-| `runner` | No | `Spawn()` / `Process` for managing the propolis-runner subprocess |
+| `runner` | No | `Spawner` / `ProcessHandle` interfaces for managing the propolis-runner subprocess |
 | `runner/cmd/propolis-runner` | **Yes** | The runner binary (calls `krun.StartEnter`, never returns) |
 | `ssh` | No | ECDSA key generation and SSH client for guest communication |
 | `state` | No | flock-based state persistence with atomic JSON writes |
@@ -400,13 +406,14 @@ Go runtime.
 +-------------------+                      +-------------------+
 ```
 
-The in-process VirtualNetwork (gvisor-tap-vsock) provides a virtual network
-(192.168.127.0/24), DHCP, DNS, and TCP port forwarding between host and guest.
-It communicates with the VM over a Unix domain socket using the QEMU transport
-(SOCK_STREAM with 4-byte big-endian length-prefixed Ethernet frames). An
-optional frame-level firewall with stateful connection tracking can be enabled
-via `WithFirewallRules()`. See [docs/NETWORKING.md](docs/NETWORKING.md) for
-a deep dive.
+By default, the runner creates an in-process VirtualNetwork (gvisor-tap-vsock)
+providing a virtual network (192.168.127.0/24), DHCP, DNS, and TCP port
+forwarding. For advanced use cases, `WithNetProvider()` moves the network stack
+to the caller's process -- the `net/hosted` package provides a ready-made
+provider that also supports HTTP services on the gateway IP. An optional
+frame-level firewall with stateful connection tracking can be enabled via
+`WithFirewallRules()`. See [docs/NETWORKING.md](docs/NETWORKING.md) for a
+deep dive.
 
 ### Extension Points
 

@@ -56,13 +56,15 @@ This means:
 
 ## Networking Trust Boundary
 
-The runner process hosts both the libkrun VMM and the userspace network
-stack (gvisor-tap-vsock VirtualNetwork) in the same OS process. This is
-a deliberate design choice: the network stack's lifecycle is tied to the
-VM's lifetime, and the runner process is the only long-lived process in
-the two-process model.
+The location of the VirtualNetwork depends on the networking mode:
 
-### What shares the runner process
+- **Default (runner-side)**: The runner process hosts both the libkrun VMM
+  and the VirtualNetwork in the same OS process. The network stack's
+  lifecycle is tied to the VM's lifetime.
+- **Hosted (caller-side)**: The VirtualNetwork runs in the caller's process
+  via `net/hosted.Provider`. The runner connects over a Unix socket.
+
+### What shares the runner process (default mode)
 
 | Component | Role |
 |-----------|------|
@@ -72,7 +74,18 @@ the two-process model.
 | DNS server | Resolves names for the guest |
 | Port forward listeners | TCP listeners on 127.0.0.1 for host-to-guest forwarding |
 
-### Why this is acceptable for propolis
+### What shares the runner process (hosted mode)
+
+| Component | Role |
+|-----------|------|
+| libkrun VMM | VM supervisor, virtio device emulation |
+
+In hosted mode, the VirtualNetwork, DHCP, DNS, port forwards, and any
+HTTP services run in the caller's process instead. A guest escape still
+lands in the runner process, but the network stack is in a separate
+process, providing better isolation.
+
+### Why the default mode is acceptable
 
 1. **Single-VM model.** There is exactly one guest per runner process.
    The network stack serves only that guest. There is no cross-tenant
@@ -96,15 +109,15 @@ the two-process model.
 If an attacker exploits a KVM/HVF vulnerability or a libkrun bug to
 escape the guest, they land in the runner process with:
 
-| Capability | Risk |
-|-----------|------|
-| Runner's UID privileges | Can read/write files the user owns |
-| Rootfs directory access | Can modify the extracted OCI filesystem |
-| Console/VM log files | Can read log output |
-| VirtualNetwork goroutines | Can manipulate network stack state |
-| Port forward listeners on 127.0.0.1 | Can hijack or sniff forwarded traffic |
-| DHCP/DNS servers | Can poison responses (only affects the same VM) |
-| Socketpair fd to krun | Can inject/modify Ethernet frames |
+| Capability | Default mode | Hosted mode |
+|-----------|------|------|
+| Runner's UID privileges | Yes | Yes |
+| Rootfs directory access | Yes | Yes |
+| Console/VM log files | Yes | Yes |
+| VirtualNetwork goroutines | Yes | No (separate process) |
+| Port forward listeners on 127.0.0.1 | Yes | No (separate process) |
+| DHCP/DNS servers | Yes | No (separate process) |
+| Socketpair fd to krun | Yes (inject/modify frames) | Unix socket (inject/modify frames) |
 
 What they do NOT get:
 - Root privileges (unless the runner was run as root)
@@ -112,9 +125,13 @@ What they do NOT get:
 - Kernel-level access (the escape lands in userspace)
 - Network listeners on external interfaces
 
+In hosted mode, the network stack is in the caller's process, so a guest
+escape does not directly compromise it. This provides better isolation for
+security-sensitive deployments.
+
 ### Where this would be a higher concern
 
-The collapsed trust boundary would matter more if:
+The collapsed trust boundary (default mode) would matter more if:
 
 - **Multiple VMs shared a VirtualNetwork** (multi-tenant): one VM could
   sniff or poison another's traffic. propolis does not support this.
@@ -122,6 +139,10 @@ The collapsed trust boundary would matter more if:
   a guest escape would expose them. propolis port forwards are plain TCP.
 - **The network stack ran with higher privileges** than the VMM: not the
   case here, both share the same process and UID.
+
+For deployments where these concerns apply, use the hosted provider
+(`net/hosted.Provider`) which moves the network stack to the caller's
+process, providing natural process-level separation.
 
 ## Hardening Recommendations
 
@@ -164,21 +185,21 @@ Confine the runner to a policy that restricts:
 
 ### Process separation (defense in depth)
 
-For maximum isolation, the network stack can be moved back to a separate
-process while keeping the library approach. This would use a helper
-process with a socketpair, achieving the simplicity of in-process
-networking with the isolation of separate processes:
+Use the hosted networking provider (`net/hosted.Provider`) to move the
+network stack out of the runner process. This achieves process-level
+separation without a custom helper binary:
 
 ```
 propolis-runner (VMM only)
-    └── socketpair fd → krun
-propolis-net-helper (network stack only)
-    └── socketpair fd → VirtualNetwork
+    └── Unix socket → hosted provider in caller's process
+caller's process (network stack)
+    └── hosted.Provider → VirtualNetwork + HTTP services
 ```
 
-This is not the default because it reintroduces process lifecycle
-management complexity. It is an option for deployments that need the
-strongest possible isolation.
+This is not the default because it requires the caller's process to
+remain alive for networking to function. For the simplest deployments,
+the default runner-side networking ties the network stack to the VM's
+lifetime with no extra coordination.
 
 ## Tar Extraction Defenses
 

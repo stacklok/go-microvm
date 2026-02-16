@@ -18,35 +18,71 @@ architecture, and extension points.
 
 ## Overview
 
-propolis runs an in-process userspace network stack powered by
+propolis uses a userspace network stack powered by
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock). All VM
-traffic flows through a single Unix domain socket as Ethernet frames. There is
-no kernel networking between host and guest, and no separate gvproxy binary is
-needed.
+traffic flows as Ethernet frames with no kernel networking between host and
+guest, and no separate gvproxy binary is needed.
 
 The gvisor-tap-vsock library (used by podman machine, lima, and libkrun) is
 imported directly as a Go dependency. It provides a complete virtual network
-stack including DHCP, DNS, and TCP port forwarding -- all running inside the
-same process as the propolis library.
+stack including DHCP, DNS, and TCP port forwarding.
+
+There are two networking modes:
+
+- **Runner-side (default)**: When no `WithNetProvider()` is set, the runner
+  process creates a VirtualNetwork connected to libkrun via a socketpair.
+  Port forwards are passed in the runner config JSON. This is the simplest
+  path -- no Unix socket, no external process coordination.
+- **Hosted (caller-side)**: When `WithNetProvider()` is set (e.g., with
+  `net/hosted.Provider`), the VirtualNetwork runs in the caller's process
+  and exposes a Unix socket that the runner connects to. This allows the
+  caller to access the VirtualNetwork directly for gonet listeners and
+  HTTP services on the gateway IP.
 
 Key properties:
 
-- **Single process**: The network stack runs in-process as goroutines. No
-  external binaries to manage, no PID tracking, no signal handling.
 - **Userspace only**: All packet processing happens in Go. No iptables, no
   eBPF, no network namespaces.
 - **Frame-level access**: Every Ethernet frame passes through Go code,
   enabling the optional firewall to inspect and filter traffic.
+- **Shared topology**: Network constants (subnet, gateway, IPs, MTU) are
+  centralized in the `net/topology` package.
 
 ## Architecture
 
-There are two paths through the networking subsystem depending on whether the
-firewall is enabled.
+The networking subsystem has two modes depending on how the caller configures
+it, and within the hosted mode, an optional firewall relay.
 
-### Without Firewall
+### Runner-Side Networking (Default)
 
-When no firewall rules are configured, the VM socket connects directly to the
-VirtualNetwork via `AcceptQemu()`:
+When no `WithNetProvider()` is set, the runner creates a VirtualNetwork
+in-process and connects it to libkrun via a socketpair:
+
+```
++----------------------------------propolis-runner process---------+
+|                                                                  |
+| +----------+   socketpair      +-------------------+  Go net     |
+| | libkrun  |   (fd pair)       | VirtualNetwork    |----------+ |
+| | virtio-  |<===============>  | (gVisor netstack) |          | |
+| | net      |   Ethernet frames | DHCP, DNS,        |          | |
+| +----------+                   | port forwarding   |          | |
+|      |                         +-------------------+          | |
+|  +---v------+                       |                         | |
+|  | Guest VM |                  127.0.0.1:<port>               | |
+|  | eth0:    |                  port forward listeners         | |
+|  | 192.168. |                       |                    +---------+
+|  | 127.2    |                       +------>             |  Host   |
+|  +----------+                                            | Network |
++----------------------------------------------------------+---------+
+```
+
+Port forwards are configured via the runner config JSON. The VirtualNetwork
+runs as goroutines in the runner process, tied to the VM's lifetime.
+
+### Hosted Networking (Custom Provider)
+
+When `WithNetProvider()` is set (e.g., `net/hosted.Provider`), the
+VirtualNetwork runs in the caller's process and exposes a Unix socket:
 
 ```
 +----------+                    +-------------------+          +---------+
@@ -56,14 +92,15 @@ VirtualNetwork via `AcceptQemu()`:
 | net      |   SOCK_STREAM      | DHCP, DNS,        |          |         |
 |          |   4B BE + frame    | port forwarding   |          |         |
 +----------+                    +-------------------+          +---------+
+     (in runner process)         (in caller's process)
 ```
 
-### With Firewall
+### Hosted Networking with Firewall
 
-When firewall rules are configured via `WithFirewallRules()`, a relay is
-inserted between the VM socket and the VirtualNetwork. The relay intercepts
-every Ethernet frame, parses headers, and applies allow/deny rules with
-stateful connection tracking:
+When firewall rules are configured via `WithFirewallRules()` with a hosted
+provider, a relay is inserted between the VM socket and the VirtualNetwork.
+The relay intercepts every Ethernet frame, parses headers, and applies
+allow/deny rules with stateful connection tracking:
 
 ```
 +----------+                  +-----------------+               +-------------------+
@@ -159,32 +196,57 @@ framing, making them directly compatible.
 
 ## VirtualNetwork Lifecycle
 
-### Start
+### Runner-Side (Default Path)
+
+When no custom provider is set, the runner's `setupInProcessNetworking()`
+creates the VirtualNetwork during VM startup:
+
+1. Builds the port forward map from `runner.Config.PortForwards`.
+2. Creates a `virtualnetwork.New()` instance using constants from
+   `net/topology` (subnet, gateway IP/MAC, MTU).
+3. Creates a `socketpair(AF_UNIX, SOCK_STREAM)`.
+4. Wraps one end as a `net.Conn` and passes it to `AcceptQemu()` in a
+   background goroutine.
+5. Returns the other fd to be passed to `krun_add_net_unixstream()`.
+
+The VirtualNetwork goroutines run alongside `krun_start_enter()` and are
+torn down when the runner process exits (i.e., when the guest shuts down).
+
+### Hosted Provider Path
+
+When using `net/hosted.Provider`, the lifecycle is managed in the caller's
+process:
+
+#### Start
 
 `Provider.Start()` performs the following:
 
 1. Creates a `virtualnetwork.New()` instance with the network configuration
-   (subnet, gateway, port forwards, DHCP, DNS).
-2. Creates a Unix listener at the socket path (inside the data directory).
-3. Starts a goroutine to accept the VM connection on the Unix socket.
-4. If firewall rules are configured, creates a `net.Pipe()` and starts the
-   relay between the VM connection and the pipe. The VirtualNetwork side
-   calls `AcceptQemu()` on the pipe end. If no firewall is configured, the
-   VM connection is passed directly to `AcceptQemu()`.
-5. Returns once the listener is ready.
+   (subnet, gateway, port forwards, DHCP, DNS) using `net/topology` constants.
+2. Starts any registered HTTP services on the VirtualNetwork via
+   `VirtualNetwork.Listen()`.
+3. Creates a Unix listener at the socket path (`hosted-net.sock` in the data
+   directory).
+4. If firewall rules are configured, creates a `firewall.Filter` and
+   `firewall.Relay`, and starts the conntrack expiry goroutine.
+5. Starts an accept loop goroutine. For each runner connection:
+   - With firewall: creates a `net.Pipe()`, runs the relay between the
+     runner connection and the pipe, passes the pipe to `AcceptQemu()`.
+   - Without firewall: passes the runner connection directly to
+     `AcceptQemu()`.
+6. Returns once the listener is ready.
 
-### Stop
+#### Stop
 
 `Provider.Stop()` tears down everything:
 
-1. Cancels the context, which signals all goroutines to exit.
-2. The `AcceptQemu()` goroutine returns when the context is cancelled.
-3. The relay goroutines (if running) exit when the context is cancelled
-   or the connections are closed.
-4. Closes the Unix listener and removes the socket file.
+1. Gracefully shuts down HTTP services (5-second timeout per service).
+2. Cancels the context, which signals all goroutines to exit.
+3. Closes the Unix listener.
+4. Waits for the accept loop and all connection handlers to finish.
+5. Removes the socket file.
 
-All goroutines are managed via `errgroup` and context cancellation. There
-are no external processes to signal or reap.
+All goroutines are tracked via `sync.WaitGroup` and context cancellation.
 
 ## Firewall Architecture
 
@@ -421,13 +483,17 @@ type Provider interface {
 `Config` contains:
 - `LogDir` -- directory for log files
 - `Forwards` -- slice of `PortForward{Host, Guest}` for TCP forwarding
+- `FirewallRules` -- optional packet filtering rules for frame-level filtering
+- `FirewallDefaultAction` -- default action when no rule matches (Allow or Deny)
 
-The default provider creates a VirtualNetwork in-process. There is no
-external binary to manage, no PID to track, and no process signals to handle.
+By default (no `WithNetProvider()`), networking runs inside the runner
+process. The `net/hosted` package provides a ready-made hosted provider
+that runs the VirtualNetwork in the caller's process with support for
+HTTP services on the gateway IP.
 
 ### Implementing a Custom Provider
 
-To replace the default in-process networking with an alternative backend
+To replace the default runner-side networking with an alternative backend
 (e.g., passt, slirp4netns, or a custom bridge):
 
 1. Implement the `net.Provider` interface.
@@ -437,5 +503,5 @@ To replace the default in-process networking with an alternative backend
 4. Pass your provider via `propolis.WithNetProvider(myProvider)`.
 
 The `SocketPath()` return value is passed to the runner as the Unix socket
-path for `krun_add_net_unixstream`. See `net/provider_impl.go` for the
+path for `krun_add_net_unixstream`. See `net/hosted/provider.go` for the
 reference implementation.

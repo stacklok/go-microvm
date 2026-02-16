@@ -37,14 +37,13 @@ propolis solves this with two processes:
 |   3. Extract layers to rootfs    | JSON  |   3. krun.CreateContext()         |
 |   4. Run rootfs hooks            | config|   4. SetVMConfig(vCPUs, RAM)      |
 |   5. Write .krun_config.json     |       |   5. SetRoot(rootfsPath)          |
-|   6. Start networking (in-proc)  |       |   6. AddNetUnixStream(socket)     |
+|   6. Start networking (if custom)|       |   6. Setup networking             |
 |   7. Spawn propolis-runner       |       |   7. AddVirtioFS (for each mount) |
 |   8. Run post-boot hooks         |       |   8. SetConsoleOutput(logPath)    |
 |   9. Return *VM handle           |       |   9. krun_start_enter()           |
 |                                  |       |      (NEVER RETURNS ON SUCCESS)   |
 |   Pure Go, no CGO                |       |                                  |
 |   Monitors runner PID            |       |   Process becomes VM supervisor   |
-|   In-process networking stack    |       |   Exits when guest shuts down     |
 +----------------------------------+       +----------------------------------+
          |                                              |
          |  SIGTERM (graceful) / SIGKILL (30s timeout)  |
@@ -61,9 +60,11 @@ in `propolis.Run()`:
    Custom checks can be added via `WithPreflightChecks()`. Required check
    failures abort the pipeline; non-required failures log warnings.
 
-2. **Image pull and cache** -- Uses `crane.Pull()` from
-   `google/go-containerregistry` to fetch the OCI image. Computes the manifest
-   digest for cache lookup. On cache miss, flattens layers via
+2. **Image pull and cache** -- Uses an `ImageFetcher` interface to retrieve the
+   OCI image. The default fetcher tries the local Docker/Podman daemon first,
+   then falls back to pulling from a remote registry. Callers can provide a
+   custom fetcher via `WithImageFetcher()`. After fetching, computes the
+   manifest digest for cache lookup. On cache miss, flattens layers via
    `mutate.Extract()` and extracts the tar stream to a temporary directory with
    full security checks.
 
@@ -74,14 +75,25 @@ in `propolis.Run()`:
    config (Entrypoint, Cmd, Env, WorkingDir), applying `WithInitOverride` if
    set. Writes the JSON file to `/.krun_config.json` in the rootfs.
 
-5. **Start networking** -- Calls `net.Provider.Start()` which creates an
-   in-process VirtualNetwork (gvisor-tap-vsock), starts a Unix socket
-   listener, and returns once the socket is ready.
+5. **Start networking** -- Networking follows one of two paths:
+   - **Default (no `WithNetProvider`)**: Port forwards are passed to the
+     runner via `runner.Config`. The runner creates an in-process
+     VirtualNetwork (gvisor-tap-vsock) connected via a socketpair.
+     Networking lives in the runner process alongside the VM.
+   - **Custom provider (`WithNetProvider`)**: Calls `net.Provider.Start()`
+     which creates the network stack in the caller's process, starts a
+     Unix socket listener, and returns once ready. The socket path is
+     passed to the runner for `krun_add_net_unixstream`.
+
+   The `net/hosted` package provides a ready-made hosted provider that
+   runs the VirtualNetwork in the caller's process and supports HTTP
+   services on the gateway IP.
 
 6. **Spawn runner** -- Serializes `runner.Config` as JSON and spawns
-   `propolis-runner` as a detached subprocess (`setsid` for new session). The
-   runner is located by searching: explicit path, system PATH, then next to
-   the calling executable.
+   `propolis-runner` as a detached subprocess (`setsid` for new session)
+   via the `runner.Spawner` interface (replaceable via `WithSpawner()`).
+   The runner is located by searching: explicit path, system PATH, then
+   next to the calling executable.
 
 7. **Post-boot hooks** -- Runs caller-provided `PostBootHook` functions. If
    any hook fails, the VM is stopped and the error is returned.
@@ -97,7 +109,10 @@ C API:
 3. Create a libkrun context via `krun.CreateContext()`
 4. Configure vCPUs and RAM via `SetVMConfig()`
 5. Set the root filesystem via `SetRoot()`
-6. Add networking via `AddNetUnixStream()` (if socket path provided)
+6. Set up networking:
+   - If `NetSockPath` is set (custom provider), connect via `AddNetUnixStream()`
+   - If `PortForwards` is set (default path), create an in-process
+     VirtualNetwork with a socketpair and pass the VM-side fd to libkrun
 7. Add virtio-fs mounts via `AddVirtioFS()` (for each mount)
 8. Set console output via `SetConsoleOutput()` (if log path provided)
 9. Call `krun_start_enter()` which takes over the process
@@ -106,14 +121,59 @@ The runner does NOT call `SetExec()`. Instead, libkrun's built-in init process
 (PID 1 in the guest) reads `/.krun_config.json` from the rootfs to determine
 what program to execute. This is the same mechanism used by krunvm.
 
+### Runner Interfaces
+
+The runner package provides two interfaces for testability and extensibility:
+
+```go
+// ProcessHandle abstracts a running process.
+type ProcessHandle interface {
+    Stop(ctx context.Context) error
+    IsAlive() bool
+    PID() int
+}
+
+// Spawner abstracts subprocess creation.
+type Spawner interface {
+    Spawn(ctx context.Context, cfg Config) (ProcessHandle, error)
+}
+```
+
+`DefaultSpawner` is the production implementation that calls `SpawnProcess()`.
+Callers can provide a custom spawner via `WithSpawner()` for testing or to
+customize how the runner subprocess is launched.
+
 ## OCI Image Pipeline
 
 The pipeline converts an OCI container image into a booted microVM. Each step
 includes security measures where applicable.
 
+### Image Fetcher Interface
+
+Image retrieval is abstracted behind the `ImageFetcher` interface:
+
+```go
+type ImageFetcher interface {
+    Pull(ctx context.Context, ref string) (v1.Image, error)
+}
+```
+
+Three implementations are provided:
+
+| Fetcher | Description |
+|---------|-------------|
+| `RemoteFetcher` | Pulls from OCI registries via `go-containerregistry/remote`. Uses `authn.DefaultKeychain` for Docker/Podman credential stores. |
+| `DaemonFetcher` | Pulls from the local Docker/Podman daemon via its Unix socket. Useful for locally-built images. |
+| `FallbackFetcher` | Tries multiple fetchers in order; returns the first success. Errors are aggregated with `errors.Join`. |
+
+The default (when no `WithImageFetcher()` is set) is
+`NewLocalThenRemoteFetcher()`, which tries the daemon first, then falls
+back to remote registry pull.
+
 ```
 Step 1: PULL
-  crane.Pull(imageRef) with context support
+  ImageFetcher.Pull(imageRef) with context support
+  Default: tries local Docker/Podman daemon, then remote registry
   Supports Docker Hub, GHCR, quay.io, private registries
   Uses ~/.docker/config.json for authentication
        |
@@ -157,11 +217,11 @@ Step 8: KRUN CONFIG
   }
        |
 Step 9: NETWORKING
-  net.Provider.Start() (default: in-process VirtualNetwork)
-  Creates userspace network stack, starts Unix socket listener
+  Default: port forwards passed to runner config (runner creates VirtualNetwork)
+  Custom provider: net.Provider.Start() in caller's process, socket path to runner
        |
 Step 10: SPAWN
-  runner.Spawn() --> propolis-runner subprocess
+  runner.Spawner.Spawn() --> propolis-runner subprocess
   Detached (setsid), stdout/stderr redirected to vm.log
        |
 Step 11: POST-BOOT
@@ -245,15 +305,30 @@ This is the same mechanism used by krunvm and podman machine.
 
 ## Networking
 
-propolis runs an in-process userspace network stack powered by
+propolis uses a userspace network stack powered by
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock). All VM
-traffic flows through a single Unix domain socket as Ethernet frames. No
-kernel networking is involved between host and guest, and no separate
-binary is needed.
+traffic flows as Ethernet frames with no kernel networking between host and
+guest.
+
+There are two networking modes:
+
+- **Default (runner-side)**: When no `WithNetProvider()` is set, the runner
+  process creates an in-process VirtualNetwork connected to libkrun via a
+  socketpair. Port forwards are configured directly in the runner. This is
+  the simplest path -- no external process or socket needed.
+
+- **Hosted (caller-side)**: When `WithNetProvider()` is set, the network
+  stack runs in the caller's process and exposes a Unix socket that the
+  runner connects to. The `net/hosted` package provides a ready-made
+  implementation that also supports HTTP services on the gateway IP.
 
 The networking layer is abstracted behind the `net.Provider` interface,
 allowing alternative implementations. An optional frame-level firewall can
 be enabled via `WithFirewallRules()`.
+
+Network topology constants (subnet, gateway IP, guest IP, MAC, MTU) are
+centralized in the `net/topology` package and shared by both the runner
+and the hosted provider.
 
 For a thorough deep dive on the networking and firewall subsystem, see
 [docs/NETWORKING.md](NETWORKING.md).
@@ -315,11 +390,65 @@ type Provider interface {
 `Config` contains:
 - `LogDir` -- directory for log files
 - `Forwards` -- slice of `PortForward{Host, Guest}` for TCP forwarding
+- `FirewallRules` -- optional packet filtering rules for frame-level filtering
+- `FirewallDefaultAction` -- default action when no rule matches (Allow or Deny)
 
-To replace the default in-process networking with a different backend
-(e.g., passt, slirp4netns, a custom bridge), implement this interface and
-pass it via `propolis.WithNetProvider()`. The `SocketPath()` return value is
-passed to the runner as the Unix socket path for `krun_add_net_unixstream`.
+To replace the default runner-side networking with a different backend
+(e.g., passt, slirp4netns, a custom bridge, or the built-in hosted
+provider), implement this interface and pass it via
+`propolis.WithNetProvider()`. The `SocketPath()` return value is passed to
+the runner as the Unix socket path for `krun_add_net_unixstream`.
+
+### Network Topology Constants
+
+The `net/topology` package centralizes all network layout constants:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `Subnet` | `192.168.127.0/24` | Virtual network CIDR |
+| `GatewayIP` | `192.168.127.1` | Host-side gateway (VirtualNetwork) |
+| `GuestIP` | `192.168.127.2` | DHCP-assigned guest IP |
+| `GatewayMAC` | `5a:94:ef:e4:0c:ee` | Gateway MAC address |
+| `MTU` | `1500` | Maximum transmission unit |
+
+Both the runner's in-process networking and the hosted provider import
+these values to ensure a consistent topology.
+
+### Hosted Network Provider
+
+The `net/hosted` package implements a `net.Provider` that runs the
+VirtualNetwork in the caller's process rather than inside propolis-runner.
+This enables callers to access the VirtualNetwork directly -- for example,
+to create in-process TCP listeners via gonet that are reachable from the
+guest VM without opening real host sockets.
+
+```go
+p := hosted.NewProvider()
+vm, err := propolis.Run(ctx, image,
+    propolis.WithNetProvider(p),
+    propolis.WithPorts(propolis.PortForward{Host: sshPort, Guest: 22}),
+)
+// p.VirtualNetwork() is now available for gonet listeners.
+```
+
+#### HTTP Services
+
+`Provider.AddService()` registers HTTP handlers that listen inside the
+virtual network on the gateway IP (192.168.127.1). Services are started
+before the guest boots and are reachable from inside the VM:
+
+```go
+p := hosted.NewProvider()
+p.AddService(hosted.Service{Port: 4483, Handler: myHandler})
+vm, err := propolis.Run(ctx, image, propolis.WithNetProvider(p))
+// Guest can reach http://192.168.127.1:4483/
+```
+
+The hosted provider exposes a Unix socket (`hosted-net.sock` in the data
+directory) that propolis-runner connects to. When firewall rules are
+configured, a `firewall.Relay` is inserted between the runner connection
+and the VirtualNetwork to filter traffic. The relay is accessible via
+`Provider.Relay()` for metrics.
 
 ## Extension Points
 
@@ -328,12 +457,13 @@ passed to the runner as the Unix socket path for `krun_add_net_unixstream`.
                          |
             +------------+------------+
             |                         |
-     preflight.Checker          net.Provider
-     (KVM, ports, resources,    (in-process vnet,
+     preflight.Checker          net.Provider (optional)
+     (KVM, ports, resources,    (hosted vnet,
       disk space, custom)        + optional firewall)
             |                         |
             v                         v
       Pull & Extract            Start networking
+      (via ImageFetcher)        (only if custom provider)
             |                         |
             v                         |
       RootFSHook(s)                   |
@@ -348,6 +478,10 @@ passed to the runner as the Unix socket path for `krun_add_net_unixstream`.
             +------------+------------+
                          |
                    Spawn runner
+                   (via Spawner interface;
+                    default: creates in-process
+                    VirtualNetwork if no
+                    custom provider)
                          |
                          v
                   PostBootHook(s)
@@ -381,9 +515,18 @@ propolis.WithInitOverride("/sbin/my-init", "--flag")
 
 ### Network Provider
 
-Replace the default in-process networking:
+Replace the default runner-side networking with a custom provider:
 ```go
 propolis.WithNetProvider(myProvider)
+```
+
+The `net/hosted` package provides a built-in hosted provider that runs the
+VirtualNetwork in the caller's process:
+```go
+p := hosted.NewProvider()
+p.AddService(hosted.Service{Port: 4483, Handler: myHandler})
+propolis.WithNetProvider(p)
+// After Run(), p.VirtualNetwork() is available for gonet listeners.
 ```
 
 ### Post-Boot Hooks
@@ -477,7 +620,7 @@ The `state` package provides persistent VM state with file-based locking.
         sha256-def456.../
     console.log               <-- guest console output (kernel, init)
     vm.log                    <-- propolis-runner stdout/stderr
-    vnet.sock                 <-- networking Unix domain socket
+    hosted-net.sock           <-- networking Unix socket (only with hosted provider)
 ```
 
 ### State JSON Schema
