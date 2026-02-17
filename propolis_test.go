@@ -228,6 +228,9 @@ func TestRun_Success(t *testing.T) {
 	assert.True(t, loaded.Active)
 	assert.Equal(t, "test-vm", loaded.Name)
 	assert.Equal(t, 1234, loaded.PID)
+	assert.Equal(t, "test:latest", loaded.Image)
+	assert.Equal(t, uint32(2), loaded.CPUs)
+	assert.Equal(t, uint32(1024), loaded.MemoryMB)
 }
 
 func TestRun_WithRootFSPath_SkipsImagePull(t *testing.T) {

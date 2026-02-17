@@ -203,6 +203,9 @@ func TestVM_Stop_ClearsState(t *testing.T) {
 	require.NoError(t, err)
 	ls.State.Active = true
 	ls.State.PID = 42
+	ls.State.Image = "test:latest"
+	ls.State.CPUs = 2
+	ls.State.MemoryMB = 1024
 	require.NoError(t, ls.Save())
 	ls.Release()
 
@@ -213,4 +216,7 @@ func TestVM_Stop_ClearsState(t *testing.T) {
 	require.NoError(t, loadErr)
 	assert.False(t, loaded.Active)
 	assert.Equal(t, 0, loaded.PID)
+	assert.Equal(t, "test:latest", loaded.Image)
+	assert.Equal(t, uint32(2), loaded.CPUs)
+	assert.Equal(t, uint32(1024), loaded.MemoryMB)
 }

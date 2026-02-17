@@ -169,6 +169,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		ls.State.Active = true
 		ls.State.Name = cfg.name
 		ls.State.PID = proc.PID()
+		ls.State.Image = imageRef
+		ls.State.CPUs = cfg.cpus
+		ls.State.MemoryMB = cfg.memory
 		if saveErr := ls.Save(); saveErr != nil {
 			slog.Warn("failed to persist VM state", "error", saveErr)
 		}
