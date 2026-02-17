@@ -83,5 +83,9 @@ func TestDefaults_AreComplete(t *testing.T) {
 	assert.Equal(t, "2", keys["kernel.kptr_restrict"])
 	assert.Equal(t, "1", keys["kernel.dmesg_restrict"])
 	assert.Equal(t, "1", keys["kernel.unprivileged_bpf_disabled"])
-	assert.Len(t, DefaultsForTest, 3)
+	assert.Equal(t, "3", keys["kernel.perf_event_paranoid"])
+	assert.Equal(t, "2", keys["kernel.yama.ptrace_scope"])
+	assert.Equal(t, "2", keys["net.core.bpf_jit_harden"])
+	assert.Equal(t, "0", keys["kernel.sysrq"])
+	assert.Len(t, DefaultsForTest, 7)
 }

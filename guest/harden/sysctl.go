@@ -48,6 +48,26 @@ var defaults = []kernelDefault{
 		value:  "1",
 		reason: "disable unprivileged BPF",
 	},
+	{
+		key:    "kernel.perf_event_paranoid",
+		value:  "3",
+		reason: "disallow all perf events for unprivileged users",
+	},
+	{
+		key:    "kernel.yama.ptrace_scope",
+		value:  "2",
+		reason: "restrict ptrace to CAP_SYS_PTRACE holders",
+	},
+	{
+		key:    "net.core.bpf_jit_harden",
+		value:  "2",
+		reason: "harden BPF JIT against spraying attacks",
+	},
+	{
+		key:    "kernel.sysrq",
+		value:  "0",
+		reason: "disable magic SysRq key",
+	},
 }
 
 // KernelDefaults applies recommended kernel sysctl hardening. Each

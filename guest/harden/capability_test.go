@@ -122,3 +122,12 @@ func TestCapLastCap_ReadsProc(t *testing.T) {
 	// Modern kernels have at least 40 capabilities.
 	assert.GreaterOrEqual(t, got, uintptr(36))
 }
+
+func TestSetNoNewPrivs(t *testing.T) {
+	t.Parallel()
+
+	// SetNoNewPrivs is safe to call in tests — it only affects the
+	// current process and is non-reversible but harmless.
+	err := SetNoNewPrivs()
+	require.NoError(t, err)
+}

@@ -10,7 +10,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Linux capability constants. Only the subset typically needed by guest
@@ -21,11 +22,6 @@ const (
 	CapSetGID         uintptr = 6
 	CapKill           uintptr = 5
 	CapNetBindService uintptr = 10
-)
-
-// prctl constants for capability bounding set manipulation.
-const (
-	prCapBSetDrop = 24 // PR_CAPBSET_DROP
 )
 
 // capLastCap reads the highest valid capability number from
@@ -80,14 +76,19 @@ func DropBoundingCaps(keep ...uintptr) error {
 // capBSetDrop calls prctl(PR_CAPBSET_DROP, cap) to remove a single
 // capability from the bounding set.
 func capBSetDrop(cap uintptr) error {
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_PRCTL,
-		prCapBSetDrop,
-		cap,
-		0,
-	)
-	if errno != 0 {
-		return fmt.Errorf("prctl(PR_CAPBSET_DROP, %d): %w", cap, errno)
+	if err := unix.Prctl(unix.PR_CAPBSET_DROP, cap, 0, 0, 0); err != nil {
+		return fmt.Errorf("prctl(PR_CAPBSET_DROP, %d): %w", cap, err)
+	}
+	return nil
+}
+
+// SetNoNewPrivs sets the PR_SET_NO_NEW_PRIVS bit on the calling
+// process. Once set, the process and its children cannot gain new
+// privileges through execve (setuid, file capabilities, etc.).
+// This is irreversible for the calling process.
+func SetNoNewPrivs() error {
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("prctl(PR_SET_NO_NEW_PRIVS): %w", err)
 	}
 	return nil
 }

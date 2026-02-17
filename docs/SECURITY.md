@@ -229,6 +229,10 @@ aborting boot, because not all kernels support every sysctl.
 | `kernel.kptr_restrict` | `2` | Hide kernel pointers from all users. Prevents information leaks that aid exploit development. |
 | `kernel.dmesg_restrict` | `1` | Restrict `dmesg` to privileged users. Prevents unprivileged processes from reading kernel log messages that may contain sensitive addresses or operations. |
 | `kernel.unprivileged_bpf_disabled` | `1` | Disable unprivileged BPF. Prevents unprivileged users from loading BPF programs, which have historically been a source of kernel privilege escalation vulnerabilities. |
+| `kernel.perf_event_paranoid` | `3` | Disallow all perf events for unprivileged users. Prevents unprivileged access to performance counters, which can be used for side-channel attacks. |
+| `kernel.yama.ptrace_scope` | `2` | Restrict ptrace to `CAP_SYS_PTRACE` holders. Prevents unprivileged processes from attaching to other processes to inspect memory or inject code. |
+| `net.core.bpf_jit_harden` | `2` | Harden BPF JIT against spraying attacks. Forces constant blinding and disables JIT kallsyms exposure. |
+| `kernel.sysrq` | `0` | Disable magic SysRq key. Prevents unprivileged users from triggering kernel debugging and recovery commands. |
 
 ### Capability bounding set
 
@@ -244,6 +248,32 @@ For a typical SSH-based guest, the minimal keep set is:
 | `CAP_SETUID` | 7 | sshd credential switching to sandbox user |
 | `CAP_SETGID` | 6 | sshd group switching |
 | `CAP_NET_BIND_SERVICE` | 10 | Binding port 22 (privileged port) |
+
+### Process privilege restriction
+
+`SetNoNewPrivs()` sets the `PR_SET_NO_NEW_PRIVS` bit on the calling
+process. Once set, the process and all descendants (via fork/exec)
+cannot gain new privileges through `execve` — setuid binaries run
+without elevation and file capabilities are ignored.
+
+This is intended to be called after all privileged operations are
+complete (mounts, network config, credential setup, capability
+dropping). Consumers that spawn child processes via `os/exec` inherit
+the bit automatically; consumers that need to set it on the calling
+process itself (e.g., an init that doesn't use `os/exec`) can call
+`SetNoNewPrivs()` directly.
+
+Note: `no_new_privs` does not affect `setresuid`/`setresgid` syscalls
+used by Go's `SysProcAttr.Credential` — credential switching for SSH
+sessions continues to work after the bit is set.
+
+### Filesystem hardening
+
+Consumers should lock down `/root/` (mode `0700`) after completing
+initial setup so the sandbox user cannot read root's home directory
+contents (bootstrap config, debug logs, credentials). This is not
+performed by the `harden` package itself but is a recommended consumer
+practice — see apiary's `lockdownRoot()` for an example.
 
 ### Threat model
 
