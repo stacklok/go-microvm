@@ -61,18 +61,25 @@ type Config struct {
 	// empty or the directory does not exist, DefaultHome is used instead.
 	DefaultWorkDir string
 
+	// AgentForwarding enables SSH agent forwarding support. When true,
+	// the server accepts auth-agent-req@openssh.com requests and creates
+	// per-session agent sockets.
+	AgentForwarding bool
+
 	// Logger is the structured logger. If nil, slog.Default() is used.
 	Logger *slog.Logger
 }
 
 // Server is an embedded SSH server designed to run inside a guest VM.
 type Server struct {
-	cfg      Config
-	sshCfg   *ssh.ServerConfig
-	listener net.Listener
-	wg       sync.WaitGroup
-	quit     chan struct{}
-	logger   *slog.Logger
+	cfg        Config
+	sshCfg     *ssh.ServerConfig
+	listener   net.Listener
+	wg         sync.WaitGroup
+	quit       chan struct{}
+	logger     *slog.Logger
+	agentFwdMu sync.Mutex
+	agentFwd   map[*ssh.ServerConn]bool
 }
 
 // New creates a new Server with an ephemeral ECDSA P-256 host key. It
@@ -119,10 +126,11 @@ func New(cfg Config) (*Server, error) {
 	sshCfg.AddHostKey(signer)
 
 	return &Server{
-		cfg:    cfg,
-		sshCfg: sshCfg,
-		quit:   make(chan struct{}),
-		logger: logger,
+		cfg:      cfg,
+		sshCfg:   sshCfg,
+		quit:     make(chan struct{}),
+		logger:   logger,
+		agentFwd: make(map[*ssh.ServerConn]bool),
 	}, nil
 }
 
@@ -206,6 +214,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		return
 	}
 	defer func() { _ = srvConn.Close() }()
+	defer s.setAgentForwarding(srvConn, false)
 
 	// Clear the deadline after a successful handshake.
 	if err := netConn.SetDeadline(time.Time{}); err != nil {
@@ -218,8 +227,8 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		"remote", srvConn.RemoteAddr(),
 	)
 
-	// Discard all global requests (keepalive, etc.).
-	go ssh.DiscardRequests(reqs)
+	// Handle global requests (agent forwarding, keepalive, etc.).
+	go s.handleGlobalRequests(reqs, srvConn)
 
 	channelCount := 0
 	for newCh := range chans {
@@ -249,7 +258,58 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleSession(ch, requests)
+			s.handleSession(ch, requests, srvConn)
 		}()
 	}
+}
+
+// handleGlobalRequests processes connection-level SSH requests.
+// It handles agent forwarding requests when enabled and discards
+// all other global requests.
+func (s *Server) handleGlobalRequests(reqs <-chan *ssh.Request, conn *ssh.ServerConn) {
+	for req := range reqs {
+		switch req.Type {
+		case "auth-agent-req@openssh.com":
+			if s.cfg.AgentForwarding {
+				s.setAgentForwarding(conn, true)
+				s.logger.Info("agent forwarding enabled",
+					"remote", conn.RemoteAddr(),
+				)
+				if req.WantReply {
+					_ = req.Reply(true, nil)
+				}
+			} else {
+				s.logger.Debug("agent forwarding rejected (disabled)",
+					"remote", conn.RemoteAddr(),
+				)
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+			}
+		default:
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+		}
+	}
+}
+
+// setAgentForwarding records or clears the agent-forwarding state for
+// the given connection.
+func (s *Server) setAgentForwarding(conn *ssh.ServerConn, enabled bool) {
+	s.agentFwdMu.Lock()
+	defer s.agentFwdMu.Unlock()
+	if enabled {
+		s.agentFwd[conn] = true
+	} else {
+		delete(s.agentFwd, conn)
+	}
+}
+
+// isAgentForwarding reports whether agent forwarding has been enabled
+// for the given connection.
+func (s *Server) isAgentForwarding(conn *ssh.ServerConn) bool {
+	s.agentFwdMu.Lock()
+	defer s.agentFwdMu.Unlock()
+	return s.agentFwd[conn]
 }

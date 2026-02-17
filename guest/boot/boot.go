@@ -103,16 +103,17 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 
 	// 9. Start SSH server.
 	sshdCfg := sshd.Config{
-		Port:           cfg.sshPort,
-		AuthorizedKeys: authorizedKeys,
-		Env:            envVars,
-		DefaultUID:     cfg.userUID,
-		DefaultGID:     cfg.userGID,
-		DefaultUser:    cfg.userName,
-		DefaultHome:    cfg.userHome,
-		DefaultShell:   cfg.userShell,
-		DefaultWorkDir: cfg.workspaceMountPoint,
-		Logger:         logger,
+		Port:            cfg.sshPort,
+		AuthorizedKeys:  authorizedKeys,
+		Env:             envVars,
+		DefaultUID:      cfg.userUID,
+		DefaultGID:      cfg.userGID,
+		DefaultUser:     cfg.userName,
+		DefaultHome:     cfg.userHome,
+		DefaultShell:    cfg.userShell,
+		DefaultWorkDir:  cfg.workspaceMountPoint,
+		AgentForwarding: cfg.sshAgentForwarding,
+		Logger:          logger,
 	}
 	srv, err := sshd.New(sshdCfg)
 	if err != nil {

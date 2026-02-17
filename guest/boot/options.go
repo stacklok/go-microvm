@@ -30,6 +30,7 @@ type config struct {
 	userUID             uint32
 	userGID             uint32
 	lockdownRoot        bool
+	sshAgentForwarding  bool
 }
 
 func defaultConfig() *config {
@@ -95,4 +96,11 @@ func WithUser(name, home, shell string, uid, gid uint32) Option {
 // WithLockdownRoot controls whether /root is locked to mode 0700.
 func WithLockdownRoot(enabled bool) Option {
 	return optionFunc(func(c *config) { c.lockdownRoot = enabled })
+}
+
+// WithSSHAgentForwarding controls whether the SSH server supports
+// agent forwarding. When enabled and the client requests it, the
+// server creates a Unix socket and sets SSH_AUTH_SOCK for the session.
+func WithSSHAgentForwarding(enabled bool) Option {
+	return optionFunc(func(c *config) { c.sshAgentForwarding = enabled })
 }

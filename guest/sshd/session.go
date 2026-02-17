@@ -7,9 +7,12 @@ package sshd
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -78,7 +81,7 @@ type sessionState struct {
 }
 
 // handleSession processes SSH session requests on the given channel.
-func (s *Server) handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
+func (s *Server) handleSession(ch ssh.Channel, requests <-chan *ssh.Request, conn *ssh.ServerConn) {
 	defer func() { _ = ch.Close() }()
 
 	state := &sessionState{
@@ -126,12 +129,12 @@ func (s *Server) handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
 				continue
 			}
 			replyRequest(req, true)
-			s.executeCommand(ch, requests, state, payload.Command)
+			s.executeCommand(ch, requests, state, payload.Command, conn)
 			return
 
 		case "shell":
 			replyRequest(req, true)
-			s.executeCommand(ch, requests, state, "")
+			s.executeCommand(ch, requests, state, "", conn)
 			return
 
 		case "window-change":
@@ -147,8 +150,23 @@ func (s *Server) handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
 
 // executeCommand builds and runs a command in the configured environment.
 // An empty command string starts a login shell.
-func (s *Server) executeCommand(ch ssh.Channel, requests <-chan *ssh.Request, state *sessionState, command string) {
+func (s *Server) executeCommand(ch ssh.Channel, requests <-chan *ssh.Request, state *sessionState, command string, conn *ssh.ServerConn) {
 	env := s.buildEnv(state)
+
+	// Set up SSH agent socket if forwarding is enabled for this connection.
+	var agentCleanup func()
+	if s.isAgentForwarding(conn) {
+		sockPath, cleanup, agentErr := s.setupAgentSocket(conn)
+		if agentErr != nil {
+			s.logger.Error("agent socket setup failed", "error", agentErr)
+		} else {
+			agentCleanup = cleanup
+			env = append(env, "SSH_AUTH_SOCK="+sockPath)
+		}
+	}
+	if agentCleanup != nil {
+		defer agentCleanup()
+	}
 
 	var cmd *exec.Cmd
 	if command == "" {
@@ -378,4 +396,115 @@ func replyRequest(req *ssh.Request, ok bool) {
 	if req.WantReply {
 		_ = req.Reply(ok, nil)
 	}
+}
+
+// maxAgentConns limits concurrent agent socket connections to prevent
+// resource exhaustion from a compromised guest process.
+const maxAgentConns = 8
+
+// setupAgentSocket creates a Unix domain socket for SSH agent forwarding.
+// When a process inside the VM connects to this socket, the server opens
+// an "auth-agent@openssh.com" channel back to the SSH client and pipes
+// data bidirectionally.
+func (s *Server) setupAgentSocket(conn *ssh.ServerConn) (string, func(), error) {
+	sockDir, err := os.MkdirTemp("/tmp", "ssh-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating agent socket dir: %w", err)
+	}
+
+	if err := os.Chmod(sockDir, 0o700); err != nil {
+		_ = os.RemoveAll(sockDir)
+		return "", nil, fmt.Errorf("chmod agent socket dir: %w", err)
+	}
+
+	if err := os.Chown(sockDir, int(s.cfg.DefaultUID), int(s.cfg.DefaultGID)); err != nil {
+		_ = os.RemoveAll(sockDir)
+		return "", nil, fmt.Errorf("chown agent socket dir: %w", err)
+	}
+
+	sockPath := filepath.Join(sockDir, "agent.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		_ = os.RemoveAll(sockDir)
+		return "", nil, fmt.Errorf("listening on agent socket: %w", err)
+	}
+
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		_ = ln.Close()
+		_ = os.RemoveAll(sockDir)
+		return "", nil, fmt.Errorf("chmod agent socket: %w", err)
+	}
+
+	if err := os.Chown(sockPath, int(s.cfg.DefaultUID), int(s.cfg.DefaultGID)); err != nil {
+		_ = ln.Close()
+		_ = os.RemoveAll(sockDir)
+		return "", nil, fmt.Errorf("chown agent socket: %w", err)
+	}
+
+	var proxyWg sync.WaitGroup
+	sem := make(chan struct{}, maxAgentConns)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			unixConn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Enforce concurrency limit.
+			select {
+			case sem <- struct{}{}:
+			default:
+				s.logger.Warn("agent socket connection limit reached, rejecting")
+				_ = unixConn.Close()
+				continue
+			}
+			proxyWg.Add(1)
+			go func() {
+				defer proxyWg.Done()
+				defer func() { <-sem }()
+				s.proxyAgentConnection(conn, unixConn)
+			}()
+		}
+	}()
+
+	cleanup := func() {
+		_ = ln.Close()
+		<-done
+		proxyWg.Wait()
+		_ = os.RemoveAll(sockDir)
+	}
+
+	return sockPath, cleanup, nil
+}
+
+// proxyAgentConnection opens an "auth-agent@openssh.com" channel back
+// to the SSH client and pipes data bidirectionally with the local Unix
+// socket connection.
+func (s *Server) proxyAgentConnection(conn *ssh.ServerConn, unixConn net.Conn) {
+	defer func() { _ = unixConn.Close() }()
+
+	channel, reqs, err := conn.OpenChannel("auth-agent@openssh.com", nil)
+	if err != nil {
+		s.logger.Debug("failed to open agent channel", "error", err)
+		return
+	}
+	defer func() { _ = channel.Close() }()
+
+	go ssh.DiscardRequests(reqs)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(channel, unixConn)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(unixConn, channel)
+	}()
+
+	wg.Wait()
 }

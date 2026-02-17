@@ -307,3 +307,123 @@ func TestDefaultWorkDirFallback(t *testing.T) {
 
 	assert.Equal(t, expected, strings.TrimSpace(string(output)))
 }
+
+func TestAgentForwardingDisabled(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServerWithConfig(t, Config{
+		Port:            0,
+		AuthorizedKeys:  []ssh.PublicKey{pubKey},
+		Env:             []string{"PATH=/usr/bin:/bin"},
+		DefaultUID:      uint32(os.Getuid()),
+		DefaultGID:      uint32(os.Getgid()),
+		DefaultUser:     "testuser",
+		DefaultHome:     os.TempDir(),
+		DefaultShell:    "/bin/sh",
+		AgentForwarding: false,
+		Logger:          slog.Default(),
+	})
+
+	client := dialSSH(t, addr, signer)
+
+	// Request agent forwarding — should be rejected.
+	ok, _, err := client.SendRequest("auth-agent-req@openssh.com", true, nil)
+	require.NoError(t, err)
+	assert.False(t, ok, "agent forwarding should be rejected when disabled")
+}
+
+func TestAgentForwardingEnabled(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServerWithConfig(t, Config{
+		Port:            0,
+		AuthorizedKeys:  []ssh.PublicKey{pubKey},
+		Env:             []string{"PATH=/usr/bin:/bin"},
+		DefaultUID:      uint32(os.Getuid()),
+		DefaultGID:      uint32(os.Getgid()),
+		DefaultUser:     "testuser",
+		DefaultHome:     os.TempDir(),
+		DefaultShell:    "/bin/sh",
+		AgentForwarding: true,
+		Logger:          slog.Default(),
+	})
+
+	client := dialSSH(t, addr, signer)
+
+	// Request agent forwarding — should be accepted.
+	ok, _, err := client.SendRequest("auth-agent-req@openssh.com", true, nil)
+	require.NoError(t, err)
+	assert.True(t, ok, "agent forwarding should be accepted when enabled")
+}
+
+func TestAgentSocketCreated(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServerWithConfig(t, Config{
+		Port:            0,
+		AuthorizedKeys:  []ssh.PublicKey{pubKey},
+		Env:             []string{"PATH=/usr/bin:/bin"},
+		DefaultUID:      uint32(os.Getuid()),
+		DefaultGID:      uint32(os.Getgid()),
+		DefaultUser:     "testuser",
+		DefaultHome:     os.TempDir(),
+		DefaultShell:    "/bin/sh",
+		AgentForwarding: true,
+		Logger:          slog.Default(),
+	})
+
+	client := dialSSH(t, addr, signer)
+
+	// Request agent forwarding.
+	ok, _, err := client.SendRequest("auth-agent-req@openssh.com", true, nil)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Run a command that checks if SSH_AUTH_SOCK is set.
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	output, err := session.CombinedOutput("echo $SSH_AUTH_SOCK")
+	require.NoError(t, err)
+
+	sockPath := strings.TrimSpace(string(output))
+	assert.NotEmpty(t, sockPath, "SSH_AUTH_SOCK should be set when agent forwarding is enabled")
+	assert.Contains(t, sockPath, "/tmp/ssh-", "agent socket should be in /tmp/ssh-*")
+}
+
+func TestNoSocketWithoutForwardingRequest(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServerWithConfig(t, Config{
+		Port:            0,
+		AuthorizedKeys:  []ssh.PublicKey{pubKey},
+		Env:             []string{"PATH=/usr/bin:/bin"},
+		DefaultUID:      uint32(os.Getuid()),
+		DefaultGID:      uint32(os.Getgid()),
+		DefaultUser:     "testuser",
+		DefaultHome:     os.TempDir(),
+		DefaultShell:    "/bin/sh",
+		AgentForwarding: true,
+		Logger:          slog.Default(),
+	})
+
+	client := dialSSH(t, addr, signer)
+
+	// Do NOT request agent forwarding.
+
+	// Run a command that checks if SSH_AUTH_SOCK is set.
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	output, err := session.CombinedOutput("echo ${SSH_AUTH_SOCK:-unset}")
+	require.NoError(t, err)
+
+	result := strings.TrimSpace(string(output))
+	assert.Equal(t, "unset", result, "SSH_AUTH_SOCK should not be set without forwarding request")
+}
