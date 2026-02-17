@@ -10,6 +10,7 @@ hardening recommendations for propolis.
 - [Networking Trust Boundary](#networking-trust-boundary)
 - [Guest Escape Blast Radius](#guest-escape-blast-radius)
 - [Hardening Recommendations](#hardening-recommendations)
+- [Guest Hardening](#guest-hardening)
 - [Egress Policy Security Model](#egress-policy-security-model)
 - [Tar Extraction Defenses](#tar-extraction-defenses)
 - [Process Identity Verification](#process-identity-verification)
@@ -201,6 +202,59 @@ This is not the default because it requires the caller's process to
 remain alive for networking to function. For the simplest deployments,
 the default runner-side networking ties the network stack to the VM's
 lifetime with no extra coordination.
+
+## Guest Hardening
+
+The `guest/harden` package provides reusable kernel and capability
+hardening for microVM init processes. It is guest-side code
+(`//go:build linux`) with no CGO or krun dependencies.
+
+### Recommended usage
+
+Call the hardening functions in your guest init boot sequence:
+
+1. Mount `/proc` and `/sys` first (sysctls need procfs).
+2. Call `harden.KernelDefaults(logger)` to apply sysctls.
+3. Perform all privileged operations (mounts, network config, chown).
+4. Call `harden.DropBoundingCaps(keep...)` as the last privileged step.
+
+### Kernel sysctls
+
+`KernelDefaults` applies the following sysctls. Each is set
+independently; individual failures are logged as warnings rather than
+aborting boot, because not all kernels support every sysctl.
+
+| Sysctl | Value | Purpose |
+|--------|-------|---------|
+| `kernel.kptr_restrict` | `2` | Hide kernel pointers from all users. Prevents information leaks that aid exploit development. |
+| `kernel.dmesg_restrict` | `1` | Restrict `dmesg` to privileged users. Prevents unprivileged processes from reading kernel log messages that may contain sensitive addresses or operations. |
+| `kernel.unprivileged_bpf_disabled` | `1` | Disable unprivileged BPF. Prevents unprivileged users from loading BPF programs, which have historically been a source of kernel privilege escalation vulnerabilities. |
+
+### Capability bounding set
+
+`DropBoundingCaps(keep...)` drops all Linux capabilities from the
+bounding set except those explicitly listed. This limits what
+capabilities child processes can acquire, even through setuid binaries
+or file capabilities.
+
+For a typical SSH-based guest, the minimal keep set is:
+
+| Capability | Number | Reason |
+|-----------|--------|--------|
+| `CAP_SETUID` | 7 | sshd credential switching to sandbox user |
+| `CAP_SETGID` | 6 | sshd group switching |
+| `CAP_NET_BIND_SERVICE` | 10 | Binding port 22 (privileged port) |
+
+### Threat model
+
+These hardening measures are defense-in-depth for the guest
+environment. An attacker who has compromised the guest workload would
+need a hypervisor escape to reach the host; however, guest hardening:
+
+- Raises the bar for local privilege escalation within the guest
+- Reduces information available for exploit development (kernel pointers, dmesg)
+- Limits the attack surface of dangerous subsystems (BPF)
+- Constrains what a compromised process can do even with root inside the guest
 
 ## Egress Policy Security Model
 
