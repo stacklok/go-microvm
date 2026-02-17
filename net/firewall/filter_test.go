@@ -298,6 +298,187 @@ func TestFilter_DynamicRules_TracksAllowedConnection(t *testing.T) {
 	assert.Equal(t, Allow, got)
 }
 
+func TestFilter_EstablishedConnectionSurvivesDynamicRuleExpiry(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the real-world scenario: a dynamic rule (from DNS snooping)
+	// allows egress, the connection is established with bidirectional
+	// traffic, the dynamic rule expires, and subsequent packets in both
+	// directions must still be allowed via conntrack.
+
+	now := time.Now()
+	dr := NewDynamicRules()
+	dr.now = func() time.Time { return now }
+
+	_, cidr, err := net.ParseCIDR("203.0.113.50/32")
+	require.NoError(t, err)
+
+	// Short TTL to simulate DNS-based dynamic rule expiry.
+	dr.Add(Rule{
+		Direction: Egress,
+		Action:    Allow,
+		Protocol:  6,
+		DstCIDR:   *cidr,
+		DstPort:   443,
+	}, 60*time.Second)
+
+	f := NewFilterWithDynamic(nil, Deny, dr)
+	f.conntrack.now = func() time.Time { return now }
+
+	egressHdr := &PacketHeader{
+		SrcIP:    [4]byte{10, 0, 0, 1},
+		DstIP:    [4]byte{203, 0, 113, 50},
+		Protocol: 6,
+		SrcPort:  44444,
+		DstPort:  443,
+	}
+	ingressHdr := &PacketHeader{
+		SrcIP:    [4]byte{203, 0, 113, 50},
+		DstIP:    [4]byte{10, 0, 0, 1},
+		Protocol: 6,
+		SrcPort:  443,
+		DstPort:  44444,
+	}
+
+	// 1. Outbound allowed by dynamic rule, tracked in conntrack.
+	assert.Equal(t, Allow, f.Verdict(Egress, egressHdr))
+
+	// 2. Return traffic allowed via conntrack (reverse lookup).
+	assert.Equal(t, Allow, f.Verdict(Ingress, ingressHdr))
+
+	// 3. Advance time past the dynamic rule TTL.
+	now = now.Add(61 * time.Second)
+
+	// Verify the dynamic rule is actually expired.
+	_, matched := dr.Match(Egress, egressHdr)
+	assert.False(t, matched, "dynamic rule should have expired")
+
+	// 4. Outbound must still be allowed via bidirectional conntrack.
+	assert.Equal(t, Allow, f.Verdict(Egress, egressHdr),
+		"egress should be allowed via conntrack after dynamic rule expires")
+
+	// 5. Inbound must still be allowed.
+	assert.Equal(t, Allow, f.Verdict(Ingress, ingressHdr),
+		"ingress should be allowed via conntrack after dynamic rule expires")
+}
+
+func TestFilter_EstablishedConntrack_RefreshesTimestamp(t *testing.T) {
+	t.Parallel()
+
+	// Verify that bidirectional conntrack entries refresh their timestamps,
+	// keeping long-lived connections alive across multiple sweep cycles.
+
+	now := time.Now()
+	dr := NewDynamicRules()
+	dr.now = func() time.Time { return now }
+
+	_, cidr, err := net.ParseCIDR("203.0.113.50/32")
+	require.NoError(t, err)
+
+	dr.Add(Rule{
+		Direction: Egress,
+		Action:    Allow,
+		Protocol:  6,
+		DstCIDR:   *cidr,
+		DstPort:   443,
+	}, 60*time.Second)
+
+	f := NewFilterWithDynamic(nil, Deny, dr)
+	f.conntrack.now = func() time.Time { return now }
+
+	egressHdr := &PacketHeader{
+		SrcIP:    [4]byte{10, 0, 0, 1},
+		DstIP:    [4]byte{203, 0, 113, 50},
+		Protocol: 6,
+		SrcPort:  44444,
+		DstPort:  443,
+	}
+	ingressHdr := &PacketHeader{
+		SrcIP:    [4]byte{203, 0, 113, 50},
+		DstIP:    [4]byte{10, 0, 0, 1},
+		Protocol: 6,
+		SrcPort:  443,
+		DstPort:  44444,
+	}
+
+	// Establish the connection while the dynamic rule is alive.
+	assert.Equal(t, Allow, f.Verdict(Egress, egressHdr))
+	assert.Equal(t, Allow, f.Verdict(Ingress, ingressHdr))
+
+	// Expire the dynamic rule.
+	now = now.Add(61 * time.Second)
+
+	// Simulate a long-lived connection by sending packets every 2 minutes
+	// for 10 minutes. Each packet should refresh the conntrack entry,
+	// preventing the 5-minute TTL from expiring.
+	for i := 0; i < 5; i++ {
+		now = now.Add(2 * time.Minute)
+		f.conntrack.sweep()
+
+		assert.Equal(t, Allow, f.Verdict(Egress, egressHdr),
+			"egress should be allowed at iteration %d (t+%dm)", i, 2*(i+1))
+		assert.Equal(t, Allow, f.Verdict(Ingress, ingressHdr),
+			"ingress should be allowed at iteration %d (t+%dm)", i, 2*(i+1))
+	}
+}
+
+func TestFilter_NoReturnTraffic_ConntrackExpires(t *testing.T) {
+	t.Parallel()
+
+	// Verify that a connection with no return traffic eventually has its
+	// conntrack entry expire. The fix should NOT keep one-directional
+	// flows alive indefinitely.
+
+	now := time.Now()
+	dr := NewDynamicRules()
+	dr.now = func() time.Time { return now }
+
+	_, cidr, err := net.ParseCIDR("203.0.113.50/32")
+	require.NoError(t, err)
+
+	dr.Add(Rule{
+		Direction: Egress,
+		Action:    Allow,
+		Protocol:  6,
+		DstCIDR:   *cidr,
+		DstPort:   443,
+	}, 60*time.Second)
+
+	f := NewFilterWithDynamic(nil, Deny, dr)
+	f.conntrack.now = func() time.Time { return now }
+
+	egressHdr := &PacketHeader{
+		SrcIP:    [4]byte{10, 0, 0, 1},
+		DstIP:    [4]byte{203, 0, 113, 50},
+		Protocol: 6,
+		SrcPort:  44444,
+		DstPort:  443,
+	}
+	ingressHdr := &PacketHeader{
+		SrcIP:    [4]byte{203, 0, 113, 50},
+		DstIP:    [4]byte{10, 0, 0, 1},
+		Protocol: 6,
+		SrcPort:  443,
+		DstPort:  44444,
+	}
+
+	// Outbound allowed by dynamic rule.
+	assert.Equal(t, Allow, f.Verdict(Egress, egressHdr))
+
+	// No return traffic — server never responded.
+	// Expire the dynamic rule and advance past TCP conntrack TTL.
+	now = now.Add(6 * time.Minute)
+	f.conntrack.sweep()
+
+	// Outbound should now be denied (conntrack expired, dynamic rule gone).
+	assert.Equal(t, Deny, f.Verdict(Egress, egressHdr),
+		"egress should be denied after conntrack expires with no return traffic")
+
+	// Inbound should also be denied.
+	assert.Equal(t, Deny, f.Verdict(Ingress, ingressHdr),
+		"ingress should be denied after conntrack expires with no return traffic")
+}
+
 func TestFilter_StartExpiry_StopsOnCancel(t *testing.T) {
 	t.Parallel()
 

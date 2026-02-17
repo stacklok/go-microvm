@@ -60,7 +60,15 @@ func NewFilterWithDynamic(rules []Rule, defaultAction Action, dr *DynamicRules) 
 //  3. Default action -- returned when no rule matches.
 func (f *Filter) Verdict(dir Direction, hdr *PacketHeader) Action {
 	// Fast path: established connections are always allowed.
+	// Track the current direction so that both sides of the flow are
+	// recorded. Without this, only the direction that first matched a
+	// rule is stored, making conntrack effectively unidirectional.
+	// When a dynamic rule expires (e.g. DNS TTL), the original
+	// direction would fail the IsEstablished check because the return
+	// direction was never tracked. By tracking here we keep both
+	// directions alive as long as traffic flows bidirectionally.
 	if f.conntrack.IsEstablished(dir, hdr) {
+		f.conntrack.Track(dir, hdr)
 		return Allow
 	}
 
