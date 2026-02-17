@@ -189,29 +189,7 @@ func extractTar(r io.Reader, dst string) error {
 // sanitizeTarPath validates and resolves a tar entry path to prevent path
 // traversal attacks. Returns the cleaned absolute path under dst.
 func sanitizeTarPath(dst, entryName string) (string, error) {
-	// Clean the entry name to remove any ".." or "." components.
-	cleaned := filepath.Clean(entryName)
-
-	// Reject absolute paths in tar entries.
-	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("path traversal detected: absolute path %q in tar entry", entryName)
-	}
-
-	// Join with the destination, then verify it's actually under dst.
-	target := filepath.Join(dst, cleaned)
-
-	// Resolve symlinks in the destination prefix so that a crafted symlink
-	// earlier in the archive can't redirect later entries outside the rootfs.
-	relPath, err := filepath.Rel(dst, target)
-	if err != nil {
-		return "", fmt.Errorf("compute relative path: %w", err)
-	}
-
-	if strings.HasPrefix(relPath, "..") || relPath == ".." {
-		return "", fmt.Errorf("path traversal detected: %q resolves outside destination", entryName)
-	}
-
-	return target, nil
+	return SanitizeTarPath(dst, entryName)
 }
 
 // mkdirAllNoSymlink creates directories one component at a time and refuses
