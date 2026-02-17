@@ -106,7 +106,7 @@ func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
 
 	// Redirect stdout/stderr to log file if configured.
 	if cfg.VMLogPath != "" {
-		logFile, err := os.OpenFile(cfg.VMLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		logFile, err := os.OpenFile(cfg.VMLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("open vm log file: %w", err)
 		}
