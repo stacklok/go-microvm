@@ -139,14 +139,22 @@ func TestInjectEnvFile_EmptyMap(t *testing.T) {
 func TestInjectAuthorizedKeys_DefaultPaths(t *testing.T) {
 	t.Parallel()
 
+	// Use current user's UID/GID so chown succeeds without root.
+	u, err := user.Current()
+	require.NoError(t, err)
+	uid, err := strconv.Atoi(u.Uid)
+	require.NoError(t, err)
+	gid, err := strconv.Atoi(u.Gid)
+	require.NoError(t, err)
+
 	rootfs := t.TempDir()
-	// Pre-create the home directory so chown doesn't fail.
+	// Pre-create the default home directory.
 	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
 
 	pubKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST test@example.com"
-	hook := InjectAuthorizedKeys(pubKey)
+	hook := InjectAuthorizedKeys(pubKey, WithKeyUser("/home/sandbox", uid, gid))
 
-	err := hook(rootfs, nil)
+	err = hook(rootfs, nil)
 	require.NoError(t, err)
 
 	// Verify .ssh directory exists.
