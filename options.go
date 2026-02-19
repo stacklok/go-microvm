@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net"
 	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/preflight"
-	"github.com/stacklok/propolis/runner"
 )
 
 // Option configures a VM. Use the With* functions to create options.
@@ -71,14 +71,12 @@ type config struct {
 	firewallDefaultAction firewall.Action
 	preflight             preflight.Checker
 	postBootHooks         []PostBootHook
-	libDir                string
 	dataDir               string
-	runnerPath            string
 	egressPolicy          *EgressPolicy
 	virtioFS              []VirtioFSMount
 	imageCache            *image.Cache
 	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
-	spawner               runner.Spawner     // nil = default runner.Spawn
+	backend               hypervisor.Backend // nil = default libkrun backend
 	cleanDataDir          bool
 	removeAll             func(string) error
 	stat                  func(string) (os.FileInfo, error)
@@ -223,11 +221,10 @@ func WithPostBoot(hooks ...PostBootHook) Option {
 	return optionFunc(func(c *config) { c.postBootHooks = append(c.postBootHooks, hooks...) })
 }
 
-// WithLibDir sets the path to a directory containing libkrun/libkrunfw shared
-// libraries. The runner subprocess will use this via LD_LIBRARY_PATH.
-// When empty (default), system libraries are used.
-func WithLibDir(path string) Option {
-	return optionFunc(func(c *config) { c.libDir = path })
+// WithBackend sets the hypervisor backend used to prepare the rootfs and
+// start the VM. When nil (default), the libkrun backend is used.
+func WithBackend(b hypervisor.Backend) Option {
+	return optionFunc(func(c *config) { c.backend = b })
 }
 
 // WithDataDir sets the base directory for VM state, caches, and logs.
@@ -244,12 +241,6 @@ func WithDataDir(path string) Option {
 // if it lives under the data dir.
 func WithCleanDataDir() Option {
 	return optionFunc(func(c *config) { c.cleanDataDir = true })
-}
-
-// WithRunnerPath sets the path to the propolis-runner binary.
-// When empty, the runner is found via $PATH or alongside the calling binary.
-func WithRunnerPath(path string) Option {
-	return optionFunc(func(c *config) { c.runnerPath = path })
 }
 
 // WithEgressPolicy restricts outbound VM traffic to the specified hostnames.
@@ -279,10 +270,4 @@ func WithImageCache(cache *image.Cache) Option {
 // the Docker/Podman daemon first, then falls back to remote registry pull.
 func WithImageFetcher(f image.ImageFetcher) Option {
 	return optionFunc(func(c *config) { c.imageFetcher = f })
-}
-
-// WithSpawner sets a custom spawner for the runner subprocess.
-// When nil (default), the standard runner.Spawn is used.
-func WithSpawner(s runner.Spawner) Option {
-	return optionFunc(func(c *config) { c.spawner = s })
 }

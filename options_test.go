@@ -94,24 +94,6 @@ func TestWithName(t *testing.T) {
 	assert.Equal(t, "my-vm", cfg.name)
 }
 
-func TestWithLibDir(t *testing.T) {
-	t.Parallel()
-
-	cfg := defaultConfig()
-	WithLibDir("/usr/local/lib/krun").apply(cfg)
-
-	assert.Equal(t, "/usr/local/lib/krun", cfg.libDir)
-}
-
-func TestWithRunnerPath(t *testing.T) {
-	t.Parallel()
-
-	cfg := defaultConfig()
-	WithRunnerPath("/usr/bin/propolis-runner").apply(cfg)
-
-	assert.Equal(t, "/usr/bin/propolis-runner", cfg.runnerPath)
-}
-
 func TestWithDataDir(t *testing.T) {
 	t.Parallel()
 

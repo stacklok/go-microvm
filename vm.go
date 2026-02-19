@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/runner"
 	"github.com/stacklok/propolis/state"
 )
 
 // VM represents a running microVM.
 type VM struct {
 	name       string
-	proc       runner.ProcessHandle
+	handle     hypervisor.VMHandle
 	netProv    net.Provider
 	dataDir    string
 	rootfsPath string
@@ -33,7 +33,8 @@ type VM struct {
 type VMInfo struct {
 	Name      string
 	Active    bool
-	PID       int
+	PID       int    // kept for state compatibility, populated via pidFromID
+	ID        string // backend-specific identifier
 	CPUs      uint32
 	Memory    uint32
 	Ports     []PortForward
@@ -46,7 +47,7 @@ type VMInfo struct {
 func (vm *VM) Stop(ctx context.Context) error {
 	slog.Info("stopping VM", "name", vm.name)
 
-	if err := vm.proc.Stop(ctx); err != nil {
+	if err := vm.handle.Stop(ctx); err != nil {
 		return fmt.Errorf("stop vm process: %w", err)
 	}
 
@@ -75,11 +76,14 @@ func (vm *VM) Stop(ctx context.Context) error {
 
 // Status returns current information about the VM.
 func (vm *VM) Status(_ context.Context) (*VMInfo, error) {
-	alive := vm.proc.IsAlive()
+	alive := vm.handle.IsAlive()
+	id := vm.handle.ID()
+	pid, _ := pidFromID(id)
 	return &VMInfo{
 		Name:   vm.name,
 		Active: alive,
-		PID:    vm.proc.PID(),
+		PID:    pid,
+		ID:     id,
 		Ports:  vm.ports,
 	}, nil
 }
@@ -87,10 +91,10 @@ func (vm *VM) Status(_ context.Context) (*VMInfo, error) {
 // Remove stops the VM and cleans up its rootfs and state.
 // If the image cache lives under the data dir, its contents are preserved.
 func (vm *VM) Remove(ctx context.Context) error {
-	if vm.proc.IsAlive() {
-		if err := vm.Stop(ctx); err != nil {
-			return fmt.Errorf("stop before remove: %w", err)
-		}
+	// Always attempt Stop — it is idempotent and handles already-dead VMs.
+	// This avoids a TOCTOU race between IsAlive() and Stop().
+	if err := vm.Stop(ctx); err != nil {
+		return fmt.Errorf("stop before remove: %w", err)
 	}
 	if vm.removeAll == nil {
 		vm.removeAll = os.RemoveAll
@@ -124,8 +128,8 @@ func (vm *VM) Remove(ctx context.Context) error {
 // Name returns the VM name.
 func (vm *VM) Name() string { return vm.name }
 
-// PID returns the runner process ID.
-func (vm *VM) PID() int { return vm.proc.PID() }
+// ID returns the backend-specific VM identifier.
+func (vm *VM) ID() string { return vm.handle.ID() }
 
 // DataDir returns the base data directory for this VM.
 func (vm *VM) DataDir() string { return vm.dataDir }

@@ -15,27 +15,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/preflight"
-	"github.com/stacklok/propolis/runner"
 	"github.com/stacklok/propolis/state"
 )
 
 // --- Pure function tests ---
 
-func TestBuildKrunConfig_NilOCIConfig(t *testing.T) {
+func TestBuildInitConfig_NilOCIConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultConfig()
-	kc := buildKrunConfig(nil, cfg)
+	ic := buildInitConfig(nil, cfg)
 
-	assert.Equal(t, "/", kc.WorkingDir)
-	assert.Contains(t, kc.Env[0], "PATH=")
-	assert.Nil(t, kc.Cmd)
+	assert.Equal(t, "/", ic.WorkingDir)
+	assert.Contains(t, ic.Env[0], "PATH=")
+	assert.Nil(t, ic.Cmd)
 }
 
-func TestBuildKrunConfig_WithOCIConfig(t *testing.T) {
+func TestBuildInitConfig_WithOCIConfig(t *testing.T) {
 	t.Parallel()
 
 	ociCfg := &image.OCIConfig{
@@ -46,16 +46,16 @@ func TestBuildKrunConfig_WithOCIConfig(t *testing.T) {
 	}
 
 	cfg := defaultConfig()
-	kc := buildKrunConfig(ociCfg, cfg)
+	ic := buildInitConfig(ociCfg, cfg)
 
-	assert.Equal(t, "/app", kc.WorkingDir)
-	assert.Equal(t, []string{"/bin/sh", "-c", "echo hello"}, kc.Cmd)
-	assert.Contains(t, kc.Env, "FOO=bar")
+	assert.Equal(t, "/app", ic.WorkingDir)
+	assert.Equal(t, []string{"/bin/sh", "-c", "echo hello"}, ic.Cmd)
+	assert.Contains(t, ic.Env, "FOO=bar")
 	// Default PATH should still be first.
-	assert.Contains(t, kc.Env[0], "PATH=")
+	assert.Contains(t, ic.Env[0], "PATH=")
 }
 
-func TestBuildKrunConfig_WithInitOverride(t *testing.T) {
+func TestBuildInitConfig_WithInitOverride(t *testing.T) {
 	t.Parallel()
 
 	ociCfg := &image.OCIConfig{
@@ -65,13 +65,13 @@ func TestBuildKrunConfig_WithInitOverride(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.initOverride = []string{"/custom/init", "--flag"}
-	kc := buildKrunConfig(ociCfg, cfg)
+	ic := buildInitConfig(ociCfg, cfg)
 
 	// InitOverride should replace the OCI command.
-	assert.Equal(t, []string{"/custom/init", "--flag"}, kc.Cmd)
+	assert.Equal(t, []string{"/custom/init", "--flag"}, ic.Cmd)
 }
 
-func TestBuildKrunConfig_EmptyWorkingDir(t *testing.T) {
+func TestBuildInitConfig_EmptyWorkingDir(t *testing.T) {
 	t.Parallel()
 
 	ociCfg := &image.OCIConfig{
@@ -79,12 +79,12 @@ func TestBuildKrunConfig_EmptyWorkingDir(t *testing.T) {
 	}
 
 	cfg := defaultConfig()
-	kc := buildKrunConfig(ociCfg, cfg)
+	ic := buildInitConfig(ociCfg, cfg)
 
-	assert.Equal(t, "/", kc.WorkingDir)
+	assert.Equal(t, "/", ic.WorkingDir)
 }
 
-func TestToRunnerVirtioFS(t *testing.T) {
+func TestToHypervisorMounts(t *testing.T) {
 	t.Parallel()
 
 	mounts := []VirtioFSMount{
@@ -92,7 +92,7 @@ func TestToRunnerVirtioFS(t *testing.T) {
 		{Tag: "data", HostPath: "/var/data"},
 	}
 
-	result := toRunnerVirtioFS(mounts)
+	result := toHypervisorMounts(mounts)
 
 	require.Len(t, result, 2)
 	assert.Equal(t, "workspace", result[0].Tag)
@@ -101,10 +101,10 @@ func TestToRunnerVirtioFS(t *testing.T) {
 	assert.Equal(t, "/var/data", result[1].HostPath)
 }
 
-func TestToRunnerVirtioFS_Empty(t *testing.T) {
+func TestToHypervisorMounts_Empty(t *testing.T) {
 	t.Parallel()
 
-	result := toRunnerVirtioFS(nil)
+	result := toHypervisorMounts(nil)
 	assert.Empty(t, result)
 }
 
@@ -120,14 +120,28 @@ func (m *mockImageFetcher) Pull(_ context.Context, _ string) (v1.Image, error) {
 	return m.img, m.err
 }
 
-// mockSpawner implements runner.Spawner for testing.
-type mockSpawner struct {
-	proc runner.ProcessHandle
-	err  error
+// mockBackend implements hypervisor.Backend for testing.
+type mockBackend struct {
+	prepareErr  error
+	preparePath string // if set, returned instead of rootfsPath
+	startHandle hypervisor.VMHandle
+	startErr    error
 }
 
-func (m *mockSpawner) Spawn(_ context.Context, _ runner.Config) (runner.ProcessHandle, error) {
-	return m.proc, m.err
+func (m *mockBackend) Name() string { return "mock" }
+
+func (m *mockBackend) PrepareRootFS(_ context.Context, rootfsPath string, _ hypervisor.InitConfig) (string, error) {
+	if m.prepareErr != nil {
+		return "", m.prepareErr
+	}
+	if m.preparePath != "" {
+		return m.preparePath, nil
+	}
+	return rootfsPath, nil
+}
+
+func (m *mockBackend) Start(_ context.Context, _ hypervisor.VMConfig) (hypervisor.VMHandle, error) {
+	return m.startHandle, m.startErr
 }
 
 // failingChecker is a preflight.Checker that always fails.
@@ -184,7 +198,7 @@ func TestRun_SpawnFailure(t *testing.T) {
 		WithPreflightChecker(preflight.NewEmpty()),
 		WithRootFSPath(rootfsDir),
 		WithNetProvider(netProv),
-		WithSpawner(&mockSpawner{err: fmt.Errorf("runner not found")}),
+		WithBackend(&mockBackend{startErr: fmt.Errorf("runner not found")}),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spawn vm")
@@ -206,7 +220,7 @@ func TestRun_WithCleanDataDir_RemovesStaleState(t *testing.T) {
 	rootfsDir := filepath.Join(dataDir, "rootfs")
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
 
-	proc := &mockProcessHandle{pid: 1234, alive: true}
+	handle := &mockVMHandle{id: "1234", alive: true}
 	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
 
 	vm, err := Run(context.Background(), "test:latest",
@@ -215,7 +229,7 @@ func TestRun_WithCleanDataDir_RemovesStaleState(t *testing.T) {
 		WithPreflightChecker(preflight.NewEmpty()),
 		WithRootFSPath(rootfsDir),
 		WithNetProvider(netProv),
-		WithSpawner(&mockSpawner{proc: proc}),
+		WithBackend(&mockBackend{startHandle: handle}),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, vm)
@@ -239,7 +253,7 @@ func TestRun_Success(t *testing.T) {
 	rootfsDir := filepath.Join(dataDir, "rootfs")
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
 
-	proc := &mockProcessHandle{pid: 1234, alive: true}
+	handle := &mockVMHandle{id: "1234", alive: true}
 	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
 
 	vm, err := Run(context.Background(), "test:latest",
@@ -250,13 +264,13 @@ func TestRun_Success(t *testing.T) {
 		WithPreflightChecker(preflight.NewEmpty()),
 		WithRootFSPath(rootfsDir),
 		WithNetProvider(netProv),
-		WithSpawner(&mockSpawner{proc: proc}),
+		WithBackend(&mockBackend{startHandle: handle}),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, vm)
 
 	assert.Equal(t, "test-vm", vm.Name())
-	assert.Equal(t, 1234, vm.PID())
+	assert.Equal(t, "1234", vm.ID())
 	assert.Equal(t, rootfsDir, vm.RootFSPath())
 
 	// Verify state was persisted for crash recovery.
@@ -280,7 +294,7 @@ func TestRun_WithRootFSPath_SkipsImagePull(t *testing.T) {
 
 	// Image fetcher should NOT be called since rootfs path is set.
 	fetcher := &mockImageFetcher{err: fmt.Errorf("should not be called")}
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
 
 	vm, err := Run(context.Background(), "test:latest",
@@ -289,7 +303,7 @@ func TestRun_WithRootFSPath_SkipsImagePull(t *testing.T) {
 		WithRootFSPath(rootfsDir),
 		WithImageFetcher(fetcher),
 		WithNetProvider(netProv),
-		WithSpawner(&mockSpawner{proc: proc}),
+		WithBackend(&mockBackend{startHandle: handle}),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, vm)
@@ -303,7 +317,7 @@ func TestRun_PostBootHookError(t *testing.T) {
 	rootfsDir := filepath.Join(dataDir, "rootfs")
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
 
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
 
 	_, err := Run(context.Background(), "test:latest",
@@ -311,7 +325,7 @@ func TestRun_PostBootHookError(t *testing.T) {
 		WithPreflightChecker(preflight.NewEmpty()),
 		WithRootFSPath(rootfsDir),
 		WithNetProvider(netProv),
-		WithSpawner(&mockSpawner{proc: proc}),
+		WithBackend(&mockBackend{startHandle: handle}),
 		WithPostBoot(func(_ context.Context, _ *VM) error {
 			return fmt.Errorf("hook failed")
 		}),
@@ -319,7 +333,7 @@ func TestRun_PostBootHookError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "post-boot hook")
 	// Process and net provider should be stopped on post-boot hook failure.
-	assert.True(t, proc.stopped)
+	assert.True(t, handle.stopped)
 	assert.True(t, netProv.stopped)
 }
 
@@ -332,7 +346,7 @@ func TestRun_WithImageFetcher_CacheMiss(t *testing.T) {
 	require.NoError(t, err)
 
 	fetcher := &mockImageFetcher{img: fakeImg}
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
 
 	vm, err := Run(context.Background(), "example.com/test:latest",
@@ -340,7 +354,7 @@ func TestRun_WithImageFetcher_CacheMiss(t *testing.T) {
 		WithPreflightChecker(preflight.NewEmpty()),
 		WithImageFetcher(fetcher),
 		WithNetProvider(netProv),
-		WithSpawner(&mockSpawner{proc: proc}),
+		WithBackend(&mockBackend{startHandle: handle}),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, vm)
@@ -383,6 +397,90 @@ func TestRun_NetworkingError(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "networking")
+}
+
+// --- PrepareRootFS path validation tests ---
+
+func TestRun_PrepareRootFS_PathEscape(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+
+	// Backend returns a path outside the rootfs — should be rejected.
+	_, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithBackend(&mockBackend{preparePath: "/etc"}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backend returned rootfs path outside original")
+}
+
+func TestRun_PrepareRootFS_SubdirAllowed(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	subDir := filepath.Join(rootfsDir, "inner")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+
+	handle := &mockVMHandle{id: "42", alive: true}
+
+	// Backend returns a subdirectory — should be allowed.
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithNetProvider(&mockNetProvider{sockPath: "/tmp/fake.sock"}),
+		WithBackend(&mockBackend{preparePath: subDir, startHandle: handle}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, vm)
+}
+
+// --- pidFromID tests ---
+
+func TestPidFromID_Valid(t *testing.T) {
+	t.Parallel()
+
+	pid, err := pidFromID("1234")
+	require.NoError(t, err)
+	assert.Equal(t, 1234, pid)
+}
+
+func TestPidFromID_NonNumeric(t *testing.T) {
+	t.Parallel()
+
+	_, err := pidFromID("abc-123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse VM ID")
+}
+
+func TestPidFromID_Zero(t *testing.T) {
+	t.Parallel()
+
+	_, err := pidFromID("0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid PID")
+}
+
+func TestPidFromID_Negative(t *testing.T) {
+	t.Parallel()
+
+	_, err := pidFromID("-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid PID")
+}
+
+func TestPidFromID_Empty(t *testing.T) {
+	t.Parallel()
+
+	_, err := pidFromID("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse VM ID")
 }
 
 // --- buildNetConfig tests ---
@@ -493,16 +591,16 @@ func TestRun_EgressPolicy_ValidWildcard(t *testing.T) {
 	rootfsDir := filepath.Join(dataDir, "rootfs")
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
 
-	proc := &mockProcessHandle{pid: 99, alive: true}
+	handle := &mockVMHandle{id: "99", alive: true}
 
 	// ValidWildcard should pass egress validation and proceed.
-	// We use a mock spawner to prevent the actual VM spawn from failing
+	// We use a mock backend to prevent the actual VM spawn from failing
 	// for unrelated reasons (no runner binary, etc.).
 	vm, err := Run(context.Background(), "test:latest",
 		WithDataDir(dataDir),
 		WithPreflightChecker(preflight.NewEmpty()),
 		WithRootFSPath(rootfsDir),
-		WithSpawner(&mockSpawner{proc: proc}),
+		WithBackend(&mockBackend{startHandle: handle}),
 		WithEgressPolicy(EgressPolicy{
 			AllowedHosts: []EgressHost{{Name: "*.example.com"}},
 		}),
@@ -511,9 +609,9 @@ func TestRun_EgressPolicy_ValidWildcard(t *testing.T) {
 	require.NotNil(t, vm)
 }
 
-// --- toRunnerPortForwards tests ---
+// --- toHypervisorPorts tests ---
 
-func TestToRunnerPortForwards(t *testing.T) {
+func TestToHypervisorPorts(t *testing.T) {
 	t.Parallel()
 
 	ports := []PortForward{
@@ -522,7 +620,7 @@ func TestToRunnerPortForwards(t *testing.T) {
 		{Host: 3000, Guest: 3000},
 	}
 
-	result := toRunnerPortForwards(ports)
+	result := toHypervisorPorts(ports)
 
 	require.Len(t, result, 3)
 	assert.Equal(t, uint16(8080), result[0].Host)
@@ -533,10 +631,10 @@ func TestToRunnerPortForwards(t *testing.T) {
 	assert.Equal(t, uint16(3000), result[2].Guest)
 }
 
-func TestToRunnerPortForwards_Nil(t *testing.T) {
+func TestToHypervisorPorts_Nil(t *testing.T) {
 	t.Parallel()
 
-	result := toRunnerPortForwards(nil)
+	result := toHypervisorPorts(nil)
 	assert.Empty(t, result)
 }
 
@@ -553,13 +651,13 @@ func TestWithImageFetcher(t *testing.T) {
 	assert.Equal(t, fetcher, cfg.imageFetcher)
 }
 
-func TestWithSpawner(t *testing.T) {
+func TestWithBackend(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultConfig()
-	assert.Nil(t, cfg.spawner)
+	assert.Nil(t, cfg.backend)
 
-	spawner := &mockSpawner{}
-	WithSpawner(spawner).apply(cfg)
-	assert.Equal(t, spawner, cfg.spawner)
+	backend := &mockBackend{}
+	WithBackend(backend).apply(cfg)
+	assert.Equal(t, backend, cfg.backend)
 }

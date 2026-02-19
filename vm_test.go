@@ -17,22 +17,22 @@ import (
 	"github.com/stacklok/propolis/state"
 )
 
-// mockProcessHandle is a test double for runner.ProcessHandle.
-type mockProcessHandle struct {
-	pid     int
+// mockVMHandle is a test double for hypervisor.VMHandle.
+type mockVMHandle struct {
+	id      string
 	alive   bool
 	stopErr error
 	stopped bool
 }
 
-func (m *mockProcessHandle) Stop(_ context.Context) error {
+func (m *mockVMHandle) Stop(_ context.Context) error {
 	m.stopped = true
 	m.alive = false
 	return m.stopErr
 }
 
-func (m *mockProcessHandle) IsAlive() bool { return m.alive }
-func (m *mockProcessHandle) PID() int      { return m.pid }
+func (m *mockVMHandle) IsAlive() bool { return m.alive }
+func (m *mockVMHandle) ID() string    { return m.id }
 
 // mockNetProvider is a test double for net.Provider.
 type mockNetProvider struct {
@@ -53,30 +53,30 @@ func (m *mockNetProvider) Stop()              { m.stopped = true }
 func TestVM_Stop(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
 		name:    "test-vm",
-		proc:    proc,
+		handle:  handle,
 		netProv: netProv,
 	}
 
 	err := vm.Stop(context.Background())
 	require.NoError(t, err)
-	assert.True(t, proc.stopped)
+	assert.True(t, handle.stopped)
 	assert.True(t, netProv.stopped)
 }
 
 func TestVM_Stop_ProcessError(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42, alive: true, stopErr: fmt.Errorf("kill failed")}
+	handle := &mockVMHandle{id: "42", alive: true, stopErr: fmt.Errorf("kill failed")}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
 		name:    "test-vm",
-		proc:    proc,
+		handle:  handle,
 		netProv: netProv,
 	}
 
@@ -90,13 +90,13 @@ func TestVM_Stop_ProcessError(t *testing.T) {
 func TestVM_Status_Alive(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
-		name:  "test-vm",
-		proc:  proc,
-		ports: []PortForward{{Host: 8080, Guest: 80}},
+		name:   "test-vm",
+		handle: handle,
+		ports:  []PortForward{{Host: 8080, Guest: 80}},
 	}
 	_ = netProv // suppress unused
 
@@ -105,6 +105,7 @@ func TestVM_Status_Alive(t *testing.T) {
 	assert.Equal(t, "test-vm", info.Name)
 	assert.True(t, info.Active)
 	assert.Equal(t, 42, info.PID)
+	assert.Equal(t, "42", info.ID)
 	require.Len(t, info.Ports, 1)
 	assert.Equal(t, uint16(8080), info.Ports[0].Host)
 }
@@ -112,11 +113,11 @@ func TestVM_Status_Alive(t *testing.T) {
 func TestVM_Status_Dead(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42, alive: false}
+	handle := &mockVMHandle{id: "42", alive: false}
 
 	vm := &VM{
 		name:    "test-vm",
-		proc:    proc,
+		handle:  handle,
 		netProv: &mockNetProvider{},
 	}
 
@@ -128,37 +129,37 @@ func TestVM_Status_Dead(t *testing.T) {
 func TestVM_Remove_AlreadyStopped(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42, alive: false}
+	handle := &mockVMHandle{id: "42", alive: false}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
 		name:    "test-vm",
-		proc:    proc,
+		handle:  handle,
 		netProv: netProv,
 	}
 
 	err := vm.Remove(context.Background())
 	require.NoError(t, err)
-	// Should not have called Stop since process is already dead.
-	assert.False(t, proc.stopped)
-	assert.False(t, netProv.stopped)
+	// Stop is always called (idempotent) to avoid TOCTOU races.
+	assert.True(t, handle.stopped)
+	assert.True(t, netProv.stopped)
 }
 
 func TestVM_Remove_StillRunning(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
 		name:    "test-vm",
-		proc:    proc,
+		handle:  handle,
 		netProv: netProv,
 	}
 
 	err := vm.Remove(context.Background())
 	require.NoError(t, err)
-	assert.True(t, proc.stopped)
+	assert.True(t, handle.stopped)
 	assert.True(t, netProv.stopped)
 }
 
@@ -176,7 +177,7 @@ func TestVM_Remove_PreservesCacheContents(t *testing.T) {
 
 	vm := &VM{
 		name:       "test-vm",
-		proc:       &mockProcessHandle{pid: 42, alive: false},
+		handle:     &mockVMHandle{id: "42", alive: false},
 		dataDir:    dataDir,
 		rootfsPath: rootfsDir,
 		cacheDir:   cacheDir,
@@ -208,7 +209,7 @@ func TestVM_Remove_RemovesRootfsOutsideCache(t *testing.T) {
 
 	vm := &VM{
 		name:       "test-vm",
-		proc:       &mockProcessHandle{pid: 42, alive: false},
+		handle:     &mockVMHandle{id: "42", alive: false},
 		dataDir:    dataDir,
 		rootfsPath: rootfsDir,
 		cacheDir:   cacheDir,
@@ -228,12 +229,12 @@ func TestVM_Remove_RemovesRootfsOutsideCache(t *testing.T) {
 func TestVM_Accessors(t *testing.T) {
 	t.Parallel()
 
-	proc := &mockProcessHandle{pid: 42}
+	handle := &mockVMHandle{id: "42"}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
 		name:       "my-vm",
-		proc:       proc,
+		handle:     handle,
 		netProv:    netProv,
 		dataDir:    "/data",
 		rootfsPath: "/rootfs",
@@ -241,7 +242,7 @@ func TestVM_Accessors(t *testing.T) {
 	}
 
 	assert.Equal(t, "my-vm", vm.Name())
-	assert.Equal(t, 42, vm.PID())
+	assert.Equal(t, "42", vm.ID())
 	assert.Equal(t, "/data", vm.DataDir())
 	assert.Equal(t, "/rootfs", vm.RootFSPath())
 	require.Len(t, vm.Ports(), 1)
@@ -252,12 +253,12 @@ func TestVM_Stop_ClearsState(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	proc := &mockProcessHandle{pid: 42, alive: true}
+	handle := &mockVMHandle{id: "42", alive: true}
 	netProv := &mockNetProvider{}
 
 	vm := &VM{
 		name:    "test-vm",
-		proc:    proc,
+		handle:  handle,
 		netProv: netProv,
 		dataDir: dataDir,
 	}

@@ -21,12 +21,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/stacklok/propolis/hypervisor"
+	"github.com/stacklok/propolis/hypervisor/libkrun"
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/net/hosted"
-	"github.com/stacklok/propolis/runner"
 	"github.com/stacklok/propolis/state"
 )
 
@@ -105,10 +107,18 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		}
 	}
 
-	// 4. Write .krun_config.json.
-	krunCfg := buildKrunConfig(rootfs.Config, cfg)
-	if err := krunCfg.WriteTo(rootfs.Path); err != nil {
-		return nil, fmt.Errorf("write krun config: %w", err)
+	// 4. Prepare rootfs via backend.
+	backend := cfg.backend
+	if backend == nil {
+		backend = libkrun.NewBackend()
+	}
+	initCfg := buildInitConfig(rootfs.Config, cfg)
+	preparedPath, err := backend.PrepareRootFS(ctx, rootfs.Path, initCfg)
+	if err != nil {
+		return nil, fmt.Errorf("prepare rootfs: %w", err)
+	}
+	if !isWithin(rootfs.Path, preparedPath) && preparedPath != rootfs.Path {
+		return nil, fmt.Errorf("backend returned rootfs path outside original: %s", preparedPath)
 	}
 
 	// 5. Start networking.
@@ -129,26 +139,25 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		netSocket = cfg.netProvider.SocketPath()
 	}
 
-	// 6. Spawn VM runner subprocess.
-	slog.Debug("spawning VM")
-	runCfg := runner.Config{
-		RootPath:     rootfs.Path,
-		NumVCPUs:     cfg.cpus,
-		RAMMiB:       cfg.memory,
-		NetSocket:    netSocket,
-		PortForwards: toRunnerPortForwards(cfg.ports),
-		VirtioFS:     toRunnerVirtioFS(cfg.virtioFS),
-		ConsoleLog:   filepath.Join(cfg.dataDir, "console.log"),
-		LibDir:       cfg.libDir,
-		RunnerPath:   cfg.runnerPath,
-		VMLogPath:    filepath.Join(cfg.dataDir, "vm.log"),
+	// 6. Start VM via backend.
+	slog.Debug("starting VM")
+	var netEndpoint hypervisor.NetEndpoint
+	if netSocket != "" {
+		netEndpoint = hypervisor.NetEndpoint{Type: hypervisor.NetEndpointUnixSocket, Path: netSocket}
 	}
-
-	spawner := cfg.spawner
-	if spawner == nil {
-		spawner = runner.DefaultSpawner{}
+	vmCfg := hypervisor.VMConfig{
+		Name:             cfg.name,
+		RootFSPath:       preparedPath,
+		NumVCPUs:         cfg.cpus,
+		RAMMiB:           cfg.memory,
+		PortForwards:     toHypervisorPorts(cfg.ports),
+		FilesystemMounts: toHypervisorMounts(cfg.virtioFS),
+		InitConfig:       initCfg,
+		DataDir:          cfg.dataDir,
+		ConsoleLogPath:   filepath.Join(cfg.dataDir, "console.log"),
+		NetEndpoint:      netEndpoint,
 	}
-	proc, err := spawner.Spawn(ctx, runCfg)
+	handle, err := backend.Start(ctx, vmCfg)
 	if err != nil {
 		if cfg.netProvider != nil {
 			cfg.netProvider.Stop()
@@ -158,7 +167,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 
 	vm := &VM{
 		name:       cfg.name,
-		proc:       proc,
+		handle:     handle,
 		netProv:    cfg.netProvider,
 		dataDir:    cfg.dataDir,
 		rootfsPath: rootfs.Path,
@@ -175,7 +184,11 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	if ls, stateErr := stateMgr.LoadAndLock(ctx); stateErr == nil {
 		ls.State.Active = true
 		ls.State.Name = cfg.name
-		ls.State.PID = proc.PID()
+		if pid, pidErr := pidFromID(handle.ID()); pidErr == nil {
+			ls.State.PID = pid
+		} else {
+			slog.Warn("could not persist VM PID", "id", handle.ID(), "error", pidErr)
+		}
 		ls.State.Image = imageRef
 		ls.State.CPUs = cfg.cpus
 		ls.State.MemoryMB = cfg.memory
@@ -195,7 +208,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		}
 	}
 
-	slog.Info("VM running", "name", cfg.name, "pid", proc.PID())
+	slog.Info("VM running", "name", cfg.name, "id", handle.ID())
 	return vm, nil
 }
 
@@ -239,40 +252,51 @@ func cacheDir(cfg *config) string {
 	return cfg.imageCache.BaseDir()
 }
 
-func toRunnerPortForwards(ports []PortForward) []runner.PortForward {
-	out := make([]runner.PortForward, len(ports))
-	for i, p := range ports {
-		out[i] = runner.PortForward{Host: p.Host, Guest: p.Guest}
-	}
-	return out
-}
-
-func toRunnerVirtioFS(mounts []VirtioFSMount) []runner.VirtioFSMount {
-	out := make([]runner.VirtioFSMount, len(mounts))
-	for i, m := range mounts {
-		out[i] = runner.VirtioFSMount{Tag: m.Tag, HostPath: m.HostPath}
-	}
-	return out
-}
-
-func buildKrunConfig(ociCfg *image.OCIConfig, cfg *config) image.KrunConfig {
-	kc := image.KrunConfig{
+func buildInitConfig(ociCfg *image.OCIConfig, cfg *config) hypervisor.InitConfig {
+	ic := hypervisor.InitConfig{
 		WorkingDir: "/",
 		Env:        []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 	}
 
 	if ociCfg != nil {
 		if ociCfg.WorkingDir != "" {
-			kc.WorkingDir = ociCfg.WorkingDir
+			ic.WorkingDir = ociCfg.WorkingDir
 		}
-		kc.Env = append(kc.Env, ociCfg.Env...)
-		kc.Cmd = append(ociCfg.Entrypoint, ociCfg.Cmd...)
+		ic.Env = append(ic.Env, ociCfg.Env...)
+		ic.Cmd = append(ociCfg.Entrypoint, ociCfg.Cmd...)
 	}
 
 	// InitOverride replaces whatever the OCI image specified.
 	if len(cfg.initOverride) > 0 {
-		kc.Cmd = cfg.initOverride
+		ic.Cmd = cfg.initOverride
 	}
 
-	return kc
+	return ic
+}
+
+func toHypervisorPorts(ports []PortForward) []hypervisor.PortForward {
+	out := make([]hypervisor.PortForward, len(ports))
+	for i, p := range ports {
+		out[i] = hypervisor.PortForward{Host: p.Host, Guest: p.Guest}
+	}
+	return out
+}
+
+func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
+	out := make([]hypervisor.FilesystemMount, len(mounts))
+	for i, m := range mounts {
+		out[i] = hypervisor.FilesystemMount{Tag: m.Tag, HostPath: m.HostPath}
+	}
+	return out
+}
+
+func pidFromID(id string) (int, error) {
+	pid, err := strconv.Atoi(id)
+	if err != nil {
+		return 0, fmt.Errorf("parse VM ID %q as PID: %w", id, err)
+	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid PID %d from VM ID %q", pid, id)
+	}
+	return pid, nil
 }
