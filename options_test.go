@@ -122,6 +122,16 @@ func TestWithDataDir(t *testing.T) {
 	assert.NotNil(t, cfg.imageCache) // imageCache should be recreated
 }
 
+func TestWithCleanDataDir(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	assert.False(t, cfg.cleanDataDir)
+
+	WithCleanDataDir().apply(cfg)
+	assert.True(t, cfg.cleanDataDir)
+}
+
 func TestWithRootFSPath(t *testing.T) {
 	t.Parallel()
 

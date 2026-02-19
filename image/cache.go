@@ -23,6 +23,14 @@ func NewCache(baseDir string) *Cache {
 	return &Cache{baseDir: baseDir}
 }
 
+// BaseDir returns the root directory used for cached rootfs entries.
+func (c *Cache) BaseDir() string {
+	if c == nil {
+		return ""
+	}
+	return c.baseDir
+}
+
 // Get returns the path to a cached rootfs for the given digest, and true
 // if it exists and appears valid. Returns ("", false) on a cache miss.
 func (c *Cache) Get(digest string) (string, bool) {

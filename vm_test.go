@@ -6,6 +6,8 @@ package propolis
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -158,6 +160,69 @@ func TestVM_Remove_StillRunning(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, proc.stopped)
 	assert.True(t, netProv.stopped)
+}
+
+func TestVM_Remove_PreservesCacheContents(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "cache")
+	rootfsDir := filepath.Join(cacheDir, "rootfs")
+	stalePath := filepath.Join(dataDir, "stale.sock")
+
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootfsDir, "marker"), []byte("rootfs"), 0o644))
+	require.NoError(t, os.WriteFile(stalePath, []byte("stale"), 0o644))
+
+	vm := &VM{
+		name:       "test-vm",
+		proc:       &mockProcessHandle{pid: 42, alive: false},
+		dataDir:    dataDir,
+		rootfsPath: rootfsDir,
+		cacheDir:   cacheDir,
+		removeAll:  os.RemoveAll,
+	}
+
+	err := vm.Remove(context.Background())
+	require.NoError(t, err)
+
+	_, err = os.Stat(stalePath)
+	assert.True(t, os.IsNotExist(err))
+
+	_, err = os.Stat(rootfsDir)
+	require.NoError(t, err)
+
+	_, err = os.Stat(cacheDir)
+	require.NoError(t, err)
+}
+
+func TestVM_Remove_RemovesRootfsOutsideCache(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "cache")
+	rootfsDir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootfsDir, "marker"), []byte("rootfs"), 0o644))
+
+	vm := &VM{
+		name:       "test-vm",
+		proc:       &mockProcessHandle{pid: 42, alive: false},
+		dataDir:    dataDir,
+		rootfsPath: rootfsDir,
+		cacheDir:   cacheDir,
+		removeAll:  os.RemoveAll,
+	}
+
+	err := vm.Remove(context.Background())
+	require.NoError(t, err)
+
+	_, err = os.Stat(rootfsDir)
+	assert.True(t, os.IsNotExist(err))
+
+	_, err = os.Stat(cacheDir)
+	require.NoError(t, err)
 }
 
 func TestVM_Accessors(t *testing.T) {

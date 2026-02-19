@@ -192,6 +192,44 @@ func TestRun_SpawnFailure(t *testing.T) {
 	assert.True(t, netProv.stopped)
 }
 
+func TestRun_WithCleanDataDir_RemovesStaleState(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "cache")
+	stalePath := filepath.Join(dataDir, "stale.sock")
+
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheDir, "marker"), []byte("cache"), 0o644))
+	require.NoError(t, os.WriteFile(stalePath, []byte("stale"), 0o644))
+
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+
+	proc := &mockProcessHandle{pid: 1234, alive: true}
+	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
+
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithCleanDataDir(),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithNetProvider(netProv),
+		WithSpawner(&mockSpawner{proc: proc}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, vm)
+
+	_, err = os.Stat(stalePath)
+	assert.True(t, os.IsNotExist(err))
+
+	_, err = os.Stat(cacheDir)
+	require.NoError(t, err)
+
+	_, err = os.Stat(rootfsDir)
+	require.NoError(t, err)
+}
+
 func TestRun_Success(t *testing.T) {
 	t.Parallel()
 

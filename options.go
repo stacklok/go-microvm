@@ -79,6 +79,9 @@ type config struct {
 	imageCache            *image.Cache
 	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
 	spawner               runner.Spawner     // nil = default runner.Spawn
+	cleanDataDir          bool
+	removeAll             func(string) error
+	stat                  func(string) (os.FileInfo, error)
 }
 
 func defaultConfig() *config {
@@ -92,6 +95,8 @@ func defaultConfig() *config {
 		preflight:   preflight.Default(),
 		imageCache:  image.NewCache(filepath.Join(dataDir, "cache")),
 		dataDir:     dataDir,
+		removeAll:   os.RemoveAll,
+		stat:        os.Stat,
 	}
 }
 
@@ -232,6 +237,13 @@ func WithDataDir(path string) Option {
 		c.dataDir = path
 		c.imageCache = image.NewCache(filepath.Join(path, "cache"))
 	})
+}
+
+// WithCleanDataDir removes any existing data directory contents before boot.
+// Use only when the data dir is VM-scoped; this will also clear the image cache
+// if it lives under the data dir.
+func WithCleanDataDir() Option {
+	return optionFunc(func(c *config) { c.cleanDataDir = true })
 }
 
 // WithRunnerPath sets the path to the propolis-runner binary.

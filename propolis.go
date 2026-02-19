@@ -38,6 +38,11 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	for _, opt := range opts {
 		opt.apply(cfg)
 	}
+	if cfg.cleanDataDir {
+		if err := cleanDataDir(cfg); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := os.MkdirAll(cfg.dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -158,6 +163,8 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		dataDir:    cfg.dataDir,
 		rootfsPath: rootfs.Path,
 		ports:      cfg.ports,
+		cacheDir:   cacheDir(cfg),
+		removeAll:  cfg.removeAll,
 	}
 
 	// Best-effort state persistence for crash recovery.
@@ -190,6 +197,46 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 
 	slog.Info("VM running", "name", cfg.name, "pid", proc.PID())
 	return vm, nil
+}
+
+func cleanDataDir(cfg *config) error {
+	if cfg.dataDir == "" {
+		return nil
+	}
+	_, err := cfg.stat(cfg.dataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("check data dir: %w", err)
+	}
+
+	var keep []string
+	cache := cacheDir(cfg)
+	if cache != "" && isWithin(cfg.dataDir, cache) {
+		keep = append(keep, cache)
+	}
+	if cfg.rootfsPath != "" && isWithin(cfg.dataDir, cfg.rootfsPath) {
+		keep = append(keep, cfg.rootfsPath)
+	}
+	if len(keep) > 0 {
+		if err := removeDataDirContentsExcept(cfg.removeAll, cfg.dataDir, keep); err != nil {
+			return fmt.Errorf("clean data dir contents: %w", err)
+		}
+		return nil
+	}
+
+	if err := cfg.removeAll(cfg.dataDir); err != nil {
+		return fmt.Errorf("clean data dir: %w", err)
+	}
+	return nil
+}
+
+func cacheDir(cfg *config) string {
+	if cfg == nil || cfg.imageCache == nil {
+		return ""
+	}
+	return cfg.imageCache.BaseDir()
 }
 
 func toRunnerPortForwards(ports []PortForward) []runner.PortForward {

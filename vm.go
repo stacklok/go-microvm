@@ -7,6 +7,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/stacklok/propolis/net"
@@ -22,6 +25,8 @@ type VM struct {
 	dataDir    string
 	rootfsPath string
 	ports      []PortForward
+	cacheDir   string
+	removeAll  func(string) error
 }
 
 // VMInfo contains status information about a VM.
@@ -80,14 +85,39 @@ func (vm *VM) Status(_ context.Context) (*VMInfo, error) {
 }
 
 // Remove stops the VM and cleans up its rootfs and state.
+// If the image cache lives under the data dir, its contents are preserved.
 func (vm *VM) Remove(ctx context.Context) error {
 	if vm.proc.IsAlive() {
 		if err := vm.Stop(ctx); err != nil {
 			return fmt.Errorf("stop before remove: %w", err)
 		}
 	}
-	// Note: we intentionally do NOT remove the image cache —
-	// only the VM-specific state and rootfs extraction.
+	if vm.removeAll == nil {
+		vm.removeAll = os.RemoveAll
+	}
+
+	if vm.rootfsPath != "" && !isWithin(vm.cacheDir, vm.rootfsPath) {
+		if err := vm.removeAll(vm.rootfsPath); err != nil {
+			return fmt.Errorf("remove rootfs: %w", err)
+		}
+	}
+
+	if vm.dataDir != "" {
+		var keep []string
+		if vm.cacheDir != "" && isWithin(vm.dataDir, vm.cacheDir) {
+			keep = append(keep, vm.cacheDir)
+		}
+		if len(keep) > 0 {
+			if err := removeDataDirContentsExcept(vm.removeAll, vm.dataDir, keep); err != nil {
+				return fmt.Errorf("remove data dir contents: %w", err)
+			}
+		} else {
+			if err := vm.removeAll(vm.dataDir); err != nil {
+				return fmt.Errorf("remove data dir: %w", err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -105,3 +135,44 @@ func (vm *VM) RootFSPath() string { return vm.rootfsPath }
 
 // Ports returns the configured port forwards.
 func (vm *VM) Ports() []PortForward { return vm.ports }
+
+func isWithin(base string, target string) bool {
+	if base == "" || target == "" {
+		return false
+	}
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func removeDataDirContentsExcept(removeAll func(string) error, dataDir string, keepPaths []string) error {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return fmt.Errorf("read data dir: %w", err)
+	}
+	keep := make(map[string]struct{}, len(keepPaths))
+	for _, path := range keepPaths {
+		if path == "" {
+			continue
+		}
+		keep[filepath.Clean(path)] = struct{}{}
+	}
+	for _, entry := range entries {
+		entryPath := filepath.Join(dataDir, entry.Name())
+		if _, ok := keep[filepath.Clean(entryPath)]; ok {
+			continue
+		}
+		if err := removeAll(entryPath); err != nil {
+			return fmt.Errorf("remove data dir entry %s: %w", entryPath, err)
+		}
+	}
+	return nil
+}

@@ -22,6 +22,18 @@ func TestNewCache(t *testing.T) {
 	assert.Equal(t, baseDir, c.baseDir)
 }
 
+func TestCache_BaseDir(t *testing.T) {
+	t.Parallel()
+
+	baseDir := "/some/cache/dir"
+	c := NewCache(baseDir)
+
+	assert.Equal(t, baseDir, c.BaseDir())
+
+	var nilCache *Cache
+	assert.Equal(t, "", nilCache.BaseDir())
+}
+
 func TestCache_Has_EmptyCache(t *testing.T) {
 	t.Parallel()
 
