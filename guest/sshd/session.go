@@ -273,22 +273,21 @@ func (s *Server) runWithPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd *e
 	}()
 
 	// Bidirectional copy between the SSH channel and the PTY.
-	var wg sync.WaitGroup
-	wg.Add(2)
-
+	// Only wait for PTY->channel to drain; the input copy will exit once the
+	// channel is closed after we send the exit status.
+	outputDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(ptmx, ch)
+		defer close(outputDone)
+		_, _ = io.Copy(ch, ptmx)
 	}()
 	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(ch, ptmx)
+		_, _ = io.Copy(ptmx, ch)
 	}()
 
 	err = cmd.Wait()
-	// Close the PTY to unblock the copy goroutines.
+	// Close the PTY to unblock the output copy.
 	_ = ptmx.Close()
-	wg.Wait()
+	<-outputDone
 
 	return exitCode(err)
 }
