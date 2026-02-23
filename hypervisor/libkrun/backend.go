@@ -6,8 +6,10 @@ package libkrun
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
+	"github.com/stacklok/propolis/extract"
 	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/runner"
@@ -28,11 +30,29 @@ func WithLibDir(d string) Option { return func(b *Backend) { b.libDir = d } }
 // When nil (default), the standard runner.DefaultSpawner is used.
 func WithSpawner(s runner.Spawner) Option { return func(b *Backend) { b.spawner = s } }
 
+// WithRuntime sets a Source that provides propolis-runner and libkrun.
+// Mutually exclusive with WithRunnerPath and WithLibDir.
+// When using bundle-based sources, WithCacheDir must also be set.
+func WithRuntime(src extract.Source) Option { return func(b *Backend) { b.runtime = src } }
+
+// WithFirmware sets a Source that provides libkrunfw.
+// The firmware directory is appended to the library search path.
+// When used with WithLibDir, the firmware directory is appended after it.
+// When using bundle-based sources, WithCacheDir must also be set.
+func WithFirmware(src extract.Source) Option { return func(b *Backend) { b.firmware = src } }
+
+// WithCacheDir sets the directory used by bundle-based Sources for extraction.
+// Ignored when Sources are directory-based.
+func WithCacheDir(dir string) Option { return func(b *Backend) { b.cacheDir = dir } }
+
 // Backend implements hypervisor.Backend using libkrun.
 type Backend struct {
 	runnerPath string
 	libDir     string
 	spawner    runner.Spawner
+	runtime    extract.Source
+	firmware   extract.Source
+	cacheDir   string
 }
 
 // NewBackend creates a libkrun backend with the given options.
@@ -60,8 +80,51 @@ func (b *Backend) PrepareRootFS(_ context.Context, rootfsPath string, initCfg hy
 	return rootfsPath, nil
 }
 
+// validate checks for conflicting option combinations.
+func (b *Backend) validate() error {
+	if b.runtime != nil && b.runnerPath != "" {
+		return fmt.Errorf("libkrun backend: WithRuntime and WithRunnerPath are mutually exclusive")
+	}
+	if b.runtime != nil && b.libDir != "" {
+		return fmt.Errorf("libkrun backend: WithRuntime and WithLibDir are mutually exclusive")
+	}
+	return nil
+}
+
 // Start launches the VM via the propolis-runner subprocess.
 func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hypervisor.VMHandle, error) {
+	if err := b.validate(); err != nil {
+		return nil, err
+	}
+
+	runnerPath := b.runnerPath
+	libDir := b.libDir
+
+	if b.runtime != nil {
+		runtimeDir, err := b.runtime.Ensure(ctx, b.cacheDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve runtime: %w", err)
+		}
+		candidate := filepath.Join(runtimeDir, extract.RunnerBinaryName)
+		if _, err := os.Stat(candidate); err != nil {
+			return nil, fmt.Errorf("resolve runtime: %s not found at %s: %w", extract.RunnerBinaryName, candidate, err)
+		}
+		runnerPath = candidate
+		libDir = runtimeDir
+	}
+
+	if b.firmware != nil {
+		fwDir, err := b.firmware.Ensure(ctx, b.cacheDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve firmware: %w", err)
+		}
+		if libDir != "" {
+			libDir = libDir + string(os.PathListSeparator) + fwDir
+		} else {
+			libDir = fwDir
+		}
+	}
+
 	var netSocket string
 	if cfg.NetEndpoint.Type == hypervisor.NetEndpointUnixSocket {
 		netSocket = cfg.NetEndpoint.Path
@@ -75,8 +138,8 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 		PortForwards: toRunnerPortForwards(cfg.PortForwards),
 		VirtioFS:     toRunnerVirtioFS(cfg.FilesystemMounts),
 		ConsoleLog:   cfg.ConsoleLogPath,
-		LibDir:       b.libDir,
-		RunnerPath:   b.runnerPath,
+		LibDir:       libDir,
+		RunnerPath:   runnerPath,
 		VMLogPath:    filepath.Join(cfg.DataDir, "vm.log"),
 	}
 

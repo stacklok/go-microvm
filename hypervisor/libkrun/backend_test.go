@@ -5,6 +5,7 @@ package libkrun
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/propolis/extract"
 	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/runner"
 )
@@ -178,3 +180,273 @@ func TestBackend_Start_NoNetEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10", handle.ID())
 }
+
+// captureSpawner records the runner.Config passed to Spawn.
+type captureSpawner struct {
+	captured runner.Config
+	proc     runner.ProcessHandle
+	err      error
+}
+
+func (s *captureSpawner) Spawn(_ context.Context, cfg runner.Config) (runner.ProcessHandle, error) {
+	s.captured = cfg
+	return s.proc, s.err
+}
+
+// mockSource implements extract.Source for testing.
+type mockSource struct {
+	dir              string
+	err              error
+	capturedCacheDir string
+}
+
+func (m *mockSource) Ensure(_ context.Context, cacheDir string) (string, error) {
+	m.capturedCacheDir = cacheDir
+	return m.dir, m.err
+}
+
+// makeRuntimeDir creates a temp directory with a dummy propolis-runner binary.
+func makeRuntimeDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, extract.RunnerBinaryName), []byte("dummy"), 0o755))
+	return dir
+}
+
+func TestBackend_Validate_RuntimeAndRunnerPathConflict(t *testing.T) {
+	t.Parallel()
+
+	b := NewBackend(
+		WithRuntime(&mockSource{dir: "/tmp"}),
+		WithRunnerPath("/custom/runner"),
+	)
+
+	_, err := b.Start(context.Background(), hypervisor.VMConfig{DataDir: t.TempDir()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestBackend_Validate_RuntimeAndLibDirConflict(t *testing.T) {
+	t.Parallel()
+
+	b := NewBackend(
+		WithRuntime(&mockSource{dir: "/tmp"}),
+		WithLibDir("/custom/lib"),
+	)
+
+	_, err := b.Start(context.Background(), hypervisor.VMConfig{DataDir: t.TempDir()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestBackend_Start_WithRuntime(t *testing.T) {
+	t.Parallel()
+
+	runtimeDir := makeRuntimeDir(t)
+	proc := &mockProcessHandle{pid: 1, alive: true}
+	spawner := &captureSpawner{proc: proc}
+	rtSource := &mockSource{dir: runtimeDir}
+
+	b := NewBackend(
+		WithRuntime(rtSource),
+		WithCacheDir("/my/cache"),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	assert.Equal(t, filepath.Join(runtimeDir, extract.RunnerBinaryName), spawner.captured.RunnerPath)
+	assert.Equal(t, runtimeDir, spawner.captured.LibDir)
+	assert.Equal(t, "/my/cache", rtSource.capturedCacheDir)
+}
+
+func TestBackend_Start_WithFirmware(t *testing.T) {
+	t.Parallel()
+
+	fwDir := t.TempDir()
+	proc := &mockProcessHandle{pid: 2, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(
+		WithFirmware(&mockSource{dir: fwDir}),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	assert.Equal(t, fwDir, spawner.captured.LibDir)
+}
+
+func TestBackend_Start_WithRuntimeAndFirmware(t *testing.T) {
+	t.Parallel()
+
+	runtimeDir := makeRuntimeDir(t)
+	fwDir := t.TempDir()
+	proc := &mockProcessHandle{pid: 3, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(
+		WithRuntime(&mockSource{dir: runtimeDir}),
+		WithFirmware(&mockSource{dir: fwDir}),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	expectedLibDir := runtimeDir + string(os.PathListSeparator) + fwDir
+	assert.Equal(t, expectedLibDir, spawner.captured.LibDir)
+	assert.Equal(t, filepath.Join(runtimeDir, extract.RunnerBinaryName), spawner.captured.RunnerPath)
+}
+
+func TestBackend_Start_WithFirmwareAndLibDir(t *testing.T) {
+	t.Parallel()
+
+	existingLib := "/existing/lib"
+	fwDir := t.TempDir()
+	proc := &mockProcessHandle{pid: 4, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(
+		WithLibDir(existingLib),
+		WithFirmware(&mockSource{dir: fwDir}),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	expectedLibDir := existingLib + string(os.PathListSeparator) + fwDir
+	assert.Equal(t, expectedLibDir, spawner.captured.LibDir)
+}
+
+func TestBackend_Start_RuntimeEnsureError(t *testing.T) {
+	t.Parallel()
+
+	b := NewBackend(
+		WithRuntime(&mockSource{err: errors.New("download failed")}),
+		WithSpawner(&mockSpawner{proc: &mockProcessHandle{}}),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	_, err := b.Start(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolve runtime")
+	assert.Contains(t, err.Error(), "download failed")
+}
+
+func TestBackend_Start_FirmwareEnsureError(t *testing.T) {
+	t.Parallel()
+
+	b := NewBackend(
+		WithFirmware(&mockSource{err: errors.New("firmware fetch failed")}),
+		WithSpawner(&mockSpawner{proc: &mockProcessHandle{}}),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	_, err := b.Start(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolve firmware")
+	assert.Contains(t, err.Error(), "firmware fetch failed")
+}
+
+func TestBackend_Start_RuntimeMissingRunner(t *testing.T) {
+	t.Parallel()
+
+	// Dir exists but has no propolis-runner binary.
+	emptyDir := t.TempDir()
+
+	b := NewBackend(
+		WithRuntime(&mockSource{dir: emptyDir}),
+		WithSpawner(&mockSpawner{proc: &mockProcessHandle{}}),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	_, err := b.Start(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "propolis-runner not found")
+}
+
+func TestBackend_Options_Sources(t *testing.T) {
+	t.Parallel()
+
+	rt := &mockSource{dir: "/rt"}
+	fw := &mockSource{dir: "/fw"}
+
+	b := NewBackend(
+		WithRuntime(rt),
+		WithFirmware(fw),
+		WithCacheDir("/cache"),
+	)
+
+	assert.Equal(t, rt, b.runtime)
+	assert.Equal(t, fw, b.firmware)
+	assert.Equal(t, "/cache", b.cacheDir)
+}
+
+func TestBackend_Start_DefaultUnchanged(t *testing.T) {
+	t.Parallel()
+
+	proc := &mockProcessHandle{pid: 50, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(
+		WithRunnerPath("/my/runner"),
+		WithLibDir("/my/lib"),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	// Verify existing options still flow through unchanged.
+	assert.Equal(t, "/my/runner", spawner.captured.RunnerPath)
+	assert.Equal(t, "/my/lib", spawner.captured.LibDir)
+}
+
+// Verify mockSource implements extract.Source.
+var _ extract.Source = (*mockSource)(nil)
