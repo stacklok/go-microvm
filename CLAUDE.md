@@ -6,15 +6,19 @@ Two-process model: pure-Go library spawns a CGO runner subprocess. Module: `gith
 ## Commands
 
 ```bash
-task build-dev          # Build runner (requires libkrun-devel, Linux)
-task build-dev-darwin   # Build runner (macOS, requires Homebrew libkrun, signs entitlements)
-task test               # go test -v -race ./...
-task lint               # golangci-lint run ./...
-task lint-fix           # Auto-fix lint issues
-task fmt                # go fmt + goimports
-task verify             # fmt + lint + test (CI pipeline)
-task tidy               # go mod tidy
-task clean              # Remove bin/ and coverage files
+task build-dev            # Build runner (requires libkrun-devel, Linux)
+task build-dev-darwin     # Build runner (macOS, requires Homebrew libkrun, signs entitlements)
+task build-runner         # Build runner + libs using builder container (no system libkrun needed)
+task fetch-runtime        # Download pre-built runtime from GitHub Release
+task fetch-firmware       # Download pre-built firmware from GitHub Release
+task builder-image-build  # Build the builder container image locally
+task test                 # go test -v -race ./...
+task lint                 # golangci-lint run ./...
+task lint-fix             # Auto-fix lint issues
+task fmt                  # go fmt + goimports
+task verify               # fmt + lint + test (CI pipeline)
+task tidy                 # go mod tidy
+task clean                # Remove bin/ and coverage files
 ```
 
 Run a single test: `go test -v -race -run TestName ./path/to/package`

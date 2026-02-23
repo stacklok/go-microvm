@@ -17,9 +17,16 @@ vars:
     -X github.com/stacklok/propolis/internal/version.BuildDate={{.BUILD_DATE}}
   HOST_ARCH:
     sh: uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'
+  BUILDER_IMAGE: ghcr.io/stacklok/propolis-builder
+  LIBKRUN_VERSION:
+    sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
+  BUILDER_IMAGE_TAG: '{{.LIBKRUN_VERSION}}'
 
 # Quick reference:
 #   task build-dev        → Fast dev build (requires system libkrun-devel)
+#   task build-runner     → Build runner + libs using builder container
+#   task fetch-runtime    → Download pre-built runtime from GitHub Release
+#   task fetch-firmware   → Download pre-built firmware from GitHub Release
 #   task test             → Run tests with race detector
 #   task lint             → Run linter
 #   task verify           → fmt + lint + test
@@ -122,3 +129,107 @@ tasks:
     cmds:
       - rm -rf bin/
       - rm -f coverage.out coverage.html
+
+  # =============================================================================
+  # Builder Image
+  # =============================================================================
+
+  builder-image-build:
+    desc: Build builder image for current platform
+    platforms: [linux]
+    cmds:
+      - >-
+        podman build
+        --build-arg LIBKRUN_VERSION={{.LIBKRUN_VERSION}}
+        --build-arg LIBKRUNFW_VERSION=$(grep '^LIBKRUNFW_VERSION=' versions.env | cut -d= -f2)
+        -t {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
+        -f images/builder/Containerfile
+        images/builder
+
+  builder-image-push:
+    desc: Push builder image to ghcr.io
+    platforms: [linux]
+    cmds:
+      - podman push {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
+
+  # =============================================================================
+  # Container-based Build (no system libkrun needed)
+  # =============================================================================
+
+  build-runner:
+    desc: Build runner + extract libs using builder container
+    platforms: [linux]
+    cmds:
+      - mkdir -p bin
+      - |
+        id=$(podman create {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}})
+        podman cp ${id}:/opt/libkrun-built/libkrun.so.1 bin/
+        podman cp ${id}:/opt/libkrun-built/libkrunfw.so.5 bin/
+        podman rm ${id}
+      - >-
+        podman run --rm -v $(pwd):/src:z -w /src
+        -e CGO_ENABLED=1
+        {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
+        go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+    generates:
+      - bin/{{.RUNNER_NAME}}
+      - bin/libkrun.so.1
+      - bin/libkrunfw.so.5
+
+  # =============================================================================
+  # Fetch Pre-built Artifacts
+  # =============================================================================
+
+  fetch-runtime:
+    desc: Download pre-built runtime tarball from GitHub Release
+    vars:
+      RELEASE_TAG: '{{.RELEASE_TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p bin
+      - >-
+        gh release download {{.RELEASE_TAG}}
+        --repo stacklok/propolis
+        --pattern "propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz"
+        --dir bin/ --clobber
+      - tar -xzf bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz
+
+  fetch-firmware:
+    desc: Download pre-built firmware tarball from GitHub Release
+    vars:
+      RELEASE_TAG: '{{.RELEASE_TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p bin
+      - >-
+        gh release download {{.RELEASE_TAG}}
+        --repo stacklok/propolis
+        --pattern "propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz"
+        --dir bin/ --clobber
+      - tar -xzf bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz
+
+  fetch-runtime-oci:
+    desc: Pull pre-built runtime OCI artifact from ghcr.io
+    vars:
+      RELEASE_TAG: '{{.RELEASE_TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p bin
+      - >-
+        oras pull
+        ghcr.io/stacklok/propolis/runtime:{{.RELEASE_TAG}}-linux-{{.HOST_ARCH}}
+        -o bin/
+      - tar -xzf bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz
+
+  fetch-firmware-oci:
+    desc: Pull pre-built firmware OCI artifact from ghcr.io
+    vars:
+      RELEASE_TAG: '{{.RELEASE_TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p bin
+      - >-
+        oras pull
+        ghcr.io/stacklok/propolis/firmware:{{.RELEASE_TAG}}-linux-{{.HOST_ARCH}}
+        -o bin/
+      - tar -xzf bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz

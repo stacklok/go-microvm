@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 env:
   GO_VERSION: "1.25"
@@ -140,3 +141,42 @@ jobs:
       - name: Sign runner with entitlements
         run: |
           codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
+
+  build-cgo:
+    name: Build (Linux CGO)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read builder image version
+        id: versions
+        run: |
+          source versions.env
+          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull builder image
+        run: |
+          docker pull ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }}
+
+      - name: Build CGO packages
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src:z" -w /src \
+            -e CGO_ENABLED=1 \
+            ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }} \
+            go build ./krun/...
+
+      - name: Build runner binary
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src:z" -w /src \
+            -e CGO_ENABLED=1 \
+            ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }} \
+            go build -ldflags "-X github.com/stacklok/propolis/internal/version.Version=ci" \
+            -o bin/propolis-runner ./runner/cmd/propolis-runner

@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Builder container image for building libkrun + libkrunfw from source.
+
+ARG LIBKRUN_VERSION=v1.17.3
+ARG LIBKRUNFW_VERSION=v5.2.0
+
+FROM fedora:43
+
+ARG LIBKRUN_VERSION
+ARG LIBKRUNFW_VERSION
+
+# Install build dependencies:
+# - Go, Rust, Clang
+# - Kernel build toolchain
+# - libkrun build deps
+RUN dnf install -y \
+        golang \
+        rust cargo \
+        clang \
+        make gcc flex bison elfutils-libelf-devel bc openssl-devel perl diffutils python3 cpio git pkg-config patchelf \
+        virtiofsd libseccomp-devel glib2-devel zlib-devel \
+    && dnf clean all
+
+# Prepare output directories
+RUN mkdir -p /opt/libkrun-built/pkgconfig
+
+# Build libkrunfw (compiles a Linux kernel -- this takes a while)
+RUN git clone --depth 1 --branch "${LIBKRUNFW_VERSION}" https://github.com/containers/libkrunfw /opt/libkrunfw \
+    && cd /opt/libkrunfw \
+    && make \
+    && cp /opt/libkrunfw/libkrunfw.so.5.* /opt/libkrun-built/libkrunfw.so.5
+
+# Build libkrun (Rust project, built via Makefile with cargo)
+RUN git clone --depth 1 --branch "${LIBKRUN_VERSION}" https://github.com/containers/libkrun /opt/libkrun \
+    && cd /opt/libkrun \
+    && make BLK=1 NET=1 \
+    && cp /opt/libkrun/target/release/libkrun.so.1.* /opt/libkrun-built/libkrun.so.1 \
+    && cp /opt/libkrun/libkrun.pc /opt/libkrun-built/pkgconfig/libkrun.pc
+
+# Environment variables for downstream builds
+ENV LIBKRUN_LIB_PATH=/opt/libkrun-built
+ENV PKG_CONFIG_PATH=/opt/libkrun-built/pkgconfig
+ENV CGO_LDFLAGS=-L/opt/libkrun-built
+ENV CGO_CFLAGS=-I/opt/libkrun/include
+ENV LD_LIBRARY_PATH=/opt/libkrun-built
+
+WORKDIR /src
