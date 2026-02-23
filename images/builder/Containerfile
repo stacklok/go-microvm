@@ -20,6 +20,7 @@ RUN dnf install -y \
         rust cargo \
         clang \
         make gcc flex bison elfutils-libelf-devel bc openssl-devel perl diffutils python3 python3-pyelftools cpio git pkg-config patchelf patch \
+        glibc-static \
         virtiofsd libseccomp-devel glib2-devel zlib-devel \
     && dnf clean all
 
