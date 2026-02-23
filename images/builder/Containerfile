@@ -19,7 +19,7 @@ RUN dnf install -y \
         golang \
         rust cargo \
         clang \
-        make gcc flex bison elfutils-libelf-devel bc openssl-devel perl diffutils python3 cpio git pkg-config patchelf \
+        make gcc flex bison elfutils-libelf-devel bc openssl-devel perl diffutils python3 cpio git pkg-config patchelf patch \
         virtiofsd libseccomp-devel glib2-devel zlib-devel \
     && dnf clean all
 
