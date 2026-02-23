@@ -170,6 +170,7 @@ import (
     "path/filepath"
 
     "github.com/stacklok/propolis"
+    "github.com/stacklok/propolis/hypervisor/libkrun"
     "github.com/stacklok/propolis/image"
     "github.com/stacklok/propolis/preflight"
     "github.com/stacklok/propolis/ssh"
@@ -226,12 +227,12 @@ func main() {
         // Defaults to ~/.config/propolis or $PROPOLIS_DATA_DIR.
         propolis.WithDataDir("/var/lib/my-appliance"),
 
-        // Point to a specific runner binary (searched in PATH by default).
-        propolis.WithRunnerPath("/usr/local/bin/propolis-runner"),
-
-        // Set library search path for bundled libkrun/libkrunfw.
-        // Passed as LD_LIBRARY_PATH (Linux) or DYLD_LIBRARY_PATH (macOS).
-        propolis.WithLibDir("/opt/libs"),
+        // Configure the libkrun backend with a specific runner binary
+        // and library search path. These options are backend-specific.
+        propolis.WithBackend(libkrun.NewBackend(
+            libkrun.WithRunnerPath("/usr/local/bin/propolis-runner"),
+            libkrun.WithLibDir("/opt/libs"),
+        )),
 
         // Add custom preflight checks beyond the built-in defaults
         // (KVM access, disk space, system resources, port availability).
@@ -258,10 +259,10 @@ func main() {
 
     // VM lifecycle methods:
     //   vm.Stop(ctx)      -- SIGTERM, then SIGKILL after 30s
-    //   vm.Status(ctx)    -- returns VMInfo{Name, Active, PID, Ports}
+    //   vm.Status(ctx)    -- returns VMInfo{Name, Active, ID, Ports}
     //   vm.Remove(ctx)    -- stop + clean up
     //   vm.Name()         -- VM name
-    //   vm.PID()          -- runner process ID
+    //   vm.ID()           -- backend-specific identifier (e.g. PID string for libkrun)
     //   vm.DataDir()      -- data directory path
     //   vm.RootFSPath()   -- extracted rootfs path
     //   vm.Ports()        -- configured port forwards
@@ -287,21 +288,28 @@ func main() {
 | `WithPreflightChecks(...)` | Add custom pre-boot checks | KVM + resources |
 | `WithVirtioFS(...)` | Host directory mounts via virtio-fs | none |
 | `WithDataDir(p)` | State, cache, and log directory | `~/.config/propolis` |
-| `WithRunnerPath(p)` | Path to propolis-runner binary | auto-detect |
-| `WithLibDir(p)` | Directory for libkrun/libkrunfw shared libraries | system libs |
+| `WithCleanDataDir()` | Remove existing data dir contents before boot | disabled |
+| `WithEgressPolicy(p)` | Restrict outbound traffic to allowed DNS hostnames | none |
 | `WithImageCache(c)` | Custom image cache instance | `$dataDir/cache/` |
 | `WithImageFetcher(f)` | Custom image fetcher for OCI retrieval | local-then-remote |
-| `WithSpawner(s)` | Custom runner subprocess spawner | `DefaultSpawner` |
+| `WithBackend(b)` | Hypervisor backend (e.g. `libkrun.NewBackend(...)`) | libkrun |
 
 ## Package Overview
 
 | Package | CGO? | Description |
 |---------|------|-------------|
 | `propolis` (root) | No | Top-level API: `Run()`, `VM` type, functional options, hook types |
-| `image` | No | OCI image pull via `ImageFetcher`, layer flattening, rootfs extraction, `KrunConfig` |
+| `hypervisor` | No | `Backend` and `VMHandle` interfaces, `VMConfig`, `InitConfig` types |
+| `hypervisor/libkrun` | No | libkrun backend: spawns propolis-runner subprocess, `WithRunnerPath`/`WithLibDir`/`WithSpawner` |
+| `image` | No | OCI image pull via `ImageFetcher`, layer flattening, rootfs extraction |
+| `image/disk` | No | Disk image download with decompression (gzip/bzip2/xz) |
 | `krun` | **Yes** | CGO bindings to libkrun C API (context, VM config, `StartEnter`) |
+| `hooks` | No | RootFS hook factories: `InjectAuthorizedKeys`, `InjectFile`, `InjectBinary`, `InjectEnvFile` |
+| `extract` | No | Binary bundle caching with SHA-256 versioning and cross-process locking |
+| `guest/*` | No | Guest-side boot orchestration, hardening, SSH server (Linux-only, `//go:build linux`) |
 | `net` | No | `Provider` interface and `Config`/`PortForward` types |
 | `net/firewall` | No | Frame-level packet filtering with stateful connection tracking |
+| `net/egress` | No | DNS-based egress policy: intercepts DNS, creates dynamic firewall rules |
 | `net/hosted` | No | Hosted `net.Provider` running VirtualNetwork in caller's process with HTTP services |
 | `net/topology` | No | Shared network topology constants (subnet, gateway, IPs, MTU) |
 | `preflight` | No | `Checker` interface, `Check` struct, built-in KVM/HVF and port checks |
@@ -309,6 +317,7 @@ func main() {
 | `runner/cmd/propolis-runner` | **Yes** | The runner binary (calls `krun.StartEnter`, never returns) |
 | `ssh` | No | ECDSA key generation and SSH client for guest communication |
 | `state` | No | flock-based state persistence with atomic JSON writes |
+| `internal/pathutil` | No | Path traversal validation for safe file operations |
 
 Only `krun` and `runner/cmd/propolis-runner` require CGO and `libkrun-devel`.
 All other packages are pure Go and can be imported and tested with
@@ -430,11 +439,13 @@ deep dive.
 
 ### Extension Points
 
+- **`hypervisor.Backend`** -- pluggable hypervisor backend (default: libkrun)
 - **`net.Provider`** -- replace default in-process networking
 - **`preflight.Checker`** -- add custom pre-boot validations
-- **`RootFSHook`** -- modify the rootfs before `.krun_config.json` is written
+- **`RootFSHook`** -- modify the rootfs before VM boot
 - **`PostBootHook`** -- run logic after the VM process is confirmed alive
 - **`WithInitOverride`** -- replace the OCI ENTRYPOINT/CMD entirely
+- **`WithEgressPolicy`** -- restrict outbound traffic to allowed DNS hostnames
 
 For a detailed architecture walkthrough, see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -521,7 +532,7 @@ ss -tlnp | grep ':8080'
 - The runner binary must be code-signed with Hypervisor.framework entitlements.
   The `task build-dev-darwin` command handles this automatically.
 - If using bundled libraries, set `DYLD_LIBRARY_PATH` (not `LD_LIBRARY_PATH`).
-  The `WithLibDir` option handles this for the runner subprocess.
+  The `libkrun.WithLibDir` backend option handles this for the runner subprocess.
 
 ## Relationship to toolhive-appliance
 
@@ -540,7 +551,8 @@ points to build a complete appliance experience:
   space, connectivity)
 - `WithVirtioFS` to share host directories with the guest
 - `WithDataDir` to use appliance-specific state directories
-- `WithRunnerPath` and `WithLibDir` to point at embedded binaries
+- `WithBackend(libkrun.NewBackend(...))` with `libkrun.WithRunnerPath` and
+  `libkrun.WithLibDir` to point at embedded binaries
 
 propolis provides the general-purpose pipeline. The appliance layer adds the
 domain-specific orchestration on top. If you are building something similar --

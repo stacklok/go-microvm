@@ -16,7 +16,7 @@ paths:
 - Implement the `net.Provider` interface (Start, SocketPath, Stop)
 - `Start` must block until the Unix socket is ready to accept connections
 - Socket must use SOCK_STREAM with 4-byte big-endian length-prefixed Ethernet frames (QEMU transport protocol)
-- See `net/provider_impl.go` for the reference implementation
+- See `net/hosted/provider.go` for the reference implementation
 
 ## Rootfs Hooks
 - Type: `func(rootfsPath string, cfg *image.OCIConfig) error`

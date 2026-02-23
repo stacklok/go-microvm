@@ -7,12 +7,14 @@ state management, security measures, and extension points.
 ## Table of Contents
 
 - [The Two-Process Model](#the-two-process-model)
+- [Hypervisor Backend Abstraction](#hypervisor-backend-abstraction)
 - [OCI Image Pipeline](#oci-image-pipeline)
 - [Image Caching](#image-caching)
 - [.krun_config.json](#krun_configjson)
 - [Networking](#networking)
 - [Extension Points](#extension-points)
 - [Preflight Check System](#preflight-check-system)
+- [Guest-Side Packages](#guest-side-packages)
 - [State Management](#state-management)
 - [Security Model](#security-model)
 - [SSH Utilities](#ssh-utilities)
@@ -89,11 +91,12 @@ in `propolis.Run()`:
    runs the VirtualNetwork in the caller's process and supports HTTP
    services on the gateway IP.
 
-6. **Spawn runner** -- Serializes `runner.Config` as JSON and spawns
-   `propolis-runner` as a detached subprocess (`setsid` for new session)
-   via the `runner.Spawner` interface (replaceable via `WithSpawner()`).
-   The runner is located by searching: explicit path, system PATH, then
-   next to the calling executable.
+6. **Start VM via backend** -- The `hypervisor.Backend` handles rootfs
+   preparation and VM launch. The default libkrun backend serializes
+   `runner.Config` as JSON and spawns `propolis-runner` as a detached
+   subprocess (`setsid` for new session). The runner is located by
+   searching: explicit path, system PATH, then next to the calling
+   executable. Custom backends can be provided via `WithBackend()`.
 
 7. **Post-boot hooks** -- Runs caller-provided `PostBootHook` functions. If
    any hook fails, the VM is stopped and the error is returned.
@@ -140,8 +143,53 @@ type Spawner interface {
 ```
 
 `DefaultSpawner` is the production implementation that calls `SpawnProcess()`.
-Callers can provide a custom spawner via `WithSpawner()` for testing or to
-customize how the runner subprocess is launched.
+The libkrun backend accepts a custom spawner via `libkrun.WithSpawner()` for
+testing or to customize how the runner subprocess is launched.
+
+## Hypervisor Backend Abstraction
+
+The `hypervisor` package defines the `Backend` interface that decouples propolis
+from any specific hypervisor implementation:
+
+```go
+type Backend interface {
+    Name() string
+    PrepareRootFS(ctx context.Context, rootfsPath string, initCfg InitConfig) (string, error)
+    Start(ctx context.Context, cfg VMConfig) (VMHandle, error)
+}
+
+type VMHandle interface {
+    Stop(ctx context.Context) error
+    IsAlive() bool
+    ID() string
+}
+```
+
+### libkrun Backend
+
+The default backend (`hypervisor/libkrun`) implements `Backend` by:
+
+1. **PrepareRootFS**: Writes `/.krun_config.json` to the rootfs from `InitConfig`
+2. **Start**: Converts `VMConfig` to `runner.Config`, spawns `propolis-runner`
+   via the `runner.Spawner` interface, and returns a `processHandle` wrapping
+   the subprocess
+
+The libkrun backend accepts its own options via `libkrun.NewBackend(opts...)`:
+
+| Option | Description |
+|--------|-------------|
+| `libkrun.WithRunnerPath(p)` | Path to propolis-runner binary |
+| `libkrun.WithLibDir(d)` | Directory for libkrun/libkrunfw shared libraries |
+| `libkrun.WithSpawner(s)` | Custom runner subprocess spawner (for testing) |
+
+### Custom Backends
+
+To support a different hypervisor, implement `hypervisor.Backend` and pass it
+via `propolis.WithBackend()`. The backend handles all hypervisor-specific logic
+while propolis handles OCI image management, networking, hooks, and lifecycle.
+
+For migration details from the older top-level `WithRunnerPath`/`WithLibDir`/
+`WithSpawner` options, see [MIGRATION-BACKEND-ABSTRACTION.md](MIGRATION-BACKEND-ABSTRACTION.md).
 
 ## OCI Image Pipeline
 
@@ -605,6 +653,30 @@ To replace the entire preflight checker (e.g., when the caller manages its own):
 propolis.WithPreflightChecker(preflight.NewEmpty())
 ```
 
+## Guest-Side Packages
+
+The `guest/` directory contains Linux-only packages (`//go:build linux`) that
+run inside the guest VM, not on the host. These are used by custom init
+processes to orchestrate guest boot.
+
+| Package | Purpose |
+|---------|---------|
+| `guest/boot` | Orchestrates the guest boot sequence: mounts, networking, workspace, hardening, environment, SSH, capabilities. Functional options pattern for configuration. |
+| `guest/mount` | Handles essential filesystem mounts (devtmpfs, sysfs, procfs) and workspace mounts |
+| `guest/env` | Loads environment variables from `/.propolis/env.sh` |
+| `guest/netcfg` | Guest-side network configuration (DHCP, routes) |
+| `guest/harden` | VM kernel hardening: capability dropping (CAP_NET_ADMIN, etc.), CIS benchmark sysctls, `PR_SET_NO_NEW_PRIVS` |
+| `guest/reaper` | Zombie process reaping (init process duties) |
+| `guest/sshd` | Embedded SSH server implementation with session handling |
+
+### Supporting Packages
+
+| Package | Purpose |
+|---------|---------|
+| `hooks` | RootFS hook factories: `InjectAuthorizedKeys`, `InjectFile`, `InjectBinary`, `InjectEnvFile`. Uses `internal/pathutil` for path traversal validation. |
+| `extract` | Binary bundle caching with SHA-256 versioning, atomic extraction, and cross-process file locking. Used to cache and extract the propolis-runner binary and libraries. |
+| `image/disk` | Streaming disk image download with retry support and decompression (gzip, bzip2, xz). |
+
 ## State Management
 
 The `state` package provides persistent VM state with file-based locking.
@@ -767,8 +839,7 @@ appliance experience:
 | `WithDataDir` | Uses `~/.config/toolhive-appliance/` |
 | `WithRootFSPath` | Uses pre-built rootfs (skips OCI image pull) |
 | `WithPreflightChecker` | Replaces default preflight with empty checker (appliance has its own) |
-| `WithRunnerPath` | Points at the embedded `propolis-runner` binary |
-| `WithLibDir` | Points at bundled libkrun/libkrunfw libraries |
+| `WithBackend(libkrun.NewBackend(...))` | Configures libkrun backend with `libkrun.WithRunnerPath` and `libkrun.WithLibDir` for embedded binaries |
 | `WithPorts` | Forwards HTTP (8080), HTTPS (8443), k8s API (6443), SSH (2222) |
 | `WithCPUs` / `WithMemory` | Configures VM resources per user settings |
 

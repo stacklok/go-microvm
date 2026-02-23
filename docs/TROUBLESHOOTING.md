@@ -78,7 +78,7 @@ successfully by checking the application's log output for errors from
 ## Runner Binary Not Found
 
 propolis searches for `propolis-runner` in this order:
-1. Explicit path via `WithRunnerPath()`
+1. Explicit path via `libkrun.WithRunnerPath()` (passed to `libkrun.NewBackend()`)
 2. System `$PATH`
 3. Next to the calling executable
 

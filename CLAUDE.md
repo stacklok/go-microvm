@@ -25,7 +25,7 @@ Entry point: `propolis.go:Run()` orchestrates the full pipeline (preflight, pull
 
 **CGO boundary**: Only `krun/` and `runner/cmd/propolis-runner/` use CGO. Everything else is pure Go. The runner binary is sacrificial -- `krun_start_enter()` never returns, so it runs in a detached subprocess.
 
-**Key subsystems**: `image/` (OCI pull + cache), `runner/` (subprocess spawning), `net/` (Provider interface + firewall + hosted mode + topology constants), `preflight/` (platform checks via build tags), `ssh/` (keygen + client), `state/` (flock-based JSON persistence), `internal/` (procutil, version).
+**Key subsystems**: `hypervisor/` (Backend abstraction + libkrun impl), `image/` (OCI pull + cache), `runner/` (subprocess spawning), `net/` (Provider interface + firewall + hosted mode + egress policy + topology constants), `guest/` (guest-side boot orchestration, hardening, SSH server), `hooks/` (RootFS hook factories for key injection, file injection), `extract/` (binary bundle caching), `preflight/` (platform checks via build tags), `ssh/` (keygen + client), `state/` (flock-based JSON persistence), `internal/` (pathutil, procutil).
 
 ## Things That Will Bite You
 
@@ -35,6 +35,7 @@ Entry point: `propolis.go:Run()` orchestrates the full pipeline (preflight, pull
 - **Platform build tags**: Preflight checks, resource checks, and some net code use `//go:build linux` or `//go:build darwin`. Each platform goes in a separate file.
 - **Tests excluding CGO packages**: When CGO isn't available, exclude krun: `CGO_ENABLED=0 go test $(go list ./... | grep -v krun | grep -v propolis-runner)`
 - **Functional options pattern**: All public config uses `With*` constructors applying to unexported `config` struct via `optionFunc`. Follow the existing pattern in `options.go` exactly.
+- **Backend abstraction**: `WithRunnerPath`, `WithLibDir`, and `WithSpawner` are NOT on the top-level `propolis` package. They live in `hypervisor/libkrun` as backend-specific options. Use `propolis.WithBackend(libkrun.NewBackend(libkrun.WithRunnerPath(...)))`. Similarly, `VM.PID()` is gone; use `VM.ID()` (returns string).
 
 ## Conventions
 
