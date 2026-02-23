@@ -6,7 +6,20 @@ propolis supports macOS on Apple Silicon (arm64) using Hypervisor.framework.
 
 - **Apple Silicon** (M1/M2/M3/M4) -- Intel Macs are not supported
 - **macOS 11+** -- Hypervisor.framework requires Big Sur or later
-- **libkrun** and **libkrunfw** -- install via Homebrew or build from source
+- **libkrun** and **libkrunfw** -- install via Homebrew (see below) or build from source
+
+## Installing libkrun
+
+The easiest way to install libkrun on macOS is via Homebrew:
+
+```bash
+brew tap slp/krun
+brew install libkrun libkrunfw
+```
+
+This installs the libraries and headers into Homebrew's prefix (`/opt/homebrew`
+on Apple Silicon, `/usr/local` on Intel). The CGO directives in propolis
+automatically search both paths.
 
 ## Key Platform Differences
 
@@ -20,27 +33,20 @@ propolis supports macOS on Apple Silicon (arm64) using Hypervisor.framework.
 
 ## Code Signing
 
-macOS requires binaries that use Hypervisor.framework to be signed with the
-`com.apple.security.hypervisor` entitlement. Without this, the process will
-crash with `EXC_BAD_ACCESS` when trying to create a VM context.
+macOS requires binaries that use Hypervisor.framework to be signed with
+specific entitlements. Without these, the process will crash with
+`EXC_BAD_ACCESS` when trying to create a VM context.
+
+Two entitlements are required (see `assets/entitlements.plist`):
+
+- `com.apple.security.hypervisor` -- access to Hypervisor.framework
+- `com.apple.security.cs.disable-library-validation` -- allows loading
+  libkrun from non-system paths (e.g., Homebrew)
 
 The propolis-runner binary must be signed:
 
 ```bash
-codesign --entitlements entitlements.plist --force -s - bin/propolis-runner
-```
-
-Where `entitlements.plist` contains:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.hypervisor</key>
-    <true/>
-</dict>
-</plist>
+codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
 ```
 
 The `task build-dev-darwin` command handles signing automatically.
@@ -49,7 +55,7 @@ The `task build-dev-darwin` command handles signing automatically.
 
 When using bundled (non-system) libraries, the runner subprocess needs
 `DYLD_LIBRARY_PATH` set. propolis handles this automatically via
-`WithLibDir()`. macOS SIP (System Integrity Protection) strips
+`libkrun.WithLibDir()` (passed to `libkrun.NewBackend()`). macOS SIP (System Integrity Protection) strips
 `DYLD_LIBRARY_PATH` from child processes in some contexts -- if the runner
 fails to find libkrun, ensure SIP isn't interfering.
 
@@ -75,7 +81,7 @@ The propolis-runner binary is not signed with the hypervisor entitlement.
 Re-sign it:
 
 ```bash
-codesign --entitlements entitlements.plist --force -s - bin/propolis-runner
+codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
 ```
 
 ### DYLD_LIBRARY_PATH issues
@@ -84,5 +90,6 @@ codesign --entitlements entitlements.plist --force -s - bin/propolis-runner
 dyld: Library not loaded: @rpath/libkrun.dylib
 ```
 
-The runner can't find libkrun. Set `WithLibDir()` to the directory
-containing `libkrun.dylib` and `libkrunfw.dylib`.
+The runner can't find libkrun. Set `libkrun.WithLibDir()` (via
+`libkrun.NewBackend()`) to the directory containing `libkrun.dylib` and
+`libkrunfw.dylib`.

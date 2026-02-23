@@ -69,3 +69,74 @@ jobs:
       - name: Verify compilation (pure Go packages)
         run: |
           CGO_ENABLED=0 go build $(go list ./... | grep -v krun | grep -v propolis-runner)
+
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run tests (excluding CGO packages)
+        run: |
+          go test -v -race $(go list ./... | grep -v krun | grep -v propolis-runner)
+
+  lint-macos:
+    name: Lint (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          args: --timeout=5m
+        env:
+          CGO_ENABLED: "0"
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Verify compilation (pure Go packages)
+        run: |
+          CGO_ENABLED=0 go build $(go list ./... | grep -v krun | grep -v propolis-runner)
+
+      - name: Install libkrun
+        run: |
+          brew tap slp/krun
+          brew install libkrun libkrunfw
+
+      - name: Build CGO packages
+        run: |
+          CGO_ENABLED=1 go build ./krun/...
+
+      - name: Build runner binary
+        run: |
+          CGO_ENABLED=1 go build -ldflags "-X github.com/stacklok/propolis/internal/version.Version=ci" -o bin/propolis-runner ./runner/cmd/propolis-runner
+
+      - name: Sign runner with entitlements
+        run: |
+          codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
