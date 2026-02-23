@@ -7,7 +7,7 @@ Two-process model: pure-Go library spawns a CGO runner subprocess. Module: `gith
 
 ```bash
 task build-dev          # Build runner (requires libkrun-devel, Linux)
-task build-dev-darwin   # Build runner (macOS, signs entitlements)
+task build-dev-darwin   # Build runner (macOS, requires Homebrew libkrun, signs entitlements)
 task test               # go test -v -race ./...
 task lint               # golangci-lint run ./...
 task lint-fix           # Auto-fix lint issues
@@ -18,6 +18,8 @@ task clean              # Remove bin/ and coverage files
 ```
 
 Run a single test: `go test -v -race -run TestName ./path/to/package`
+
+macOS dev setup: `brew tap slp/krun && brew install libkrun libkrunfw` (see `docs/MACOS.md` for details)
 
 ## Architecture
 
@@ -32,7 +34,9 @@ Entry point: `propolis.go:Run()` orchestrates the full pipeline (preflight, pull
 - **CGO boundary is strict**: Only `krun/` and `runner/cmd/propolis-runner/` use CGO. Every other package MUST stay `CGO_ENABLED=0`. Never import `krun` from a non-CGO package.
 - **Runner config is duplicated**: `runner.Config` in `runner/config.go` and a duplicate `Config` struct in `runner/cmd/propolis-runner/main.go`. When adding a field, update BOTH structs with the same JSON tag, then handle it in `runVM()`.
 - **`krun_start_enter()` never returns**: It calls `exit()` when the guest shuts down. That's why we need the two-process model -- the runner process is sacrificial.
-- **Platform build tags**: Preflight checks, resource checks, and some net code use `//go:build linux` or `//go:build darwin`. Each platform goes in a separate file.
+- **Platform build tags**: Preflight checks, resource checks, and some net code use `//go:build linux` or `//go:build darwin`. Each platform goes in a separate file. macOS preflight checks verify `kern.hv_support` sysctl and use `hw.memsize`/`syscall.Statfs` for resources.
+- **Entitlements required on macOS**: `assets/entitlements.plist` has both `com.apple.security.hypervisor` and `com.apple.security.cs.disable-library-validation`. The `task build-dev-darwin` command signs automatically.
+- **CGO Homebrew paths**: `krun/context.go` CGO directives include `-L/opt/homebrew/lib` and `-L/usr/local/lib` for macOS. The linker ignores nonexistent paths.
 - **Tests excluding CGO packages**: When CGO isn't available, exclude krun: `CGO_ENABLED=0 go test $(go list ./... | grep -v krun | grep -v propolis-runner)`
 - **Functional options pattern**: All public config uses `With*` constructors applying to unexported `config` struct via `optionFunc`. Follow the existing pattern in `options.go` exactly.
 - **Backend abstraction**: `WithRunnerPath`, `WithLibDir`, and `WithSpawner` are NOT on the top-level `propolis` package. They live in `hypervisor/libkrun` as backend-specific options. Use `propolis.WithBackend(libkrun.NewBackend(libkrun.WithRunnerPath(...)))`. Similarly, `VM.PID()` is gone; use `VM.ID()` (returns string).
