@@ -18,7 +18,7 @@ ARG LIBKRUNFW_VERSION
 RUN dnf install -y \
         golang \
         rust cargo \
-        clang \
+        clang clang-devel llvm-devel \
         make gcc flex bison elfutils-libelf-devel bc openssl-devel perl diffutils python3 python3-pyelftools cpio git pkg-config patchelf patch \
         glibc-static \
         virtiofsd libseccomp-devel glib2-devel zlib-devel \
