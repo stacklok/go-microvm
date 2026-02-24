@@ -45,6 +45,17 @@ func (s *sshSessionAdapter) SetStderr(w io.Writer) { s.sess.Stderr = w }
 func (s *sshSessionAdapter) SetStdin(r io.Reader)  { s.sess.Stdin = r }
 func (s *sshSessionAdapter) Close() error          { return s.sess.Close() }
 
+// ClientOption configures optional Client behavior.
+type ClientOption func(*Client)
+
+// WithHostKey pins the expected SSH host key. When set, the client uses
+// ssh.FixedHostKey for host key verification instead of accepting any key.
+func WithHostKey(pubKey ssh.PublicKey) ClientOption {
+	return func(c *Client) {
+		c.expectedHostKey = pubKey
+	}
+}
+
 // Client provides a high-level SSH interface for communicating with a
 // microVM guest.
 type Client struct {
@@ -52,6 +63,11 @@ type Client struct {
 	port    uint16
 	user    string
 	keyPath string
+
+	// expectedHostKey, when non-nil, enables host key pinning via
+	// ssh.FixedHostKey. When nil, InsecureIgnoreHostKey is used for
+	// backward compatibility.
+	expectedHostKey ssh.PublicKey
 
 	// readFile reads a file from disk. Defaults to os.ReadFile.
 	// Injected for testability.
@@ -68,7 +84,8 @@ type Client struct {
 
 // NewClient creates a new SSH Client configured to connect to the given
 // host and port using the specified user and private key file.
-func NewClient(host string, port uint16, user, keyPath string) *Client {
+// Options are applied after defaults to allow host key pinning, etc.
+func NewClient(host string, port uint16, user, keyPath string, opts ...ClientOption) *Client {
 	c := &Client{
 		host:      host,
 		port:      port,
@@ -76,6 +93,9 @@ func NewClient(host string, port uint16, user, keyPath string) *Client {
 		keyPath:   keyPath,
 		readFile:  os.ReadFile,
 		writeFile: os.WriteFile,
+	}
+	for _, o := range opts {
+		o(c)
 	}
 	c.createSession = func(ctx context.Context) (remoteSession, func(), error) {
 		sess, client, err := c.newSession(ctx)
@@ -278,13 +298,20 @@ func (c *Client) sshConfig() (*ssh.ClientConfig, error) {
 		return nil, fmt.Errorf("parse SSH key %s: %w", c.keyPath, err)
 	}
 
+	var hostKeyCallback ssh.HostKeyCallback
+	if c.expectedHostKey != nil {
+		hostKeyCallback = ssh.FixedHostKey(c.expectedHostKey)
+	} else {
+		//nolint:gosec // Backward compat when host key not available.
+		hostKeyCallback = ssh.InsecureIgnoreHostKey()
+	}
+
 	return &ssh.ClientConfig{
 		User: c.user,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		//nolint:gosec // We trust the VM we just created; host key checking is unnecessary.
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         defaultSSHTimeout,
 	}, nil
 }

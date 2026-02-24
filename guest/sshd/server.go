@@ -66,6 +66,11 @@ type Config struct {
 	// per-session agent sockets.
 	AgentForwarding bool
 
+	// HostKey is an optional pre-generated host key signer. When non-nil,
+	// the server uses this key instead of generating an ephemeral one.
+	// This enables host key pinning by the client.
+	HostKey ssh.Signer
+
 	// Logger is the structured logger. If nil, slog.Default() is used.
 	Logger *slog.Logger
 }
@@ -112,18 +117,23 @@ func New(cfg Config) (*Server, error) {
 		},
 	}
 
-	// Generate an ephemeral ECDSA P-256 host key.
-	hostKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate host key: %w", err)
-	}
+	if cfg.HostKey != nil {
+		// Use the injected host key (enables client-side pinning).
+		sshCfg.AddHostKey(cfg.HostKey)
+	} else {
+		// Generate an ephemeral ECDSA P-256 host key.
+		hostKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate host key: %w", err)
+		}
 
-	signer, err := ssh.NewSignerFromKey(hostKey)
-	if err != nil {
-		return nil, fmt.Errorf("create host key signer: %w", err)
-	}
+		signer, err := ssh.NewSignerFromKey(hostKey)
+		if err != nil {
+			return nil, fmt.Errorf("create host key signer: %w", err)
+		}
 
-	sshCfg.AddHostKey(signer)
+		sshCfg.AddHostKey(signer)
+	}
 
 	return &Server{
 		cfg:      cfg,

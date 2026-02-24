@@ -73,6 +73,33 @@ func GenerateKeyPair(keyDir string) (privateKeyPath, publicKeyPath string, err e
 	return privateKeyPath, publicKeyPath, nil
 }
 
+// GenerateHostKeyPair generates an ECDSA P-256 host key pair in memory.
+// It returns the private key as PEM-encoded bytes and the corresponding
+// SSH public key. No files are written to disk.
+func GenerateHostKeyPair() (privateKeyPEM []byte, publicKey ssh.PublicKey, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate host ECDSA key: %w", err)
+	}
+
+	derBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal host private key: %w", err)
+	}
+
+	pemBlock := &pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: derBytes,
+	}
+
+	pubKey, err := ssh.NewPublicKey(&key.PublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("convert to SSH public key: %w", err)
+	}
+
+	return pem.EncodeToMemory(pemBlock), pubKey, nil
+}
+
 // GetPublicKeyContent reads an SSH public key file and returns its content
 // as a string suitable for inclusion in authorized_keys.
 func GetPublicKeyContent(publicKeyPath string) (string, error) {

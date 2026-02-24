@@ -4,6 +4,7 @@
 package ssh
 
 import (
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,4 +138,54 @@ func TestGenerateKeyPair_CreatesKeyDirectory(t *testing.T) {
 
 	assert.FileExists(t, privPath)
 	assert.FileExists(t, pubPath)
+}
+
+func TestGenerateHostKeyPair_Success(t *testing.T) {
+	t.Parallel()
+
+	pemBytes, pubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	// PEM should be parseable.
+	block, rest := pem.Decode(pemBytes)
+	require.NotNil(t, block, "PEM block should not be nil")
+	assert.Equal(t, "EC PRIVATE KEY", block.Type)
+	assert.Empty(t, rest, "no trailing data after PEM block")
+
+	// PEM should be parseable as an SSH private key.
+	signer, err := gossh.ParsePrivateKey(pemBytes)
+	require.NoError(t, err)
+	assert.NotNil(t, signer)
+
+	// Public key should be non-nil and ECDSA P-256.
+	require.NotNil(t, pubKey)
+	assert.Equal(t, "ecdsa-sha2-nistp256", pubKey.Type())
+}
+
+func TestGenerateHostKeyPair_Unique(t *testing.T) {
+	t.Parallel()
+
+	pem1, pub1, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	pem2, pub2, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	assert.NotEqual(t, pem1, pem2, "private keys should differ")
+	assert.NotEqual(t, pub1.Marshal(), pub2.Marshal(), "public keys should differ")
+}
+
+func TestGenerateHostKeyPair_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	pemBytes, pubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	// Parse the PEM back and verify the public key matches.
+	signer, err := gossh.ParsePrivateKey(pemBytes)
+	require.NoError(t, err)
+
+	signerPub := signer.PublicKey()
+	assert.Equal(t, pubKey.Type(), signerPub.Type())
+	assert.Equal(t, pubKey.Marshal(), signerPub.Marshal())
 }

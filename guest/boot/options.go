@@ -23,6 +23,7 @@ type config struct {
 	mountRetries        int
 	sshPort             int
 	sshKeysPath         string
+	sshHostKeyPath      string
 	envFilePath         string
 	userName            string
 	userHome            string
@@ -42,6 +43,7 @@ func defaultConfig() *config {
 		mountRetries:        5,
 		sshPort:             22,
 		sshKeysPath:         "/home/sandbox/.ssh/authorized_keys",
+		sshHostKeyPath:      "/etc/ssh/ssh_host_ecdsa_key",
 		envFilePath:         "/etc/sandbox-env",
 		userName:            "sandbox",
 		userHome:            "/home/sandbox",
@@ -96,6 +98,14 @@ func WithUser(name, home, shell string, uid, gid uint32) Option {
 // WithLockdownRoot controls whether /root is locked to mode 0700.
 func WithLockdownRoot(enabled bool) Option {
 	return optionFunc(func(c *config) { c.lockdownRoot = enabled })
+}
+
+// WithSSHHostKeyPath sets the path to a PEM-encoded host private key
+// injected into the guest rootfs. If the file exists at boot, the key
+// is loaded into memory, the file is deleted, and the key is used as
+// the SSH server's host key (enabling client-side pinning).
+func WithSSHHostKeyPath(path string) Option {
+	return optionFunc(func(c *config) { c.sshHostKeyPath = path })
 }
 
 // WithSSHAgentForwarding controls whether the SSH server supports

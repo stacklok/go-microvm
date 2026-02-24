@@ -491,3 +491,109 @@ func TestSSHConfig_ValidKeyParsing(t *testing.T) {
 	assert.Equal(t, "testuser", config.User)
 	assert.NotEmpty(t, config.Auth)
 }
+
+func TestWithHostKey_SetsExpectedHostKey(t *testing.T) {
+	t.Parallel()
+
+	_, pubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	c := NewClient("127.0.0.1", 22, "user", "/tmp/key", WithHostKey(pubKey))
+	assert.NotNil(t, c.expectedHostKey)
+	assert.Equal(t, pubKey.Marshal(), c.expectedHostKey.Marshal())
+}
+
+func TestWithHostKey_NilFallback(t *testing.T) {
+	t.Parallel()
+
+	// No options → expectedHostKey should be nil.
+	c := NewClient("127.0.0.1", 22, "user", "/tmp/key")
+	assert.Nil(t, c.expectedHostKey)
+}
+
+func TestSSHConfig_WithHostKey_AcceptsMatchingKey(t *testing.T) {
+	t.Parallel()
+
+	keyDir := t.TempDir()
+	privKeyPath, _, err := GenerateKeyPair(keyDir)
+	require.NoError(t, err)
+
+	_, hostPubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	c := &Client{
+		host:            "testhost",
+		port:            2222,
+		user:            "testuser",
+		keyPath:         privKeyPath,
+		readFile:        os.ReadFile,
+		expectedHostKey: hostPubKey,
+	}
+
+	config, err := c.sshConfig()
+	require.NoError(t, err)
+	require.NotNil(t, config.HostKeyCallback)
+
+	// Matching key should be accepted.
+	err = config.HostKeyCallback("testhost:2222", nil, hostPubKey)
+	assert.NoError(t, err, "matching host key should be accepted")
+}
+
+func TestSSHConfig_WithHostKey_RejectsMismatchedKey(t *testing.T) {
+	t.Parallel()
+
+	keyDir := t.TempDir()
+	privKeyPath, _, err := GenerateKeyPair(keyDir)
+	require.NoError(t, err)
+
+	_, hostPubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	// Generate a different key to simulate an impersonator.
+	_, wrongPubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	c := &Client{
+		host:            "testhost",
+		port:            2222,
+		user:            "testuser",
+		keyPath:         privKeyPath,
+		readFile:        os.ReadFile,
+		expectedHostKey: hostPubKey,
+	}
+
+	config, err := c.sshConfig()
+	require.NoError(t, err)
+	require.NotNil(t, config.HostKeyCallback)
+
+	// Mismatched key should be rejected.
+	err = config.HostKeyCallback("testhost:2222", nil, wrongPubKey)
+	assert.Error(t, err, "mismatched host key should be rejected")
+}
+
+func TestSSHConfig_WithoutHostKey_AcceptsAnyKey(t *testing.T) {
+	t.Parallel()
+
+	keyDir := t.TempDir()
+	privKeyPath, _, err := GenerateKeyPair(keyDir)
+	require.NoError(t, err)
+
+	c := &Client{
+		host:     "testhost",
+		port:     2222,
+		user:     "testuser",
+		keyPath:  privKeyPath,
+		readFile: os.ReadFile,
+	}
+
+	config, err := c.sshConfig()
+	require.NoError(t, err)
+	require.NotNil(t, config.HostKeyCallback)
+
+	// Without host key pinning, any key should be accepted.
+	_, anyPubKey, err := GenerateHostKeyPair()
+	require.NoError(t, err)
+
+	err = config.HostKeyCallback("testhost:2222", nil, anyPubKey)
+	assert.NoError(t, err, "insecure callback should accept any key")
+}

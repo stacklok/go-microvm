@@ -86,6 +86,23 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 		return nil, fmt.Errorf("parsing authorized keys: %w", err)
 	}
 
+	// 7b. Load injected host key (if present). The key is deleted from
+	// disk after loading into memory so it cannot be read by the sandbox
+	// user. If the file does not exist, hostKeySigner remains nil and the
+	// SSH server will generate an ephemeral key.
+	var hostKeySigner ssh.Signer
+	if hostKeyPEM, readErr := os.ReadFile(cfg.sshHostKeyPath); readErr == nil {
+		signer, parseErr := ssh.ParsePrivateKey(hostKeyPEM)
+		if parseErr != nil {
+			logger.Warn("failed to parse injected host key, falling back to ephemeral",
+				"path", cfg.sshHostKeyPath, "error", parseErr)
+		} else {
+			hostKeySigner = signer
+			logger.Info("loaded injected SSH host key", "path", cfg.sshHostKeyPath)
+		}
+		_ = os.Remove(cfg.sshHostKeyPath)
+	}
+
 	// 8. Drop unneeded capabilities from the bounding set.
 	logger.Info("dropping unnecessary capabilities")
 	if err := harden.DropBoundingCaps(
@@ -113,6 +130,7 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 		DefaultShell:    cfg.userShell,
 		DefaultWorkDir:  cfg.workspaceMountPoint,
 		AgentForwarding: cfg.sshAgentForwarding,
+		HostKey:         hostKeySigner,
 		Logger:          logger,
 	}
 	srv, err := sshd.New(sshdCfg)
