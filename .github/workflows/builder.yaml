@@ -18,9 +18,23 @@ permissions:
   contents: read
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/stacklok/propolis-builder
+
 jobs:
-  build-push:
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,34 +42,63 @@ jobs:
       - name: Source versions.env
         run: |
           source versions.env
-          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> $GITHUB_ENV
-          echo "LIBKRUNFW_VERSION=${LIBKRUNFW_VERSION}" >> $GITHUB_ENV
+          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_ENV"
+          echo "LIBKRUNFW_VERSION=${LIBKRUNFW_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Login to ghcr.io
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push (per-arch)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: images/builder
           file: images/builder/Containerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           build-args: |
             LIBKRUN_VERSION=${{ env.LIBKRUN_VERSION }}
             LIBKRUNFW_VERSION=${{ env.LIBKRUNFW_VERSION }}
           tags: |
-            ghcr.io/stacklok/propolis-builder:${{ env.LIBKRUN_VERSION }}
-            ghcr.io/stacklok/propolis-builder:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=builder-${{ matrix.arch }}
+          cache-to: type=gha,scope=builder-${{ matrix.arch }},mode=max
+
+  manifest:
+    name: Create multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Source versions.env
+        run: |
+          source versions.env
+          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest
+        run: |
+          docker manifest create ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }} \
+            ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }}-amd64 \
+            ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }}-arm64
+          docker manifest push ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }}
+
+          docker manifest create ${{ env.IMAGE_NAME }}:latest \
+            ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }}-amd64 \
+            ${{ env.IMAGE_NAME }}:${{ env.LIBKRUN_VERSION }}-arm64
+          docker manifest push ${{ env.IMAGE_NAME }}:latest
