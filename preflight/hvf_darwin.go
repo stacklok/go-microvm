@@ -48,7 +48,7 @@ func (h *hvfChecker) check(_ context.Context) error {
 	}
 
 	if val != 1 {
-		return fmt.Errorf("Hypervisor.framework is not available (kern.hv_support=%d): "+
+		return fmt.Errorf("hypervisor framework is not available (kern.hv_support=%d): "+
 			"Apple Silicon Mac required", val)
 	}
 

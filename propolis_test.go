@@ -587,7 +587,12 @@ func TestRun_EgressPolicy_OverlyBroadWildcard(t *testing.T) {
 func TestRun_EgressPolicy_ValidWildcard(t *testing.T) {
 	t.Parallel()
 
-	dataDir := t.TempDir()
+	// Use a short temp dir to keep the Unix socket path under macOS's
+	// 104-byte bind() limit (t.TempDir() + this test name is too long).
+	dataDir, err := os.MkdirTemp("", "egress")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+
 	rootfsDir := filepath.Join(dataDir, "rootfs")
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
 
