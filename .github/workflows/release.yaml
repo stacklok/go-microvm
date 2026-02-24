@@ -12,9 +12,6 @@ permissions:
   contents: write
   packages: write
 
-env:
-  GO_VERSION: "1.25"
-
 jobs:
   build-artifacts:
     name: Build (${{ matrix.arch }})
@@ -28,64 +25,40 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Source versions.env
-        run: |
-          set -euo pipefail
-          source versions.env
-          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_ENV"
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
 
-      - name: Pull builder image
-        run: |
-          docker pull ghcr.io/stacklok/propolis-builder:${LIBKRUN_VERSION}
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract libraries from builder image
-        run: |
-          id=$(docker create ghcr.io/stacklok/propolis-builder:${LIBKRUN_VERSION})
-          docker cp $id:/opt/libkrun-built/libkrun.so.1 .
-          docker cp $id:/opt/libkrun-built/libkrunfw.so.5 .
-          docker rm $id
-
-      - name: Build propolis-runner
-        run: |
-          docker run --rm -v $(pwd):/src:z -w /src \
-            -e CGO_ENABLED=1 \
-            ghcr.io/stacklok/propolis-builder:${LIBKRUN_VERSION} \
-            go build -ldflags "-X github.com/stacklok/propolis/internal/version.Version=${{ github.ref_name }} -X github.com/stacklok/propolis/internal/version.Commit=${GITHUB_SHA::8} -X github.com/stacklok/propolis/internal/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              -o bin/propolis-runner ./runner/cmd/propolis-runner
+      - name: Build runner and extract libraries
+        run: task build-runner VERSION=${{ github.ref_name }}
 
       - name: Package runtime tarball
-        run: |
-          staging="propolis-runtime-linux-${{ matrix.arch }}"
-          mkdir -p "${staging}"
-          cp bin/propolis-runner libkrun.so.1 "${staging}/"
-          echo "${{ github.ref_name }}" > "${staging}/VERSION"
-          tar czf "${staging}.tar.gz" "${staging}"
+        run: task package-runtime TAG=${{ github.ref_name }}
 
       - name: Package firmware tarball
-        run: |
-          staging="propolis-firmware-linux-${{ matrix.arch }}"
-          mkdir -p "${staging}"
-          cp libkrunfw.so.5 "${staging}/"
-          echo "${{ github.ref_name }}" > "${staging}/VERSION"
-          cat > "${staging}/LICENSE-GPL" <<'EOF'
-          libkrunfw is licensed under the GNU General Public License v2.0 (GPL-2.0).
-          See https://github.com/containers/libkrunfw for full license text.
-          EOF
-          tar czf "${staging}.tar.gz" "${staging}"
+        run: task package-firmware TAG=${{ github.ref_name }}
 
       - name: Upload runtime artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: propolis-runtime-linux-${{ matrix.arch }}
-          path: propolis-runtime-linux-${{ matrix.arch }}.tar.gz
+          path: dist/propolis-runtime-linux-${{ matrix.arch }}.tar.gz
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: propolis-firmware-linux-${{ matrix.arch }}
-          path: propolis-firmware-linux-${{ matrix.arch }}.tar.gz
+          path: dist/propolis-firmware-linux-${{ matrix.arch }}.tar.gz
 
   create-release:
     name: Create Release
@@ -93,7 +66,7 @@ jobs:
     needs: build-artifacts
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           merge-multiple: true
 
@@ -123,12 +96,12 @@ jobs:
           - arch: arm64
     steps:
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: propolis-runtime-linux-${{ matrix.arch }}
 
       - name: Download firmware artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: propolis-firmware-linux-${{ matrix.arch }}
 

@@ -9,27 +9,28 @@ the **Builder** produces a container image that **CI** and **Release** consume.
 
 Runs on every push to `main` and on pull requests. All jobs run in parallel.
 
-**Pure Go jobs** (no CGO, exclude `krun` and `propolis-runner` packages):
+**Cross-platform jobs** (matrix: Linux + macOS, pure Go only):
 
-| Job | Platform | What it does |
-|-----|----------|-------------|
-| Test | Linux | `go test -race` |
-| Lint | Linux | golangci-lint |
-| Build | Linux | `go build` (compilation check) |
-| Test (macOS) | macOS ARM64 | `go test -race` |
-| Lint (macOS) | macOS ARM64 | golangci-lint |
-| Build (macOS) | macOS ARM64 | Pure Go build + CGO build with Homebrew libkrun + code signing |
+| Job | What it does |
+|-----|-------------|
+| Test | `task test-nocgo` — tests with race detector, excluding CGO packages |
+| Lint | golangci-lint with `CGO_ENABLED=0` |
 
-**CGO job:**
+**Linux-only jobs:**
 
-| Job | Platform | What it does |
-|-----|----------|-------------|
-| Build (Linux CGO) | Linux | Builds CGO packages and the runner binary inside the builder container |
+| Job | What it does |
+|-----|-------------|
+| Build | `task build-nocgo` — compilation check for pure Go packages |
+| Build (Linux CGO) | `task build-runner` — full runner build inside the builder container |
 
-The Linux CGO job pulls the builder image tagged with the libkrun version
-from `versions.env`. If the builder image doesn't exist for that version,
-this job fails. This is expected when bumping versions -- push the version
-bump, wait for the Builder workflow to finish, then re-run the failed job.
+**macOS-only jobs:**
+
+| Job | What it does |
+|-----|-------------|
+| Build (macOS CGO) | Installs Homebrew libkrun, runs `task build-dev-darwin` (build + code sign) |
+
+All build logic lives in the Taskfile. Workflows only orchestrate (checkout,
+setup tools, call task).
 
 ### Builder (`builder.yaml`)
 
@@ -44,7 +45,7 @@ toolchain that CI and Release need.
 
 **How it works:**
 1. Builds per-architecture images natively (amd64 on `ubuntu-latest`,
-   arm64 on `ubuntu-24.04-arm`) -- no QEMU emulation
+   arm64 on `ubuntu-24.04-arm`) — no QEMU emulation
 2. Pushes each image by digest
 3. Merges digests into a multi-arch manifest tagged with the libkrun
    version (e.g., `v1.17.3`) and `latest`
@@ -56,11 +57,12 @@ Results are cached via GitHub Actions cache.
 
 Runs when a version tag (`v*`) is pushed.
 
-**What it produces:**
-1. **Runtime tarball** (Apache-2.0): `propolis-runner` + `libkrun.so.1`
-2. **Firmware tarball** (GPL-2.0): `libkrunfw.so.5`
+**How it works:**
+1. `task build-runner` — builds the runner binary and extracts libraries
+2. `task package-runtime` — creates runtime tarball (runner + libkrun, Apache-2.0)
+3. `task package-firmware` — creates firmware tarball (libkrunfw, GPL-2.0)
 
-Both are built for amd64 and arm64 using the builder image.
+Both architectures (amd64, arm64) build on native runners.
 
 **Where artifacts go:**
 - GitHub Release with checksums
@@ -80,19 +82,27 @@ versions.env ──► Builder Image ──► CI (Linux CGO job)
 When bumping libkrun/libkrunfw versions:
 
 1. Update `versions.env` and `images/builder/Containerfile`
-2. Push to `main` -- this triggers both CI and Builder
+2. Push to `main` — this triggers both CI and Builder
 3. CI's Linux CGO job will fail (image doesn't exist yet)
 4. Wait for Builder to finish (~20 min)
 5. Re-run the failed CI job
 
-## Platform Differences
+## Taskfile as Single Source of Truth
 
-**Linux CGO builds** use the builder container, which provides pre-compiled
-libkrun and libkrunfw. The container runs Go builds with `-buildvcs=false`
-because the mounted source directory isn't trusted by git.
+All build logic lives in `Taskfile.yaml`. The container runtime is
+auto-detected (`podman` locally on Fedora/Silverblue, `docker` in CI).
 
-**macOS CGO builds** install libkrun via Homebrew (`brew tap slp/krun`)
-and sign the runner binary with Hypervisor.framework entitlements.
+Key tasks used by CI/Release:
 
-**Pure Go jobs** on both platforms exclude the `krun` and `propolis-runner`
-packages since those require CGO.
+| Task | Used by | Purpose |
+|------|---------|---------|
+| `test-nocgo` | CI | Tests excluding CGO packages |
+| `build-nocgo` | CI | Compilation check for pure Go |
+| `build-runner` | CI, Release | Full runner build in builder container |
+| `build-dev-darwin` | CI | macOS native build + code sign |
+| `package-runtime` | Release | Runtime tarball (Apache-2.0) |
+| `package-firmware` | Release | Firmware tarball (GPL-2.0) |
+
+Container-based builds use `-buildvcs=false` because Docker-mounted source
+directories aren't trusted by git. This is fine because version info is
+set explicitly via ldflags.

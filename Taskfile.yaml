@@ -17,6 +17,8 @@ vars:
     -X github.com/stacklok/propolis/internal/version.BuildDate={{.BUILD_DATE}}
   HOST_ARCH:
     sh: uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'
+  CONTAINER_RUNTIME:
+    sh: command -v podman >/dev/null 2>&1 && echo podman || echo docker
   BUILDER_IMAGE: ghcr.io/stacklok/propolis-builder
   LIBKRUN_VERSION:
     sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
@@ -28,6 +30,7 @@ vars:
 #   task fetch-runtime    → Download pre-built runtime from GitHub Release
 #   task fetch-firmware   → Download pre-built firmware from GitHub Release
 #   task test             → Run tests with race detector
+#   task test-nocgo       → Run tests excluding CGO packages
 #   task lint             → Run linter
 #   task verify           → fmt + lint + test
 
@@ -82,6 +85,11 @@ tasks:
     cmds:
       - go test -v -race ./...
 
+  test-nocgo:
+    desc: Run unit tests excluding CGO packages
+    cmds:
+      - go test -v -race $(go list ./... | grep -v krun | grep -v propolis-runner)
+
   test-coverage:
     desc: Run tests with coverage
     cmds:
@@ -110,6 +118,13 @@ tasks:
     cmds:
       - go mod tidy
 
+  build-nocgo:
+    desc: Verify compilation of pure Go packages (no CGO)
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build $(go list ./... | grep -v krun | grep -v propolis-runner)
+
   verify:
     desc: Verify code (fmt, lint, test)
     cmds:
@@ -127,7 +142,7 @@ tasks:
   clean:
     desc: Clean build artifacts
     cmds:
-      - rm -rf bin/
+      - rm -rf bin/ dist/
       - rm -f coverage.out coverage.html
 
   # =============================================================================
@@ -139,7 +154,7 @@ tasks:
     platforms: [linux]
     cmds:
       - >-
-        podman build
+        {{.CONTAINER_RUNTIME}} build
         --build-arg LIBKRUN_VERSION={{.LIBKRUN_VERSION}}
         --build-arg LIBKRUNFW_VERSION=$(grep '^LIBKRUNFW_VERSION=' versions.env | cut -d= -f2)
         -t {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
@@ -150,7 +165,7 @@ tasks:
     desc: Push builder image to ghcr.io
     platforms: [linux]
     cmds:
-      - podman push {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
+      - '{{.CONTAINER_RUNTIME}} push {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}'
 
   # =============================================================================
   # Container-based Build (no system libkrun needed)
@@ -162,19 +177,55 @@ tasks:
     cmds:
       - mkdir -p bin
       - |
-        id=$(podman create {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}})
-        podman cp ${id}:/opt/libkrun-built/libkrun.so.1 bin/
-        podman cp ${id}:/opt/libkrun-built/libkrunfw.so.5 bin/
-        podman rm ${id}
+        id=$({{.CONTAINER_RUNTIME}} create {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}})
+        {{.CONTAINER_RUNTIME}} cp ${id}:/opt/libkrun-built/libkrun.so.1 bin/
+        {{.CONTAINER_RUNTIME}} cp ${id}:/opt/libkrun-built/libkrunfw.so.5 bin/
+        {{.CONTAINER_RUNTIME}} rm ${id}
       - >-
-        podman run --rm -v $(pwd):/src:z -w /src
+        {{.CONTAINER_RUNTIME}} run --rm -v $(pwd):/src:z -w /src
         -e CGO_ENABLED=1
         {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
-        go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+        go build -buildvcs=false -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
     generates:
       - bin/{{.RUNNER_NAME}}
       - bin/libkrun.so.1
       - bin/libkrunfw.so.5
+
+  # =============================================================================
+  # Release Packaging
+  # =============================================================================
+
+  package-runtime:
+    desc: Package runtime tarball (runner + libkrun)
+    vars:
+      TAG: '{{.TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p dist
+      - |
+        staging="propolis-runtime-linux-{{.HOST_ARCH}}"
+        mkdir -p "${staging}"
+        cp bin/propolis-runner bin/libkrun.so.1 "${staging}/"
+        echo "{{.TAG}}" > "${staging}/VERSION"
+        tar czf "dist/${staging}.tar.gz" "${staging}"
+        rm -rf "${staging}"
+
+  package-firmware:
+    desc: Package firmware tarball (libkrunfw, GPL-licensed)
+    vars:
+      TAG: '{{.TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p dist
+      - |
+        staging="propolis-firmware-linux-{{.HOST_ARCH}}"
+        mkdir -p "${staging}"
+        cp bin/libkrunfw.so.5 "${staging}/"
+        echo "{{.TAG}}" > "${staging}/VERSION"
+        cat > "${staging}/LICENSE-GPL" <<'LICEOF'
+        libkrunfw is licensed under the GNU General Public License v2.0 (GPL-2.0).
+        See https://github.com/containers/libkrunfw for full license text.
+        LICEOF
+        tar czf "dist/${staging}.tar.gz" "${staging}"
+        rm -rf "${staging}"
 
   # =============================================================================
   # Fetch Pre-built Artifacts

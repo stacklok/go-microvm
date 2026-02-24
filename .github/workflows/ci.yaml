@@ -18,37 +18,51 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-latest, name: Linux}
+          - {os: macos-15, name: macOS}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+
       - name: Run tests (excluding CGO packages)
-        run: |
-          go test -v -race $(go list ./... | grep -v krun | grep -v propolis-runner)
+        run: task test-nocgo
 
   lint:
-    name: Lint
-    runs-on: ubuntu-latest
+    name: Lint (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-latest, name: Linux}
+          - {os: macos-15, name: macOS}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           args: --timeout=5m
         env:
@@ -59,101 +73,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
 
       - name: Verify compilation (pure Go packages)
-        run: |
-          CGO_ENABLED=0 go build $(go list ./... | grep -v krun | grep -v propolis-runner)
+        run: task build-nocgo
 
-  test-macos:
-    name: Test (macOS)
-    runs-on: macos-15
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Run tests (excluding CGO packages)
-        run: |
-          go test -v -race $(go list ./... | grep -v krun | grep -v propolis-runner)
-
-  lint-macos:
-    name: Lint (macOS)
-    runs-on: macos-15
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          args: --timeout=5m
-        env:
-          CGO_ENABLED: "0"
-
-  build-macos:
-    name: Build (macOS)
-    runs-on: macos-15
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Verify compilation (pure Go packages)
-        run: |
-          CGO_ENABLED=0 go build $(go list ./... | grep -v krun | grep -v propolis-runner)
-
-      - name: Install libkrun
-        run: |
-          brew tap slp/krun
-          brew install libkrun libkrunfw
-
-      - name: Build CGO packages
-        run: |
-          CGO_ENABLED=1 go build ./krun/...
-
-      - name: Build runner binary
-        run: |
-          CGO_ENABLED=1 go build -ldflags "-X github.com/stacklok/propolis/internal/version.Version=ci" -o bin/propolis-runner ./runner/cmd/propolis-runner
-
-      - name: Sign runner with entitlements
-        run: |
-          codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
-
-  build-cgo:
+  build-cgo-linux:
     name: Build (Linux CGO)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Read builder image version
-        id: versions
-        run: |
-          source versions.env
-          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
 
       - name: Login to ghcr.io
         uses: docker/login-action@v3
@@ -162,21 +108,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull builder image
-        run: |
-          docker pull ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }}
+      - name: Build runner using builder container
+        run: task build-runner
 
-      - name: Build CGO packages
-        run: |
-          docker run --rm -v "${{ github.workspace }}:/src:z" -w /src \
-            -e CGO_ENABLED=1 \
-            ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }} \
-            go build -buildvcs=false ./krun/...
+  build-cgo-macos:
+    name: Build (macOS CGO)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-      - name: Build runner binary
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+
+      - name: Install libkrun
         run: |
-          docker run --rm -v "${{ github.workspace }}:/src:z" -w /src \
-            -e CGO_ENABLED=1 \
-            ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }} \
-            go build -buildvcs=false -ldflags "-X github.com/stacklok/propolis/internal/version.Version=ci" \
-            -o bin/propolis-runner ./runner/cmd/propolis-runner
+          brew tap slp/krun
+          brew install libkrun libkrunfw
+
+      - name: Build and sign runner
+        run: task build-dev-darwin

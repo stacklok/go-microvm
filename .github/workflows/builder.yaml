@@ -37,7 +37,7 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Source versions.env
         run: |
@@ -76,7 +76,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -89,7 +89,7 @@ jobs:
     needs: build
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Source versions.env
         run: |
@@ -97,7 +97,7 @@ jobs:
           echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_ENV"
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/digests
           pattern: digests-*

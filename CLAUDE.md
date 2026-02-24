@@ -13,12 +13,16 @@ task fetch-runtime        # Download pre-built runtime from GitHub Release
 task fetch-firmware       # Download pre-built firmware from GitHub Release
 task builder-image-build  # Build the builder container image locally
 task test                 # go test -v -race ./...
+task test-nocgo           # go test excluding CGO packages (used by CI)
+task build-nocgo          # Verify compilation of pure Go packages
 task lint                 # golangci-lint run ./...
 task lint-fix             # Auto-fix lint issues
 task fmt                  # go fmt + goimports
 task verify               # fmt + lint + test (CI pipeline)
 task tidy                 # go mod tidy
-task clean                # Remove bin/ and coverage files
+task package-runtime      # Package runtime tarball for release
+task package-firmware     # Package firmware tarball for release
+task clean                # Remove bin/, dist/, and coverage files
 ```
 
 Run a single test: `go test -v -race -run TestName ./path/to/package`
