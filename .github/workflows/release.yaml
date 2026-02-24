@@ -60,10 +60,53 @@ jobs:
           name: propolis-firmware-linux-${{ matrix.arch }}
           path: dist/propolis-firmware-linux-${{ matrix.arch }}.tar.gz
 
+  build-artifacts-darwin:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+
+      - name: Install libkrun via Homebrew
+        run: |
+          brew tap slp/krun
+          brew install libkrun libkrunfw
+
+      - name: Build runner and copy libraries
+        run: task build-runner-darwin VERSION=${{ github.ref_name }}
+
+      - name: Package runtime tarball
+        run: task package-runtime-darwin TAG=${{ github.ref_name }}
+
+      - name: Package firmware tarball
+        run: task package-firmware-darwin TAG=${{ github.ref_name }}
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: propolis-runtime-darwin-${{ matrix.arch }}
+          path: dist/propolis-runtime-darwin-${{ matrix.arch }}.tar.gz
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: propolis-firmware-darwin-${{ matrix.arch }}
+          path: dist/propolis-firmware-darwin-${{ matrix.arch }}.tar.gz
+
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: build-artifacts
+    needs: [build-artifacts, build-artifacts-darwin]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -86,6 +129,8 @@ jobs:
             propolis-runtime-linux-arm64.tar.gz \
             propolis-firmware-linux-amd64.tar.gz \
             propolis-firmware-linux-arm64.tar.gz \
+            propolis-runtime-darwin-arm64.tar.gz \
+            propolis-firmware-darwin-arm64.tar.gz \
             sha256sums.txt
 
   push-oci:
@@ -126,3 +171,41 @@ jobs:
           oras push ghcr.io/stacklok/propolis/firmware:${{ github.ref_name }}-linux-${{ matrix.arch }} \
             --artifact-type application/vnd.stacklok.propolis.firmware \
             propolis-firmware-linux-${{ matrix.arch }}.tar.gz:application/gzip
+
+  push-oci-darwin:
+    name: Push OCI macOS (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: build-artifacts-darwin
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+    steps:
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: propolis-runtime-darwin-${{ matrix.arch }}
+
+      - name: Download firmware artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: propolis-firmware-darwin-${{ matrix.arch }}
+
+      - name: Install oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push runtime OCI artifact
+        run: |
+          oras push ghcr.io/stacklok/propolis/runtime:${{ github.ref_name }}-darwin-${{ matrix.arch }} \
+            --artifact-type application/vnd.stacklok.propolis.runtime \
+            propolis-runtime-darwin-${{ matrix.arch }}.tar.gz:application/gzip
+
+      - name: Push firmware OCI artifact
+        run: |
+          oras push ghcr.io/stacklok/propolis/firmware:${{ github.ref_name }}-darwin-${{ matrix.arch }} \
+            --artifact-type application/vnd.stacklok.propolis.firmware \
+            propolis-firmware-darwin-${{ matrix.arch }}.tar.gz:application/gzip

@@ -68,6 +68,18 @@ tasks:
       # Hypervisor.framework requires entitlements
       - codesign --entitlements assets/entitlements.plist --force -s - bin/{{.RUNNER_NAME}}
 
+  build-runner-darwin:
+    desc: Build runner + copy Homebrew dylibs for macOS packaging
+    platforms: [darwin]
+    cmds:
+      - task: build-dev-darwin
+      - cp $(brew --prefix libkrun)/lib/libkrun.dylib bin/
+      - cp $(brew --prefix libkrunfw)/lib/libkrunfw.dylib bin/
+    generates:
+      - bin/{{.RUNNER_NAME}}
+      - bin/libkrun.dylib
+      - bin/libkrunfw.dylib
+
   build-dev-race:
     desc: Build runner with race detector (requires libkrun-devel)
     env:
@@ -227,6 +239,40 @@ tasks:
         tar czf "dist/${staging}.tar.gz" "${staging}"
         rm -rf "${staging}"
 
+  package-runtime-darwin:
+    desc: Package macOS runtime tarball (runner + libkrun)
+    platforms: [darwin]
+    vars:
+      TAG: '{{.TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p dist
+      - |
+        staging="propolis-runtime-darwin-{{.HOST_ARCH}}"
+        mkdir -p "${staging}"
+        cp bin/propolis-runner bin/libkrun.dylib "${staging}/"
+        echo "{{.TAG}}" > "${staging}/VERSION"
+        tar czf "dist/${staging}.tar.gz" "${staging}"
+        rm -rf "${staging}"
+
+  package-firmware-darwin:
+    desc: Package macOS firmware tarball (libkrunfw, GPL-licensed)
+    platforms: [darwin]
+    vars:
+      TAG: '{{.TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p dist
+      - |
+        staging="propolis-firmware-darwin-{{.HOST_ARCH}}"
+        mkdir -p "${staging}"
+        cp bin/libkrunfw.dylib "${staging}/"
+        echo "{{.TAG}}" > "${staging}/VERSION"
+        cat > "${staging}/LICENSE-GPL" <<'LICEOF'
+        libkrunfw is licensed under the GNU General Public License v2.0 (GPL-2.0).
+        See https://github.com/containers/libkrunfw for full license text.
+        LICEOF
+        tar czf "dist/${staging}.tar.gz" "${staging}"
+        rm -rf "${staging}"
+
   # =============================================================================
   # Fetch Pre-built Artifacts
   # =============================================================================
@@ -258,6 +304,34 @@ tasks:
         --dir bin/ --clobber
       - tar -xzf bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
       - rm -f bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz
+
+  fetch-runtime-darwin:
+    desc: Download pre-built macOS runtime tarball from GitHub Release
+    vars:
+      RELEASE_TAG: '{{.RELEASE_TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p bin
+      - >-
+        gh release download {{.RELEASE_TAG}}
+        --repo stacklok/propolis
+        --pattern "propolis-runtime-darwin-{{.HOST_ARCH}}.tar.gz"
+        --dir bin/ --clobber
+      - tar -xzf bin/propolis-runtime-darwin-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/propolis-runtime-darwin-{{.HOST_ARCH}}.tar.gz
+
+  fetch-firmware-darwin:
+    desc: Download pre-built macOS firmware tarball from GitHub Release
+    vars:
+      RELEASE_TAG: '{{.RELEASE_TAG | default .VERSION}}'
+    cmds:
+      - mkdir -p bin
+      - >-
+        gh release download {{.RELEASE_TAG}}
+        --repo stacklok/propolis
+        --pattern "propolis-firmware-darwin-{{.HOST_ARCH}}.tar.gz"
+        --dir bin/ --clobber
+      - tar -xzf bin/propolis-firmware-darwin-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/propolis-firmware-darwin-{{.HOST_ARCH}}.tar.gz
 
   fetch-runtime-oci:
     desc: Pull pre-built runtime OCI artifact from ghcr.io
