@@ -38,7 +38,8 @@ RUN git clone --depth 1 --branch "${LIBKRUN_VERSION}" https://github.com/contain
     && cd /opt/libkrun \
     && make BLK=1 NET=1 \
     && cp /opt/libkrun/target/release/libkrun.so.1.* /opt/libkrun-built/libkrun.so.1 \
-    && cp /opt/libkrun/libkrun.pc /opt/libkrun-built/pkgconfig/libkrun.pc
+    && ln -s libkrun.so.1 /opt/libkrun-built/libkrun.so \
+    && sed "s|^libdir=.*|libdir=/opt/libkrun-built|" /opt/libkrun/libkrun.pc > /opt/libkrun-built/pkgconfig/libkrun.pc
 
 # Environment variables for downstream builds
 ENV LIBKRUN_LIB_PATH=/opt/libkrun-built
