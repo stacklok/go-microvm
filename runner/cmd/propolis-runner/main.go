@@ -25,6 +25,7 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
+	"github.com/stacklok/propolis/internal/logbridge"
 	"github.com/stacklok/propolis/krun"
 	"github.com/stacklok/propolis/net/topology"
 )
@@ -89,6 +90,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "It should not be run directly.\n")
 		os.Exit(exitConfigError)
 	}
+
+	// Redirect gvisor-tap-vsock's logrus output through slog before any
+	// networking is set up, so it doesn't pollute stderr.
+	logbridge.RedirectLogrus()
 
 	// Parse configuration from JSON argument.
 	var config Config

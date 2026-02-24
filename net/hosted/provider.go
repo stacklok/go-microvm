@@ -15,6 +15,7 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
+	"github.com/stacklok/propolis/internal/logbridge"
 	propnet "github.com/stacklok/propolis/net"
 	"github.com/stacklok/propolis/net/egress"
 	"github.com/stacklok/propolis/net/firewall"
@@ -52,6 +53,11 @@ func (p *Provider) Start(ctx context.Context, cfg propnet.Config) error {
 	if p.vn != nil {
 		return fmt.Errorf("provider already started")
 	}
+
+	// Redirect gvisor-tap-vsock's logrus output through slog so it follows
+	// the caller's logging configuration (e.g. file-based logging) instead
+	// of polluting stderr during the terminal session.
+	logbridge.RedirectLogrus()
 
 	// Build port forward map: "127.0.0.1:<host>" -> "<guestIP>:<guest>"
 	forwards := make(map[string]string, len(cfg.Forwards))
