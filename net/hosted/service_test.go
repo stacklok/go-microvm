@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/propolis/internal/testutil"
 	propnet "github.com/stacklok/propolis/net"
 )
 
@@ -30,7 +31,7 @@ func TestAddServiceBeforeStart(t *testing.T) {
 func TestAddServiceAfterStartPanics(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	err := p.Start(context.Background(), propnet.Config{LogDir: dir})
@@ -48,7 +49,7 @@ func TestAddServiceAfterStartPanics(t *testing.T) {
 func TestServiceStartCreatesRunningServices(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	p.AddService(Service{
@@ -70,7 +71,7 @@ func TestServiceStartCreatesRunningServices(t *testing.T) {
 func TestMultipleServicesStart(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	p.AddService(Service{
@@ -96,7 +97,7 @@ func TestMultipleServicesStart(t *testing.T) {
 func TestServiceListenError(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	// Port 53 is used by the built-in DNS server in gvisor-tap-vsock.
@@ -112,7 +113,7 @@ func TestServiceListenError(t *testing.T) {
 func TestServiceListenErrorCleansUp(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	// First service on a free port should succeed.
@@ -140,7 +141,7 @@ func TestServiceListenErrorCleansUp(t *testing.T) {
 func TestStopClearsRunningServices(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	p.AddService(Service{
@@ -163,7 +164,7 @@ func TestStopClearsRunningServices(t *testing.T) {
 func TestNoServicesStartCleanly(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	// Start with no services registered.

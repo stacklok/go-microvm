@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/propolis/internal/testutil"
 	propnet "github.com/stacklok/propolis/net"
 	"github.com/stacklok/propolis/net/firewall"
 )
@@ -31,7 +32,7 @@ func freePort(t *testing.T) uint16 {
 func TestProviderLifecycle(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 	hostPort := freePort(t)
 
@@ -72,7 +73,7 @@ func TestVirtualNetworkNilBeforeStart(t *testing.T) {
 func TestStaleSocketRemoval(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	stalePath := filepath.Join(dir, socketName)
 
 	// Create a stale regular file where the socket should be.
@@ -94,7 +95,7 @@ func TestStaleSocketRemoval(t *testing.T) {
 func TestStopIdempotent(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	err := p.Start(context.Background(), propnet.Config{
@@ -110,7 +111,7 @@ func TestStopIdempotent(t *testing.T) {
 func TestStartAlreadyStarted(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	err := p.Start(context.Background(), propnet.Config{LogDir: dir})
@@ -125,7 +126,7 @@ func TestStartAlreadyStarted(t *testing.T) {
 func TestRelayWithFirewallRules(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	err := p.Start(context.Background(), propnet.Config{
@@ -151,7 +152,7 @@ func TestRelayWithFirewallRules(t *testing.T) {
 func TestSocketAcceptsConnection(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	err := p.Start(context.Background(), propnet.Config{
@@ -170,7 +171,7 @@ func TestSocketAcceptsConnection(t *testing.T) {
 func TestPortForwardMap(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 	hostPort := freePort(t)
 
@@ -192,7 +193,7 @@ func TestPortForwardMap(t *testing.T) {
 func TestProvider_StartWithEgressPolicy(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 
 	err := p.Start(context.Background(), propnet.Config{
@@ -214,7 +215,7 @@ func TestProvider_StartWithEgressPolicy(t *testing.T) {
 func TestProvider_StartWithEgressPolicy_ImplicitRules(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := testutil.ShortTempDir(t)
 	p := NewProvider()
 	hostPort := freePort(t)
 

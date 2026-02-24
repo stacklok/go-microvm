@@ -171,12 +171,12 @@ jobs:
           docker run --rm -v "${{ github.workspace }}:/src:z" -w /src \
             -e CGO_ENABLED=1 \
             ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }} \
-            go build ./krun/...
+            go build -buildvcs=false ./krun/...
 
       - name: Build runner binary
         run: |
           docker run --rm -v "${{ github.workspace }}:/src:z" -w /src \
             -e CGO_ENABLED=1 \
             ghcr.io/stacklok/propolis-builder:${{ steps.versions.outputs.LIBKRUN_VERSION }} \
-            go build -ldflags "-X github.com/stacklok/propolis/internal/version.Version=ci" \
+            go build -buildvcs=false -ldflags "-X github.com/stacklok/propolis/internal/version.Version=ci" \
             -o bin/propolis-runner ./runner/cmd/propolis-runner

@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/image"
+	"github.com/stacklok/propolis/internal/testutil"
 	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/preflight"
 	"github.com/stacklok/propolis/state"
@@ -589,9 +590,7 @@ func TestRun_EgressPolicy_ValidWildcard(t *testing.T) {
 
 	// Use a short temp dir to keep the Unix socket path under macOS's
 	// 104-byte bind() limit (t.TempDir() + this test name is too long).
-	dataDir, err := os.MkdirTemp("", "egress")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+	dataDir := testutil.ShortTempDir(t)
 
 	rootfsDir := filepath.Join(dataDir, "rootfs")
 	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
