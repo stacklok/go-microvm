@@ -5,9 +5,7 @@ package hooks
 
 import (
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -139,22 +137,14 @@ func TestInjectEnvFile_EmptyMap(t *testing.T) {
 func TestInjectAuthorizedKeys_DefaultPaths(t *testing.T) {
 	t.Parallel()
 
-	// Use current user's UID/GID so chown succeeds without root.
-	u, err := user.Current()
-	require.NoError(t, err)
-	uid, err := strconv.Atoi(u.Uid)
-	require.NoError(t, err)
-	gid, err := strconv.Atoi(u.Gid)
-	require.NoError(t, err)
-
 	rootfs := t.TempDir()
 	// Pre-create the default home directory.
 	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
 
 	pubKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST test@example.com"
-	hook := InjectAuthorizedKeys(pubKey, WithKeyUser("/home/sandbox", uid, gid))
+	hook := InjectAuthorizedKeys(pubKey)
 
-	err = hook(rootfs, nil)
+	err := hook(rootfs, nil)
 	require.NoError(t, err)
 
 	// Verify .ssh directory exists.
@@ -179,21 +169,13 @@ func TestInjectAuthorizedKeys_DefaultPaths(t *testing.T) {
 func TestInjectAuthorizedKeys_CustomUser(t *testing.T) {
 	t.Parallel()
 
-	// Use current user's UID/GID to avoid permission errors in tests.
-	u, err := user.Current()
-	require.NoError(t, err)
-	uid, err := strconv.Atoi(u.Uid)
-	require.NoError(t, err)
-	gid, err := strconv.Atoi(u.Gid)
-	require.NoError(t, err)
-
 	rootfs := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "customhome"), 0o755))
 
 	pubKey := "ssh-rsa AAAAB3NzaC1yc2EAAAADTEST custom@host"
-	hook := InjectAuthorizedKeys(pubKey, WithKeyUser("/customhome", uid, gid))
+	hook := InjectAuthorizedKeys(pubKey, WithKeyUser("/customhome", 1000, 1000))
 
-	err = hook(rootfs, nil)
+	err := hook(rootfs, nil)
 	require.NoError(t, err)
 
 	// Verify custom path.

@@ -5,6 +5,7 @@ package hooks
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,10 +43,21 @@ func WithKeyUser(home string, uid, gid int) KeyOption {
 	return keyOptionFunc(func(c *keyConfig) { c.home = home; c.uid = uid; c.gid = gid })
 }
 
+// bestEffortChown sets uid/gid on path, silently ignoring EPERM.
+// On macOS (and Linux without CAP_CHOWN), a non-root process cannot chown
+// files to a foreign uid/gid. Ownership is best-effort for host-side rootfs
+// preparation; the guest kernel enforces its own uid/gid at runtime.
+func bestEffortChown(path string, uid, gid int) {
+	if err := os.Chown(path, uid, gid); err != nil && !os.IsPermission(err) {
+		slog.Debug("chown failed", "path", path, "uid", uid, "gid", gid, "err", err)
+	}
+}
+
 // InjectAuthorizedKeys returns a RootFSHook that writes the given public key
 // to {home}/.ssh/authorized_keys inside the rootfs. The .ssh directory is
 // created with 0700 permissions and the authorized_keys file with 0600.
-// Both are chowned to the configured UID/GID (default 1000:1000).
+// Ownership is set with best-effort chown (EPERM is silently ignored) so the
+// hook works on macOS where non-root processes cannot chown to a foreign uid/gid.
 func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.OCIConfig) error {
 	return func(rootfsPath string, _ *image.OCIConfig) error {
 		cfg := defaultKeyConfig()
@@ -61,9 +73,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err := os.MkdirAll(sshDir, 0o700); err != nil {
 			return fmt.Errorf("create .ssh dir: %w", err)
 		}
-		if err := os.Chown(sshDir, cfg.uid, cfg.gid); err != nil {
-			return fmt.Errorf("chown .ssh dir: %w", err)
-		}
+		bestEffortChown(sshDir, cfg.uid, cfg.gid)
 
 		akGuest := sshDirGuest + "/authorized_keys"
 		akPath, err := pathutil.Contains(rootfsPath, akGuest)
@@ -73,9 +83,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err := os.WriteFile(akPath, []byte(pubKey+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write authorized_keys: %w", err)
 		}
-		if err := os.Chown(akPath, cfg.uid, cfg.gid); err != nil {
-			return fmt.Errorf("chown authorized_keys: %w", err)
-		}
+		bestEffortChown(akPath, cfg.uid, cfg.gid)
 
 		return nil
 	}

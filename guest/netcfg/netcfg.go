@@ -6,10 +6,12 @@
 package netcfg
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"syscall"
 
 	"github.com/vishvananda/netlink"
 
@@ -36,7 +38,10 @@ func Configure(logger *slog.Logger) error {
 	}
 
 	if err := netlink.AddrAdd(link, addr); err != nil {
-		return fmt.Errorf("adding address to eth0: %w", err)
+		if !errors.Is(err, syscall.EEXIST) {
+			return fmt.Errorf("adding address to eth0: %w", err)
+		}
+		logger.Debug("address already configured on eth0, skipping")
 	}
 
 	if err := netlink.LinkSetUp(link); err != nil {
@@ -47,7 +52,10 @@ func Configure(logger *slog.Logger) error {
 		Gw: net.ParseIP(topology.GatewayIP),
 	}
 	if err := netlink.RouteAdd(route); err != nil {
-		return fmt.Errorf("adding default route: %w", err)
+		if !errors.Is(err, syscall.EEXIST) {
+			return fmt.Errorf("adding default route: %w", err)
+		}
+		logger.Debug("default route already configured, skipping")
 	}
 
 	if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver "+topology.GatewayIP+"\n"), 0o644); err != nil {
