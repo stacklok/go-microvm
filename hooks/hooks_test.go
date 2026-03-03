@@ -5,14 +5,40 @@ package hooks
 
 import (
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// chownCall records a single chown invocation.
+type chownCall struct {
+	Path string
+	UID  int
+	GID  int
+}
+
+// recordingChown returns a ChownFunc that records calls and a getter
+// for the recorded calls. Thread-safe.
+func recordingChown() (ChownFunc, func() []chownCall) {
+	var mu sync.Mutex
+	var calls []chownCall
+
+	fn := func(path string, uid, gid int) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, chownCall{Path: path, UID: uid, GID: gid})
+		return nil
+	}
+	get := func() []chownCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]chownCall{}, calls...)
+	}
+	return fn, get
+}
 
 func TestInjectFile_WritesContent(t *testing.T) {
 	t.Parallel()
@@ -139,61 +165,58 @@ func TestInjectEnvFile_EmptyMap(t *testing.T) {
 func TestInjectAuthorizedKeys_DefaultPaths(t *testing.T) {
 	t.Parallel()
 
-	// Use current user's UID/GID so chown succeeds without root.
-	u, err := user.Current()
-	require.NoError(t, err)
-	uid, err := strconv.Atoi(u.Uid)
-	require.NoError(t, err)
-	gid, err := strconv.Atoi(u.Gid)
-	require.NoError(t, err)
+	chown, getCalls := recordingChown()
 
 	rootfs := t.TempDir()
-	// Pre-create the default home directory.
 	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
 
 	pubKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST test@example.com"
-	hook := InjectAuthorizedKeys(pubKey, WithKeyUser("/home/sandbox", uid, gid))
+	hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
 
-	err = hook(rootfs, nil)
+	err := hook(rootfs, nil)
 	require.NoError(t, err)
 
-	// Verify .ssh directory exists.
+	// Verify .ssh directory exists with correct permissions.
 	sshDir := filepath.Join(rootfs, "home", "sandbox", ".ssh")
 	info, err := os.Stat(sshDir)
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 
-	// Verify authorized_keys content.
+	// Verify authorized_keys content and permissions.
 	akPath := filepath.Join(sshDir, "authorized_keys")
 	got, err := os.ReadFile(akPath)
 	require.NoError(t, err)
 	assert.Equal(t, pubKey+"\n", string(got))
 
-	// Verify authorized_keys permissions.
 	info, err = os.Stat(akPath)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	// Verify chown was called with default sandbox UID/GID.
+	calls := getCalls()
+	require.Len(t, calls, 2)
+	for _, c := range calls {
+		assert.Equal(t, 1000, c.UID)
+		assert.Equal(t, 1000, c.GID)
+	}
 }
 
 func TestInjectAuthorizedKeys_CustomUser(t *testing.T) {
 	t.Parallel()
 
-	// Use current user's UID/GID to avoid permission errors in tests.
-	u, err := user.Current()
-	require.NoError(t, err)
-	uid, err := strconv.Atoi(u.Uid)
-	require.NoError(t, err)
-	gid, err := strconv.Atoi(u.Gid)
-	require.NoError(t, err)
+	chown, getCalls := recordingChown()
 
 	rootfs := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "customhome"), 0o755))
 
 	pubKey := "ssh-rsa AAAAB3NzaC1yc2EAAAADTEST custom@host"
-	hook := InjectAuthorizedKeys(pubKey, WithKeyUser("/customhome", uid, gid))
+	hook := InjectAuthorizedKeys(pubKey,
+		WithKeyUser("/customhome", 2000, 2000),
+		WithChown(chown),
+	)
 
-	err = hook(rootfs, nil)
+	err := hook(rootfs, nil)
 	require.NoError(t, err)
 
 	// Verify custom path.
@@ -206,6 +229,14 @@ func TestInjectAuthorizedKeys_CustomUser(t *testing.T) {
 	info, err := os.Stat(filepath.Join(rootfs, "customhome", ".ssh"))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+
+	// Verify chown was called with the custom UID/GID.
+	calls := getCalls()
+	require.Len(t, calls, 2)
+	for _, c := range calls {
+		assert.Equal(t, 2000, c.UID)
+		assert.Equal(t, 2000, c.GID)
+	}
 }
 
 func TestInjectFile_RejectsPathTraversal(t *testing.T) {
