@@ -31,10 +31,11 @@ import (
 //  3. Workspace mount (non-fatal if fails)
 //  4. Kernel sysctl hardening
 //  5. Lock down /root (if enabled)
-//  6. Load environment file
-//  7. Parse SSH authorized keys
-//  8. Drop bounding capabilities + set no_new_privs
-//  9. Start SSH server
+//  6. Fix home directory ownership (rootfs hooks may not chown on macOS)
+//  7. Load environment file
+//  8. Parse SSH authorized keys
+//  9. Drop bounding capabilities + set no_new_privs
+//  10. Start SSH server
 func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 	cfg := defaultConfig()
 	for _, o := range opts {
@@ -74,19 +75,25 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 		lockdownRoot(logger)
 	}
 
-	// 6. Load environment file.
+	// 6. Fix home directory ownership. Rootfs hooks run on the host
+	// before boot and may not be able to chown to the sandbox UID (e.g.
+	// macOS non-root users). Fix ownership now that we're running as
+	// root inside the guest.
+	fixHomeOwnership(logger, cfg.userHome, int(cfg.userUID), int(cfg.userGID))
+
+	// 7. Load environment file.
 	envVars, err := env.Load(cfg.envFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("loading environment: %w", err)
 	}
 
-	// 7. Parse authorized keys.
+	// 8. Parse authorized keys.
 	authorizedKeys, err := ParseAuthorizedKeys(cfg.sshKeysPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing authorized keys: %w", err)
 	}
 
-	// 7b. Load injected host key (if present). The key is deleted from
+	// 8b. Load injected host key (if present). The key is deleted from
 	// disk after loading into memory so it cannot be read by the sandbox
 	// user. If the file does not exist, hostKeySigner remains nil and the
 	// SSH server will generate an ephemeral key.
@@ -103,7 +110,7 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 		_ = os.Remove(cfg.sshHostKeyPath)
 	}
 
-	// 8. Drop unneeded capabilities from the bounding set.
+	// 9. Drop unneeded capabilities from the bounding set.
 	logger.Info("dropping unnecessary capabilities")
 	if err := harden.DropBoundingCaps(
 		harden.CapSetUID,
@@ -118,7 +125,7 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 		return nil, fmt.Errorf("setting no_new_privs: %w", err)
 	}
 
-	// 9. Start SSH server.
+	// 10. Start SSH server.
 	sshdCfg := sshd.Config{
 		Port:            cfg.sshPort,
 		AuthorizedKeys:  authorizedKeys,

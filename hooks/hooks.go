@@ -5,6 +5,7 @@ package hooks
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,19 +28,30 @@ type keyOptionFunc func(*keyConfig)
 
 func (f keyOptionFunc) apply(c *keyConfig) { f(c) }
 
+// ChownFunc abstracts file ownership changes for testability.
+// Production code uses BestEffortLchown; tests can pass a recording mock.
+type ChownFunc func(path string, uid, gid int) error
+
 type keyConfig struct {
-	home string
-	uid  int
-	gid  int
+	home  string
+	uid   int
+	gid   int
+	chown ChownFunc
 }
 
 func defaultKeyConfig() *keyConfig {
-	return &keyConfig{home: "/home/sandbox", uid: 1000, gid: 1000}
+	return &keyConfig{home: "/home/sandbox", uid: 1000, gid: 1000, chown: BestEffortLchown}
 }
 
 // WithKeyUser overrides the default user home, UID, and GID for SSH key injection.
 func WithKeyUser(home string, uid, gid int) KeyOption {
 	return keyOptionFunc(func(c *keyConfig) { c.home = home; c.uid = uid; c.gid = gid })
+}
+
+// WithChown overrides the chown function used by InjectAuthorizedKeys.
+// Useful for testing or environments where chown must be handled differently.
+func WithChown(fn ChownFunc) KeyOption {
+	return keyOptionFunc(func(c *keyConfig) { c.chown = fn })
 }
 
 // InjectAuthorizedKeys returns a RootFSHook that writes the given public key
@@ -61,7 +73,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err := os.MkdirAll(sshDir, 0o700); err != nil {
 			return fmt.Errorf("create .ssh dir: %w", err)
 		}
-		if err := os.Chown(sshDir, cfg.uid, cfg.gid); err != nil {
+		if err := cfg.chown(sshDir, cfg.uid, cfg.gid); err != nil {
 			return fmt.Errorf("chown .ssh dir: %w", err)
 		}
 
@@ -73,7 +85,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err := os.WriteFile(akPath, []byte(pubKey+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write authorized_keys: %w", err)
 		}
-		if err := os.Chown(akPath, cfg.uid, cfg.gid); err != nil {
+		if err := cfg.chown(akPath, cfg.uid, cfg.gid); err != nil {
 			return fmt.Errorf("chown authorized_keys: %w", err)
 		}
 
@@ -152,5 +164,20 @@ func InjectEnvFile(guestPath string, envMap map[string]string) func(string, *ima
 // shellEscape wraps a value in single quotes for safe shell sourcing.
 // Internal single quotes are escaped with the '\” idiom.
 func shellEscape(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// BestEffortLchown attempts os.Lchown and silently ignores permission errors,
+// returning nil. On macOS non-root users cannot chown to a different UID;
+// the guest init will fix ownership at boot time. Non-permission errors are
+// logged at warn level and also swallowed. Callers that need strict chown
+// should call os.Lchown directly instead.
+// Lchown is used instead of Chown to avoid following symlinks in the rootfs.
+func BestEffortLchown(path string, uid, gid int) error {
+	if err := os.Lchown(path, uid, gid); err != nil {
+		if !os.IsPermission(err) {
+			slog.Warn("lchown failed", "path", path, "uid", uid, "gid", gid, "err", err)
+		}
+	}
+	return nil
 }
