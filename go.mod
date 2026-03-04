@@ -7,6 +7,7 @@ go 1.25.7
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/containers/gvisor-tap-vsock v0.8.8
 	github.com/creack/pty v1.1.24
 	github.com/gofrs/flock v0.13.0
