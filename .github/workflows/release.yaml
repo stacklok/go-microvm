@@ -31,6 +31,7 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to ghcr.io
         uses: docker/login-action@v3
@@ -81,6 +82,7 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install libkrun via Homebrew
         run: |
@@ -112,6 +114,7 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs: [build-artifacts, build-artifacts-darwin]
+    if: ${{ always() && needs.build-artifacts.result == 'success' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -125,18 +128,17 @@ jobs:
         run: |
           sha256sum propolis-*.tar.gz > sha256sums.txt
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create ${{ github.ref_name }} --generate-notes \
-            propolis-runtime-linux-amd64.tar.gz \
-            propolis-runtime-linux-arm64.tar.gz \
-            propolis-firmware-linux-amd64.tar.gz \
-            propolis-firmware-linux-arm64.tar.gz \
-            propolis-runtime-darwin-arm64.tar.gz \
-            propolis-firmware-darwin-arm64.tar.gz \
-            sha256sums.txt
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" --clobber \
+              propolis-*.tar.gz sha256sums.txt
+          else
+            gh release create "${{ github.ref_name }}" --generate-notes \
+              propolis-*.tar.gz sha256sums.txt
+          fi
 
   push-oci:
     name: Push OCI (${{ matrix.arch }})
