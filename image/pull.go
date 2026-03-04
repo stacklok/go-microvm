@@ -44,6 +44,14 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		return nil, fmt.Errorf("parse image reference %q: %w", imageRef, err)
 	}
 
+	// Fast path: check if we have a cached ref→digest mapping with a valid
+	// rootfs entry. This avoids the daemon/registry fetch entirely — critical
+	// because daemon.Image() does a full "docker save" export.
+	if cached := cache.LookupRef(ref.String()); cached != nil {
+		slog.Debug("using ref-indexed cache hit", "ref", ref.String(), "path", cached.Path)
+		return cached, nil
+	}
+
 	slog.Debug("pulling image", "ref", ref.String())
 
 	img, err := fetcher.Pull(ctx, ref.String())
@@ -60,7 +68,8 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	digestStr := digest.String()
 	slog.Debug("image digest", "digest", digestStr)
 
-	// Check cache before extracting.
+	// Check cache before extracting (covers the case where the ref index
+	// missed but the digest entry exists, e.g. pulled under a different tag).
 	if cache != nil {
 		if cachedPath, ok := cache.Get(digestStr); ok {
 			slog.Debug("using cached rootfs", "path", cachedPath)
@@ -68,7 +77,8 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 			if err != nil {
 				return nil, fmt.Errorf("extract OCI config: %w", err)
 			}
-			return &RootFS{Path: cachedPath, Config: ociCfg}, nil
+			cache.StoreRef(ref.String(), digestStr, ociCfg)
+			return &RootFS{Path: cachedPath, Config: ociCfg, FromCache: true}, nil
 		}
 	}
 
@@ -97,7 +107,9 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		return nil, fmt.Errorf("extract image layers: %w", err)
 	}
 
-	// Move into cache if available.
+	// Move into cache if available. The extraction is fresh and this is
+	// the only reference, so FromCache stays false — callers may safely
+	// modify the rootfs in place without a COW clone.
 	rootfsPath := tmpDir
 	if cache != nil {
 		if err := cache.Put(digestStr, tmpDir); err != nil {
@@ -108,6 +120,8 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		if cachedPath, ok := cache.Get(digestStr); ok {
 			rootfsPath = cachedPath
 		}
+		// Record ref→digest mapping and OCI config for next-run fast path.
+		cache.StoreRef(ref.String(), digestStr, ociCfg)
 	}
 
 	return &RootFS{Path: rootfsPath, Config: ociCfg}, nil

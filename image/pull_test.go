@@ -451,6 +451,9 @@ func TestPullWithFetcher_CacheHit(t *testing.T) {
 	markerData, err := os.ReadFile(filepath.Join(rootfs.Path, "marker"))
 	require.NoError(t, err)
 	assert.Equal(t, "cached", string(markerData))
+
+	// Cache hits must be marked so callers know to COW-clone before mutation.
+	assert.True(t, rootfs.FromCache, "cache hit should set FromCache=true")
 }
 
 func TestPullWithFetcher_CacheMiss(t *testing.T) {
@@ -467,6 +470,9 @@ func TestPullWithFetcher_CacheMiss(t *testing.T) {
 	assert.NotEmpty(t, rootfs.Path)
 	assert.DirExists(t, rootfs.Path)
 	assert.NotNil(t, rootfs.Config)
+
+	// Fresh extractions are the only reference — safe to modify in place.
+	assert.False(t, rootfs.FromCache, "cache miss should set FromCache=false")
 }
 
 func TestPullWithFetcher_NilCache(t *testing.T) {

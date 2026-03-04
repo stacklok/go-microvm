@@ -75,6 +75,7 @@ type config struct {
 	egressPolicy          *EgressPolicy
 	virtioFS              []VirtioFSMount
 	imageCache            *image.Cache
+	externalCache         bool               // true when WithImageCache was called explicitly
 	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
 	backend               hypervisor.Backend // nil = default libkrun backend
 	cleanDataDir          bool
@@ -232,13 +233,15 @@ func WithBackend(b hypervisor.Backend) Option {
 func WithDataDir(path string) Option {
 	return optionFunc(func(c *config) {
 		c.dataDir = path
-		c.imageCache = image.NewCache(filepath.Join(path, "cache"))
+		if !c.externalCache {
+			c.imageCache = image.NewCache(filepath.Join(path, "cache"))
+		}
 	})
 }
 
 // WithCleanDataDir removes any existing data directory contents before boot.
-// Use only when the data dir is VM-scoped; this will also clear the image cache
-// if it lives under the data dir.
+// Use only when the data dir is VM-scoped; the image cache is preserved if it
+// lives under the data dir.
 func WithCleanDataDir() Option {
 	return optionFunc(func(c *config) { c.cleanDataDir = true })
 }
@@ -260,9 +263,14 @@ func WithVirtioFS(mounts ...VirtioFSMount) Option {
 	return optionFunc(func(c *config) { c.virtioFS = append(c.virtioFS, mounts...) })
 }
 
-// WithImageCache sets a custom image cache.
+// WithImageCache sets a custom image cache. When set, [WithDataDir] will not
+// override the cache with a data-dir-relative default, regardless of option
+// ordering.
 func WithImageCache(cache *image.Cache) Option {
-	return optionFunc(func(c *config) { c.imageCache = cache })
+	return optionFunc(func(c *config) {
+		c.imageCache = cache
+		c.externalCache = true
+	})
 }
 
 // WithImageFetcher sets a custom image fetcher for OCI image retrieval.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -145,4 +146,105 @@ func TestCache_DoublePut_NoConcurrencyError(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(cachedPath, "first"))
 	require.NoError(t, err)
 	assert.Equal(t, "1", string(data))
+}
+
+func TestCache_Evict_RemovesOldEntries(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create a cache entry and backdate its mtime.
+	oldDir := filepath.Join(cacheDir, "sha256-old")
+	require.NoError(t, os.MkdirAll(oldDir, 0o700))
+	oldTime := time.Now().Add(-10 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(oldDir, oldTime, oldTime))
+
+	// Create a fresh entry.
+	newDir := filepath.Join(cacheDir, "sha256-new")
+	require.NoError(t, os.MkdirAll(newDir, 0o700))
+
+	removed, err := c.Evict(7 * 24 * time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+
+	// Old entry should be gone, new entry should remain.
+	_, err = os.Stat(oldDir)
+	assert.True(t, os.IsNotExist(err))
+
+	_, err = os.Stat(newDir)
+	assert.NoError(t, err)
+}
+
+func TestCache_Evict_CleansOldTmpDirs(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create a stale tmp directory (simulates interrupted extraction).
+	tmpDir := filepath.Join(cacheDir, "tmp-rootfs-stale")
+	require.NoError(t, os.MkdirAll(tmpDir, 0o700))
+	oldTime := time.Now().Add(-10 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(tmpDir, oldTime, oldTime))
+
+	removed, err := c.Evict(7 * 24 * time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+
+	_, err = os.Stat(tmpDir)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestCache_Evict_PreservesFreshTmpDirs(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create a fresh tmp directory (simulates in-flight extraction).
+	tmpDir := filepath.Join(cacheDir, "tmp-rootfs-fresh")
+	require.NoError(t, os.MkdirAll(tmpDir, 0o700))
+
+	removed, err := c.Evict(7 * 24 * time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+
+	_, err = os.Stat(tmpDir)
+	assert.NoError(t, err)
+}
+
+func TestCache_Evict_NonExistentDir(t *testing.T) {
+	t.Parallel()
+
+	c := NewCache(filepath.Join(t.TempDir(), "does-not-exist"))
+
+	removed, err := c.Evict(7 * 24 * time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+}
+
+func TestCache_Get_TouchesMtime(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create a cache entry and backdate it.
+	digest := "sha256:touchtest"
+	entryDir := filepath.Join(cacheDir, "sha256-touchtest")
+	require.NoError(t, os.MkdirAll(entryDir, 0o700))
+	oldTime := time.Now().Add(-10 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(entryDir, oldTime, oldTime))
+
+	// Get should update the mtime.
+	before := time.Now()
+	path, ok := c.Get(digest)
+	require.True(t, ok)
+	assert.Equal(t, entryDir, path)
+
+	info, err := os.Stat(entryDir)
+	require.NoError(t, err)
+	assert.True(t, info.ModTime().After(before) || info.ModTime().Equal(before),
+		"Get should update mtime to prevent eviction")
 }

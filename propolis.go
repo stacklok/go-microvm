@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/net/firewall"
 	"github.com/stacklok/propolis/net/hosted"
+	rootfspkg "github.com/stacklok/propolis/rootfs"
 	"github.com/stacklok/propolis/state"
 )
 
@@ -98,6 +99,18 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pull image: %w", err)
 		}
+	}
+
+	// 2b. COW-clone cached rootfs so hooks and PrepareRootFS never
+	// modify the shared cache in-place. The default libkrun backend
+	// writes .krun_config.json into the rootfs, so we must always
+	// clone — not just when hooks are present.
+	if rootfs.FromCache {
+		workDir := filepath.Join(cfg.dataDir, "rootfs-work")
+		if err := rootfspkg.CloneDir(rootfs.Path, workDir); err != nil {
+			return nil, fmt.Errorf("clone rootfs: %w", err)
+		}
+		rootfs = &image.RootFS{Path: workDir, Config: rootfs.Config}
 	}
 
 	// 3. Run rootfs hooks (no-op on happy path).

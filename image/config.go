@@ -31,8 +31,9 @@ type KrunConfig struct {
 
 // RootFS represents an extracted rootfs ready for libkrun.
 type RootFS struct {
-	Path   string     // Filesystem path to the extracted rootfs directory
-	Config *OCIConfig // Parsed OCI image configuration
+	Path      string     // Filesystem path to the extracted rootfs directory
+	Config    *OCIConfig // Parsed OCI image configuration
+	FromCache bool       // True when the rootfs was served from cache (not freshly extracted)
 }
 
 // krunConfigFile is the filename written inside the rootfs.
