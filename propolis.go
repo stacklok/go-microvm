@@ -18,6 +18,7 @@ package propolis
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -256,6 +257,30 @@ func cleanDataDir(cfg *config) error {
 		return fmt.Errorf("clean data dir: %w", err)
 	}
 	return nil
+}
+
+// forceRemoveAll removes the given path, handling read-only directory trees
+// such as Go module caches (whose entries are set to 0444/0555). It first
+// attempts a plain os.RemoveAll; on failure it walks the tree making every
+// directory user-writable, then retries.
+func forceRemoveAll(path string) error {
+	err := os.RemoveAll(path)
+	if err == nil {
+		return nil
+	}
+
+	// Make every directory writable so entries can be unlinked.
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil // best-effort
+		}
+		if d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		}
+		return nil
+	})
+
+	return os.RemoveAll(path)
 }
 
 func cacheDir(cfg *config) string {

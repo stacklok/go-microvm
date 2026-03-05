@@ -245,6 +245,67 @@ func TestRun_WithCleanDataDir_RemovesStaleState(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRun_WithCleanDataDir_ReadOnlyTree(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+
+	// Simulate a Go module cache tree: read-only dirs and files.
+	modDir := filepath.Join(dataDir, "rootfs-work", "go", "pkg", "mod", "example.com@v1.0.0")
+	require.NoError(t, os.MkdirAll(modDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modDir, "README.md"), []byte("ro"), 0o444))
+	// Lock down directories to read+execute only, like Go module cache.
+	require.NoError(t, os.Chmod(modDir, 0o555))
+	require.NoError(t, os.Chmod(filepath.Dir(modDir), 0o555))
+
+	handle := &mockVMHandle{id: "ro-test", alive: true}
+	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
+
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithCleanDataDir(),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithNetProvider(netProv),
+		WithBackend(&mockBackend{startHandle: handle}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, vm)
+
+	// The read-only tree should have been removed.
+	_, err = os.Stat(filepath.Join(dataDir, "rootfs-work"))
+	assert.True(t, os.IsNotExist(err))
+
+	// Rootfs (kept) should still exist.
+	_, err = os.Stat(rootfsDir)
+	require.NoError(t, err)
+}
+
+func TestForceRemoveAll(t *testing.T) {
+	t.Parallel()
+
+	t.Run("removes read-only tree", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		nested := filepath.Join(dir, "a", "b", "c")
+		require.NoError(t, os.MkdirAll(nested, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(nested, "file.txt"), []byte("x"), 0o444))
+		require.NoError(t, os.Chmod(nested, 0o555))
+		require.NoError(t, os.Chmod(filepath.Dir(nested), 0o555))
+
+		require.NoError(t, forceRemoveAll(dir))
+		_, err := os.Stat(dir)
+		assert.True(t, os.IsNotExist(err))
+	})
+
+	t.Run("no error on nonexistent path", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, forceRemoveAll("/tmp/does-not-exist-propolis-test"))
+	})
+}
+
 func TestRun_Success(t *testing.T) {
 	t.Parallel()
 

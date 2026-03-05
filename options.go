@@ -94,7 +94,7 @@ func defaultConfig() *config {
 		preflight:   preflight.Default(),
 		imageCache:  image.NewCache(filepath.Join(dataDir, "cache")),
 		dataDir:     dataDir,
-		removeAll:   os.RemoveAll,
+		removeAll:   forceRemoveAll,
 		stat:        os.Stat,
 	}
 }
