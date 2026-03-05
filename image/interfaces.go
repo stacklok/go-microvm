@@ -6,6 +6,7 @@ package image
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -38,5 +39,9 @@ func (f RemoteFetcher) Pull(ctx context.Context, ref string) (v1.Image, error) {
 	return remote.Image(parsed,
 		remote.WithContext(ctx),
 		remote.WithAuthFromKeychain(kc),
+		remote.WithPlatform(v1.Platform{
+			OS:           "linux",
+			Architecture: runtime.GOARCH,
+		}),
 	)
 }
