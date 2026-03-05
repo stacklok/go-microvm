@@ -12,11 +12,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
+	"syscall"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"golang.org/x/sync/errgroup"
 )
 
 // maxExtractSize is a safety limit to prevent decompression bombs.
@@ -101,10 +105,28 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		return nil, fmt.Errorf("create temp dir for rootfs: %w", err)
 	}
 
-	// Extract the flattened filesystem.
-	if err := extractImage(img, tmpDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("extract image layers: %w", err)
+	// Extract the filesystem. When a cache is available, use layered
+	// extraction to benefit from per-layer caching. Falls back to flat
+	// extraction if layered extraction fails.
+	if cache != nil {
+		lc := cache.LayerCache()
+		if err := extractImageLayered(img, tmpDir, lc); err != nil {
+			slog.Warn("layered extraction failed, falling back to flat extraction", "err", err)
+			// Clean tmpDir contents before retrying with flat extraction.
+			_ = os.RemoveAll(tmpDir)
+			if tmpDir, err = cache.TempDir(); err != nil {
+				return nil, fmt.Errorf("create temp dir for rootfs: %w", err)
+			}
+			if err := extractImage(img, tmpDir); err != nil {
+				_ = os.RemoveAll(tmpDir)
+				return nil, fmt.Errorf("extract image layers: %w", err)
+			}
+		}
+	} else {
+		if err := extractImage(img, tmpDir); err != nil {
+			_ = os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("extract image layers: %w", err)
+		}
 	}
 
 	// Move into cache if available. The extraction is fresh and this is
@@ -158,6 +180,248 @@ func extractImage(img v1.Image, dst string) error {
 	return extractTar(reader, dst)
 }
 
+// extractImageLayered extracts each image layer individually into the layer
+// cache, then composes them bottom-to-top into dst. Shared layers across
+// images are extracted only once.
+func extractImageLayered(img v1.Image, dst string, lc *LayerCache) error {
+	layers, err := img.Layers()
+	if err != nil {
+		return fmt.Errorf("get image layers: %w", err)
+	}
+
+	cfgFile, err := img.ConfigFile()
+	if err != nil {
+		return fmt.Errorf("get image config: %w", err)
+	}
+
+	diffIDs := cfgFile.RootFS.DiffIDs
+	if len(layers) != len(diffIDs) {
+		return fmt.Errorf("layer count mismatch: %d layers vs %d diffIDs", len(layers), len(diffIDs))
+	}
+
+	// Extract uncached layers in parallel with bounded concurrency.
+	concurrency := runtime.NumCPU()
+	if concurrency > 4 {
+		concurrency = 4
+	}
+
+	// Shared size budget across all layers to prevent decompression bombs.
+	// Each layer's extraction decrements from this shared counter.
+	remaining := &atomic.Int64{}
+	remaining.Store(maxExtractSize)
+
+	g := new(errgroup.Group)
+	g.SetLimit(concurrency)
+
+	for i, layer := range layers {
+		diffID := diffIDs[i]
+
+		if lc.Has(diffID) {
+			slog.Debug("layer cache hit", "diffID", diffID.String(), "index", i)
+			continue
+		}
+
+		g.Go(func() error {
+			return extractLayerToCache(layer, diffID, lc, remaining)
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("extract layers: %w", err)
+	}
+
+	// Apply layers sequentially bottom-to-top (order matters for whiteouts).
+	for i, diffID := range diffIDs {
+		layerDir, ok := lc.Get(diffID)
+		if !ok {
+			return fmt.Errorf("layer %d (%s) missing from cache after extraction", i, diffID.String())
+		}
+
+		if err := applyLayerToDir(layerDir, dst); err != nil {
+			return fmt.Errorf("apply layer %d (%s): %w", i, diffID.String(), err)
+		}
+	}
+
+	return nil
+}
+
+// extractLayerToCache extracts a single layer into the layer cache.
+// The remaining counter is shared across concurrent layer extractions to
+// enforce a global size budget (prevents decompression bombs across layers).
+func extractLayerToCache(layer v1.Layer, diffID v1.Hash, lc *LayerCache, remaining *atomic.Int64) error {
+	tmpDir, err := lc.TempDir()
+	if err != nil {
+		return fmt.Errorf("create temp dir for layer %s: %w", diffID.String(), err)
+	}
+
+	rc, err := layer.Uncompressed()
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("get uncompressed layer %s: %w", diffID.String(), err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	if err := extractTarSharedLimit(rc, tmpDir, remaining); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("extract layer %s: %w", diffID.String(), err)
+	}
+
+	if err := lc.Put(diffID, tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("cache layer %s: %w", diffID.String(), err)
+	}
+
+	slog.Debug("layer extracted and cached", "diffID", diffID.String())
+	return nil
+}
+
+// applyLayerToDir applies a cached layer directory to the destination rootfs.
+// It handles OCI whiteout files for layer composition.
+func applyLayerToDir(layerDir, dst string) error {
+	return filepath.WalkDir(layerDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Compute the relative path within the layer.
+		rel, err := filepath.Rel(layerDir, path)
+		if err != nil {
+			return fmt.Errorf("compute relative path: %w", err)
+		}
+		if rel == "." {
+			return nil
+		}
+
+		// Handle whiteout files before copying.
+		if isWhiteoutFile(rel) {
+			if isOpaqueWhiteout(rel) {
+				if err := applyOpaqueWhiteout(dst, filepath.Dir(rel)); err != nil {
+					return fmt.Errorf("apply opaque whiteout %s: %w", rel, err)
+				}
+			} else {
+				if err := applyWhiteout(dst, rel); err != nil {
+					return fmt.Errorf("apply whiteout %s: %w", rel, err)
+				}
+			}
+			// Don't copy whiteout files into the rootfs.
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		target := filepath.Join(dst, rel)
+
+		// WalkDir uses lstat semantics, so d.Info() does not follow symlinks.
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", rel, err)
+		}
+
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", path, err)
+			}
+
+			// Validate symlink target stays within the rootfs.
+			if filepath.IsAbs(linkTarget) {
+				resolved := filepath.Join(dst, linkTarget)
+				relCheck, err := filepath.Rel(dst, resolved)
+				if err != nil || strings.HasPrefix(relCheck, "..") {
+					return fmt.Errorf("symlink %q points outside rootfs: target %q", rel, linkTarget)
+				}
+			} else {
+				symlinkDir := filepath.Dir(target)
+				resolved := filepath.Clean(filepath.Join(symlinkDir, linkTarget))
+				relCheck, err := filepath.Rel(dst, resolved)
+				if err != nil || strings.HasPrefix(relCheck, "..") {
+					return fmt.Errorf("symlink %q points outside rootfs: target %q", rel, linkTarget)
+				}
+			}
+
+			// Remove any existing entry at target.
+			if existing, err := os.Lstat(target); err == nil {
+				if existing.IsDir() {
+					return fmt.Errorf("refusing to replace directory with symlink: %s", target)
+				}
+				_ = os.Remove(target)
+			}
+			if err := os.Symlink(linkTarget, target); err != nil {
+				return fmt.Errorf("create symlink %s: %w", rel, err)
+			}
+
+		case info.IsDir():
+			mode := info.Mode().Perm() | 0o700
+			if err := mkdirAllNoSymlink(dst, target, mode); err != nil {
+				return fmt.Errorf("create directory %s: %w", rel, err)
+			}
+			if err := os.Chmod(target, mode); err != nil {
+				return fmt.Errorf("set directory permissions %s: %w", rel, err)
+			}
+
+		case info.Mode().IsRegular():
+			if err := copyFileToDir(path, target, dst, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("copy file %s: %w", rel, err)
+			}
+
+		default:
+			// Skip special files (devices, fifos, etc.)
+			return nil
+		}
+
+		// Preserve ownership from the cached layer entry. The cached
+		// layer already has ownership set by extractTar's bestEffortLchown.
+		copyOwnership(path, target)
+		return nil
+	})
+}
+
+// copyOwnership copies the uid/gid from src to dst using best-effort lchown.
+func copyOwnership(src, dst string) {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return
+	}
+	bestEffortLchown(dst, int(stat.Uid), int(stat.Gid))
+}
+
+// copyFileToDir copies a regular file from src to target within rootDir.
+func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
+	if err := mkdirAllNoSymlink(rootDir, filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create parent directory: %w", err)
+	}
+
+	if err := validateNoSymlinkLeaf(target); err != nil {
+		return err
+	}
+
+	mode |= 0o400 // Ensure at least owner-readable.
+
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer func() { _ = srcFile.Close() }()
+
+	dstFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("create target: %w", err)
+	}
+	defer func() { _ = dstFile.Close() }()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("copy contents: %w", err)
+	}
+
+	return nil
+}
+
 // extractTar reads a tar stream and extracts it to dst with security checks.
 func extractTar(r io.Reader, dst string) error {
 	// Wrap in a LimitedReader to prevent decompression bombs.
@@ -198,6 +462,68 @@ func extractTar(r io.Reader, dst string) error {
 	}
 
 	return nil
+}
+
+// extractTarSharedLimit is like extractTar but uses a shared atomic counter
+// for the size budget. This enforces a global maxExtractSize across all layers
+// in a layered extraction, preventing decompression bombs via many layers.
+func extractTarSharedLimit(r io.Reader, dst string, remaining *atomic.Int64) error {
+	// Use an atomicLimitReader that decrements the shared counter.
+	alr := &atomicLimitReader{R: r, Remaining: remaining}
+	tr := tar.NewReader(alr)
+
+	var entryCount int
+
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar header: %w", err)
+		}
+
+		entryCount++
+
+		target, err := sanitizeTarPath(dst, hdr.Name)
+		if err != nil {
+			slog.Warn("skipping unsafe tar entry", "name", hdr.Name, "err", err)
+			continue
+		}
+
+		if err := extractTarEntry(tr, hdr, target, dst); err != nil {
+			return fmt.Errorf("extract %q: %w", hdr.Name, err)
+		}
+
+		if remaining.Load() <= 0 {
+			return fmt.Errorf("extracted data exceeds maximum allowed size of %d bytes", maxExtractSize)
+		}
+	}
+
+	if entryCount == 0 {
+		return fmt.Errorf("tar archive is empty or contains no valid entries")
+	}
+
+	return nil
+}
+
+// atomicLimitReader wraps an io.Reader and decrements a shared atomic counter.
+// Multiple atomicLimitReaders can share the same Remaining counter to enforce
+// a global read budget across concurrent readers.
+type atomicLimitReader struct {
+	R         io.Reader
+	Remaining *atomic.Int64
+}
+
+func (r *atomicLimitReader) Read(p []byte) (n int, err error) {
+	if r.Remaining.Load() <= 0 {
+		return 0, fmt.Errorf("extracted data exceeds maximum allowed size of %d bytes", maxExtractSize)
+	}
+	n, err = r.R.Read(p)
+	if n > 0 {
+		r.Remaining.Add(-int64(n))
+	}
+	return n, err
 }
 
 // sanitizeTarPath validates and resolves a tar entry path to prevent path

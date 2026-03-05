@@ -16,7 +16,10 @@ import (
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -868,4 +871,260 @@ func TestExtractTar_UnsupportedEntryType(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dst, "good.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "valid", string(data))
+}
+
+// ---------------------------------------------------------------------------
+// Layered extraction tests
+// ---------------------------------------------------------------------------
+
+// createLayerFromEntries creates an OCI layer from tar entries.
+func createLayerFromEntries(t *testing.T, entries []tarEntry) v1.Layer {
+	t.Helper()
+	buf := createTarBuffer(t, entries)
+	data := buf.Bytes()
+	layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	})
+	require.NoError(t, err)
+	return layer
+}
+
+// createImageFromLayers builds an OCI image from the given layers.
+func createImageFromLayers(t *testing.T, layers ...v1.Layer) v1.Image {
+	t.Helper()
+	img, err := mutate.AppendLayers(empty.Image, layers...)
+	require.NoError(t, err)
+	return img
+}
+
+func TestExtractImageLayered_BasicExtraction(t *testing.T) {
+	t.Parallel()
+
+	// Create a two-layer image: base layer + app layer.
+	baseLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "etc/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "etc/os-release", typeflag: tar.TypeReg, mode: 0o644, content: "Alpine Linux"},
+		{name: "usr/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "usr/bin/", typeflag: tar.TypeDir, mode: 0o755},
+	})
+
+	appLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "app/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "app/main", typeflag: tar.TypeReg, mode: 0o755, content: "#!/bin/sh\necho hello"},
+	})
+
+	img := createImageFromLayers(t, baseLayer, appLayer)
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+	dst := t.TempDir()
+
+	err := extractImageLayered(img, dst, lc)
+	require.NoError(t, err)
+
+	// Verify files from both layers are present.
+	data, err := os.ReadFile(filepath.Join(dst, "etc", "os-release"))
+	require.NoError(t, err)
+	assert.Equal(t, "Alpine Linux", string(data))
+
+	data, err = os.ReadFile(filepath.Join(dst, "app", "main"))
+	require.NoError(t, err)
+	assert.Equal(t, "#!/bin/sh\necho hello", string(data))
+}
+
+func TestExtractImageLayered_SharedLayers(t *testing.T) {
+	t.Parallel()
+
+	// Create a shared base layer and two different app layers.
+	baseLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "base.txt", typeflag: tar.TypeReg, mode: 0o644, content: "shared base"},
+	})
+
+	appLayer1 := createLayerFromEntries(t, []tarEntry{
+		{name: "app1.txt", typeflag: tar.TypeReg, mode: 0o644, content: "app v1"},
+	})
+
+	appLayer2 := createLayerFromEntries(t, []tarEntry{
+		{name: "app2.txt", typeflag: tar.TypeReg, mode: 0o644, content: "app v2"},
+	})
+
+	img1 := createImageFromLayers(t, baseLayer, appLayer1)
+	img2 := createImageFromLayers(t, baseLayer, appLayer2)
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+
+	// Extract first image.
+	dst1 := t.TempDir()
+	err := extractImageLayered(img1, dst1, lc)
+	require.NoError(t, err)
+
+	// Get the base layer DiffID to check cache state.
+	cfgFile, err := img1.ConfigFile()
+	require.NoError(t, err)
+	baseDiffID := cfgFile.RootFS.DiffIDs[0]
+
+	// Verify base layer is cached.
+	assert.True(t, lc.Has(baseDiffID), "base layer should be cached after first extraction")
+
+	// Extract second image — base layer should be a cache hit.
+	dst2 := t.TempDir()
+	err = extractImageLayered(img2, dst2, lc)
+	require.NoError(t, err)
+
+	// Verify both images have the shared base content.
+	data1, err := os.ReadFile(filepath.Join(dst1, "base.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "shared base", string(data1))
+
+	data2, err := os.ReadFile(filepath.Join(dst2, "base.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "shared base", string(data2))
+
+	// Verify each image has its own app content.
+	data1, err = os.ReadFile(filepath.Join(dst1, "app1.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "app v1", string(data1))
+
+	data2, err = os.ReadFile(filepath.Join(dst2, "app2.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "app v2", string(data2))
+}
+
+func TestExtractImageLayered_Whiteouts(t *testing.T) {
+	t.Parallel()
+
+	// Base layer has files, upper layer whiteouts one of them.
+	baseLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "keep.txt", typeflag: tar.TypeReg, mode: 0o644, content: "keep me"},
+		{name: "delete.txt", typeflag: tar.TypeReg, mode: 0o644, content: "delete me"},
+		{name: "dir/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "dir/file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "in dir"},
+	})
+
+	upperLayer := createLayerFromEntries(t, []tarEntry{
+		// Whiteout for delete.txt
+		{name: ".wh.delete.txt", typeflag: tar.TypeReg, mode: 0o644},
+		// Opaque whiteout for dir/ (clears all contents)
+		{name: "dir/.wh..wh..opq", typeflag: tar.TypeReg, mode: 0o644},
+		// New file in dir after opaque whiteout
+		{name: "dir/new.txt", typeflag: tar.TypeReg, mode: 0o644, content: "new content"},
+	})
+
+	img := createImageFromLayers(t, baseLayer, upperLayer)
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+	dst := t.TempDir()
+
+	err := extractImageLayered(img, dst, lc)
+	require.NoError(t, err)
+
+	// keep.txt should still exist.
+	data, err := os.ReadFile(filepath.Join(dst, "keep.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "keep me", string(data))
+
+	// delete.txt should have been removed by whiteout.
+	_, err = os.Stat(filepath.Join(dst, "delete.txt"))
+	assert.True(t, os.IsNotExist(err), "delete.txt should be removed by whiteout")
+
+	// dir/ should exist but dir/file.txt should be gone (opaque whiteout).
+	_, err = os.Stat(filepath.Join(dst, "dir"))
+	require.NoError(t, err, "dir should still exist")
+
+	_, err = os.Stat(filepath.Join(dst, "dir", "file.txt"))
+	assert.True(t, os.IsNotExist(err), "dir/file.txt should be removed by opaque whiteout")
+
+	// dir/new.txt should exist (added after opaque whiteout).
+	data, err = os.ReadFile(filepath.Join(dst, "dir", "new.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "new content", string(data))
+}
+
+func TestExtractImageLayered_UpperLayerOverridesFile(t *testing.T) {
+	t.Parallel()
+
+	baseLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "config.txt", typeflag: tar.TypeReg, mode: 0o644, content: "version=1"},
+	})
+
+	upperLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "config.txt", typeflag: tar.TypeReg, mode: 0o644, content: "version=2"},
+	})
+
+	img := createImageFromLayers(t, baseLayer, upperLayer)
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+	dst := t.TempDir()
+
+	err := extractImageLayered(img, dst, lc)
+	require.NoError(t, err)
+
+	// Upper layer should win.
+	data, err := os.ReadFile(filepath.Join(dst, "config.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "version=2", string(data))
+}
+
+func TestExtractImageLayered_Symlinks(t *testing.T) {
+	t.Parallel()
+
+	layer := createLayerFromEntries(t, []tarEntry{
+		{name: "usr/bin/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "usr/bin/real", typeflag: tar.TypeReg, mode: 0o755, content: "binary"},
+		{name: "usr/bin/link", typeflag: tar.TypeSymlink, mode: 0o777, linkname: "real"},
+	})
+
+	img := createImageFromLayers(t, layer)
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+	dst := t.TempDir()
+
+	err := extractImageLayered(img, dst, lc)
+	require.NoError(t, err)
+
+	target, err := os.Readlink(filepath.Join(dst, "usr", "bin", "link"))
+	require.NoError(t, err)
+	assert.Equal(t, "real", target)
+
+	data, err := os.ReadFile(filepath.Join(dst, "usr", "bin", "link"))
+	require.NoError(t, err)
+	assert.Equal(t, "binary", string(data))
+}
+
+func TestPullWithFetcher_LayeredExtraction(t *testing.T) {
+	t.Parallel()
+
+	// Use random image (which has valid layers) with a cache.
+	fakeImg, err := random.Image(256, 2)
+	require.NoError(t, err)
+
+	fetcher := &mockFetcher{img: fakeImg}
+	cacheDir := t.TempDir()
+	cache := NewCache(cacheDir)
+
+	rootfs, err := PullWithFetcher(context.Background(), "example.com/test:layered", cache, fetcher)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rootfs.Path)
+	assert.DirExists(t, rootfs.Path)
+
+	// Verify layer cache was populated.
+	layerCacheDir := filepath.Join(cacheDir, "layers")
+	_, err = os.Stat(layerCacheDir)
+	require.NoError(t, err, "layers/ directory should exist")
+
+	entries, err := os.ReadDir(layerCacheDir)
+	require.NoError(t, err)
+
+	// Filter out tmp- directories.
+	var layerEntries []os.DirEntry
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "tmp-") {
+			layerEntries = append(layerEntries, e)
+		}
+	}
+	assert.Equal(t, 2, len(layerEntries), "should have 2 cached layers")
 }

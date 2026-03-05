@@ -35,6 +35,15 @@ func (c *Cache) BaseDir() string {
 	return c.baseDir
 }
 
+// LayerCache returns the per-layer cache, creating the layers/ subdirectory
+// lazily. Returns nil if the receiver is nil.
+func (c *Cache) LayerCache() *LayerCache {
+	if c == nil {
+		return nil
+	}
+	return NewLayerCache(filepath.Join(c.baseDir, "layers"))
+}
+
 // Get returns the path to a cached rootfs for the given digest, and true
 // if it exists and appears valid. Returns ("", false) on a cache miss.
 // On a hit, the entry's modification time is updated so that Evict does
@@ -124,6 +133,14 @@ func (c *Cache) Evict(maxAge time.Duration) (int, error) {
 			removed++
 		}
 	}
+
+	// Also evict from the per-layer cache.
+	lc := c.LayerCache()
+	layerRemoved, err := lc.Evict(maxAge)
+	if err != nil {
+		return removed, fmt.Errorf("evict layer cache: %w", err)
+	}
+	removed += layerRemoved
 
 	return removed, nil
 }
