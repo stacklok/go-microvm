@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 )
 
 // Option configures a Fetch call.
@@ -102,15 +102,15 @@ func Fetch(ctx context.Context, url, cacheDir string, opts ...Option) (string, e
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 2 * time.Second
 	bo.MaxInterval = 30 * time.Second
-	bo.MaxElapsedTime = 3 * time.Minute
 
-	bCtx := backoff.WithContext(bo, ctx)
-
-	operation := func() error {
-		return downloadFile(ctx, cfg.client, url, destPath, cfg.progress)
+	operation := func() (struct{}, error) {
+		return struct{}{}, downloadFile(ctx, cfg.client, url, destPath, cfg.progress)
 	}
 
-	if err := backoff.Retry(operation, bCtx); err != nil {
+	if _, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(bo),
+		backoff.WithMaxElapsedTime(3*time.Minute),
+	); err != nil {
 		return "", fmt.Errorf("download %q after retries: %w", url, err)
 	}
 
