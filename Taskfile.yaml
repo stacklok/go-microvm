@@ -22,6 +22,8 @@ vars:
   BUILDER_IMAGE: ghcr.io/stacklok/propolis-builder
   LIBKRUN_VERSION:
     sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
+  LIBKRUN_MAJOR:
+    sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2 | sed 's/^v//' | cut -d. -f1
   BUILDER_IMAGE_TAG: '{{.LIBKRUN_VERSION}}'
 
 # Quick reference:
@@ -73,8 +75,16 @@ tasks:
     platforms: [darwin]
     cmds:
       - task: build-dev-darwin
-      - cp $(brew --prefix libkrun)/lib/libkrun.dylib bin/
-      - cp $(brew --prefix libkrunfw)/lib/libkrunfw.dylib bin/
+      - cp -f $(brew --prefix libkrun)/lib/libkrun.dylib bin/
+      - cp -f $(brew --prefix libkrunfw)/lib/libkrunfw.dylib bin/
+      # Rewrite absolute Homebrew install name to @loader_path for portable bundles
+      - >-
+        install_name_tool -change
+        /opt/homebrew/opt/libkrun/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib
+        @loader_path/libkrun.dylib
+        bin/{{.RUNNER_NAME}}
+      # Re-sign after binary modification (install_name_tool invalidates signature)
+      - codesign --entitlements assets/entitlements.plist --force -s - bin/{{.RUNNER_NAME}}
     generates:
       - bin/{{.RUNNER_NAME}}
       - bin/libkrun.dylib
