@@ -5,6 +5,8 @@
 
 package extract
 
-func libName(base string, _ int) string {
-	return "lib" + base + ".dylib"
+import "fmt"
+
+func libName(base string, major int) string {
+	return fmt.Sprintf("lib%s.%d.dylib", base, major)
 }

@@ -26,7 +26,7 @@ automatically search both paths.
 | Aspect | Linux | macOS |
 |--------|-------|-------|
 | Hypervisor | KVM (`/dev/kvm`) | Hypervisor.framework |
-| Shared libraries | `.so` (libkrun.so.1, libkrunfw.so.5) | `.dylib` (libkrun.dylib, libkrunfw.dylib) |
+| Shared libraries | `.so` (libkrun.so.1, libkrunfw.so.5) | `.dylib` (libkrun.1.dylib, libkrunfw.5.dylib) |
 | Library path env | `LD_LIBRARY_PATH` | `DYLD_LIBRARY_PATH` |
 | Code signing | Not required | Required (hypervisor entitlement) |
 | PID identity check | `/proc/<pid>/exe` readlink | `signal(0)` best-effort |
@@ -87,9 +87,9 @@ codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runn
 ### DYLD_LIBRARY_PATH issues
 
 ```
-dyld: Library not loaded: @rpath/libkrun.dylib
+dyld: Library not loaded: @rpath/libkrun.1.dylib
 ```
 
 The runner can't find libkrun. Set `libkrun.WithLibDir()` (via
-`libkrun.NewBackend()`) to the directory containing `libkrun.dylib` and
-`libkrunfw.dylib`.
+`libkrun.NewBackend()`) to the directory containing `libkrun.1.dylib` and
+`libkrunfw.5.dylib`.

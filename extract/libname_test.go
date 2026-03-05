@@ -19,7 +19,7 @@ func TestLibName(t *testing.T) {
 	case "linux":
 		assert.Equal(t, "libkrun.so.1", got)
 	case "darwin":
-		assert.Equal(t, "libkrun.dylib", got)
+		assert.Equal(t, "libkrun.1.dylib", got)
 	default:
 		t.Skipf("unsupported platform: %s", runtime.GOOS)
 	}
