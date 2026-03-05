@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"syscall"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -725,4 +727,192 @@ func TestWithBackend(t *testing.T) {
 	backend := &mockBackend{}
 	WithBackend(backend).apply(cfg)
 	assert.Equal(t, backend, cfg.backend)
+}
+
+// --- terminateStaleRunner tests ---
+
+func TestTerminateStaleRunner_NoStateFile(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	// Should not panic or error when no state file exists.
+	terminateStaleRunner(cfg)
+}
+
+func TestTerminateStaleRunner_DeadProcess(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	// Write state with a PID that doesn't exist.
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 2147483647 // max PID, almost certainly dead
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var killCalled bool
+	cfg.killProcess = func(_ int, _ syscall.Signal) error {
+		killCalled = true
+		return nil
+	}
+	cfg.processAlive = func(_ int) bool { return false }
+
+	terminateStaleRunner(cfg)
+	assert.False(t, killCalled, "should not attempt to kill a dead process")
+}
+
+func TestTerminateStaleRunner_AliveProcess_GracefulExit(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 99999
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var mu sync.Mutex
+	var signals []syscall.Signal
+	aliveCount := 0
+
+	cfg.killProcess = func(pid int, sig syscall.Signal) error {
+		assert.Equal(t, 99999, pid)
+		mu.Lock()
+		signals = append(signals, sig)
+		mu.Unlock()
+		return nil
+	}
+	cfg.processAlive = func(_ int) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		aliveCount++
+		// Process is alive on first check (before SIGTERM), dead on second
+		// (after SIGTERM + first poll).
+		return aliveCount <= 1
+	}
+
+	terminateStaleRunner(cfg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, signals, 1, "should only send SIGTERM")
+	assert.Equal(t, syscall.SIGTERM, signals[0])
+}
+
+func TestTerminateStaleRunner_AliveProcess_RequiresKill(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 99999
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var mu sync.Mutex
+	var signals []syscall.Signal
+
+	cfg.killProcess = func(pid int, sig syscall.Signal) error {
+		assert.Equal(t, 99999, pid)
+		mu.Lock()
+		signals = append(signals, sig)
+		mu.Unlock()
+		return nil
+	}
+	// Process never exits on its own.
+	cfg.processAlive = func(_ int) bool { return true }
+
+	terminateStaleRunner(cfg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, signals, 2, "should send SIGTERM then SIGKILL")
+	assert.Equal(t, syscall.SIGTERM, signals[0])
+	assert.Equal(t, syscall.SIGKILL, signals[1])
+}
+
+func TestTerminateStaleRunner_ZeroPID(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	// Write state with PID=0 (clean shutdown).
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = false
+	ls.State.PID = 0
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var killCalled bool
+	cfg.killProcess = func(_ int, _ syscall.Signal) error {
+		killCalled = true
+		return nil
+	}
+
+	terminateStaleRunner(cfg)
+	assert.False(t, killCalled, "should not attempt to kill PID 0")
+}
+
+func TestRun_WithCleanDataDir_TerminatesStaleRunner(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	// Pre-populate state as if a previous runner crashed.
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 2147483647 // dead PID
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+
+	handle := &mockVMHandle{id: "1234", alive: true}
+	netProv := &mockNetProvider{sockPath: "/tmp/fake.sock"}
+
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithCleanDataDir(),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithNetProvider(netProv),
+		WithBackend(&mockBackend{startHandle: handle}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, vm)
+
+	// The new state should reflect the new VM, not the stale one.
+	loaded, loadErr := mgr.Load()
+	require.NoError(t, loadErr)
+	assert.True(t, loaded.Active)
+	assert.Equal(t, 1234, loaded.PID)
 }

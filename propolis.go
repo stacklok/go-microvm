@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/hypervisor/libkrun"
@@ -226,6 +228,15 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	return vm, nil
 }
 
+const (
+	// staleTermTimeout is the maximum time to wait for a stale runner to
+	// exit after SIGTERM before sending SIGKILL.
+	staleTermTimeout = 5 * time.Second
+	// staleTermPoll is the interval between liveness checks during stale
+	// runner termination.
+	staleTermPoll = 250 * time.Millisecond
+)
+
 func cleanDataDir(cfg *config) error {
 	if cfg.dataDir == "" {
 		return nil
@@ -237,6 +248,9 @@ func cleanDataDir(cfg *config) error {
 		}
 		return fmt.Errorf("check data dir: %w", err)
 	}
+
+	// Best-effort: terminate any stale runner process before wiping.
+	terminateStaleRunner(cfg)
 
 	var keep []string
 	cache := cacheDir(cfg)
@@ -257,6 +271,49 @@ func cleanDataDir(cfg *config) error {
 		return fmt.Errorf("clean data dir: %w", err)
 	}
 	return nil
+}
+
+// terminateStaleRunner checks the state file in the data directory for a
+// previously-running runner process. If the PID is alive, it sends SIGTERM
+// and waits up to staleTermTimeout before sending SIGKILL. This prevents
+// orphaned runner processes from holding KVM file descriptors and virtiofs
+// mounts when the parent process was hard-killed.
+func terminateStaleRunner(cfg *config) {
+	mgr := state.NewManager(cfg.dataDir)
+	st, err := mgr.Load()
+	if err != nil {
+		slog.Debug("could not load state for stale runner check", "error", err)
+		return
+	}
+	if st.PID <= 0 {
+		return
+	}
+	if !cfg.processAlive(st.PID) {
+		slog.Debug("stale runner already dead", "pid", st.PID)
+		return
+	}
+
+	slog.Warn("terminating stale runner process", "pid", st.PID)
+	if err := cfg.killProcess(st.PID, syscall.SIGTERM); err != nil {
+		slog.Warn("failed to send SIGTERM to stale runner", "pid", st.PID, "error", err)
+		return
+	}
+
+	// Poll until the process exits or the timeout expires.
+	deadline := time.Now().Add(staleTermTimeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(staleTermPoll)
+		if !cfg.processAlive(st.PID) {
+			slog.Info("stale runner terminated gracefully", "pid", st.PID)
+			return
+		}
+	}
+
+	// Force kill.
+	slog.Warn("stale runner did not exit after SIGTERM, sending SIGKILL", "pid", st.PID)
+	if err := cfg.killProcess(st.PID, syscall.SIGKILL); err != nil {
+		slog.Warn("failed to send SIGKILL to stale runner", "pid", st.PID, "error", err)
+	}
 }
 
 // forceRemoveAll removes the given path, handling read-only directory trees

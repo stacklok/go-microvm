@@ -226,6 +226,24 @@ func TestVM_Remove_RemovesRootfsOutsideCache(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestVM_RunnerPID_Valid(t *testing.T) {
+	t.Parallel()
+
+	handle := &mockVMHandle{id: "1234", alive: true}
+	vm := &VM{name: "test-vm", handle: handle}
+
+	assert.Equal(t, 1234, vm.RunnerPID())
+}
+
+func TestVM_RunnerPID_NonNumericID(t *testing.T) {
+	t.Parallel()
+
+	handle := &mockVMHandle{id: "abc-123", alive: true}
+	vm := &VM{name: "test-vm", handle: handle}
+
+	assert.Equal(t, 0, vm.RunnerPID())
+}
+
 func TestVM_Accessors(t *testing.T) {
 	t.Parallel()
 

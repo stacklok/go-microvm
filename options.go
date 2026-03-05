@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/image"
@@ -81,6 +82,8 @@ type config struct {
 	cleanDataDir          bool
 	removeAll             func(string) error
 	stat                  func(string) (os.FileInfo, error)
+	killProcess           func(pid int, sig syscall.Signal) error
+	processAlive          func(pid int) bool
 }
 
 func defaultConfig() *config {
@@ -96,6 +99,14 @@ func defaultConfig() *config {
 		dataDir:     dataDir,
 		removeAll:   forceRemoveAll,
 		stat:        os.Stat,
+		killProcess: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
+		processAlive: func(pid int) bool {
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				return false
+			}
+			return proc.Signal(syscall.Signal(0)) == nil
+		},
 	}
 }
 

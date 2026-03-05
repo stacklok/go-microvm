@@ -125,6 +125,16 @@ func (vm *VM) Remove(ctx context.Context) error {
 	return nil
 }
 
+// RunnerPID returns the runner process ID, or 0 if the ID cannot be parsed
+// as a PID (e.g. non-process-based backends).
+func (vm *VM) RunnerPID() int {
+	pid, err := pidFromID(vm.handle.ID())
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
 // Name returns the VM name.
 func (vm *VM) Name() string { return vm.name }
 
