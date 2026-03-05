@@ -791,7 +791,7 @@ func TestTerminateStaleRunner_AliveProcess_GracefulExit(t *testing.T) {
 	aliveCount := 0
 
 	cfg.killProcess = func(pid int, sig syscall.Signal) error {
-		assert.Equal(t, 99999, pid)
+		assert.Equal(t, -99999, pid, "should signal the process group (negative PID)")
 		mu.Lock()
 		signals = append(signals, sig)
 		mu.Unlock()
@@ -834,7 +834,7 @@ func TestTerminateStaleRunner_AliveProcess_RequiresKill(t *testing.T) {
 	var signals []syscall.Signal
 
 	cfg.killProcess = func(pid int, sig syscall.Signal) error {
-		assert.Equal(t, 99999, pid)
+		assert.Equal(t, -99999, pid, "should signal the process group (negative PID)")
 		mu.Lock()
 		signals = append(signals, sig)
 		mu.Unlock()
@@ -850,6 +850,75 @@ func TestTerminateStaleRunner_AliveProcess_RequiresKill(t *testing.T) {
 	require.Len(t, signals, 2, "should send SIGTERM then SIGKILL")
 	assert.Equal(t, syscall.SIGTERM, signals[0])
 	assert.Equal(t, syscall.SIGKILL, signals[1])
+}
+
+func TestTerminateStaleRunner_SendsToProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 55555
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var mu sync.Mutex
+	var receivedPIDs []int
+	aliveCount := 0
+
+	cfg.killProcess = func(pid int, _ syscall.Signal) error {
+		mu.Lock()
+		receivedPIDs = append(receivedPIDs, pid)
+		mu.Unlock()
+		return nil
+	}
+	cfg.processAlive = func(_ int) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		aliveCount++
+		return aliveCount <= 1
+	}
+
+	terminateStaleRunner(cfg)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, receivedPIDs, 1)
+	assert.Equal(t, -55555, receivedPIDs[0], "killProcess should receive negative PID for process group")
+}
+
+func TestTerminateStaleRunner_PID1_Skipped(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	// Write state with PID=1 (init). This must never produce kill(-1, sig).
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 1
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var killCalled bool
+	cfg.killProcess = func(_ int, _ syscall.Signal) error {
+		killCalled = true
+		return nil
+	}
+	cfg.processAlive = func(_ int) bool { return true }
+
+	terminateStaleRunner(cfg)
+	assert.False(t, killCalled, "should not attempt to kill PID 1")
 }
 
 func TestTerminateStaleRunner_ZeroPID(t *testing.T) {

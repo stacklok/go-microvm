@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -67,6 +68,17 @@ type Process struct {
 
 // PID returns the process ID (implements ProcessHandle).
 func (p *Process) PID() int { return p.pid }
+
+// killTarget returns the negative PID for process-group-wide signals.
+// Because the runner starts with Setsid: true, its PGID == PID,
+// so kill(-pid, sig) targets the entire process group.
+// Panics if pid <= 1 to prevent kill(0) (own group) or kill(-1) (all processes).
+func (p *Process) killTarget() int {
+	if p.pid <= 1 {
+		panic(fmt.Sprintf("killTarget called with unsafe pid %d", p.pid))
+	}
+	return -p.pid
+}
 
 // Spawn starts the propolis-runner binary as a detached subprocess.
 // Deprecated: Use SpawnProcess or DefaultSpawner instead.
@@ -164,7 +176,9 @@ func (p *Process) Stop(ctx context.Context) error {
 	}
 
 	// Send SIGTERM for graceful shutdown.
-	if err := p.deps.kill(p.pid, syscall.SIGTERM); err != nil {
+	// Use killTarget() (negative PID) to signal the entire process group,
+	// ensuring any children spawned by the runner are also terminated.
+	if err := p.deps.kill(p.killTarget(), syscall.SIGTERM); err != nil {
 		// If the process is already gone, that is fine.
 		if !isNoSuchProcess(err) {
 			return fmt.Errorf("send SIGTERM to pid %d: %w", p.pid, err)
@@ -181,7 +195,7 @@ func (p *Process) Stop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			// Context canceled — force kill.
-			_ = p.deps.kill(p.pid, syscall.SIGKILL)
+			_ = p.deps.kill(p.killTarget(), syscall.SIGKILL)
 			return ctx.Err()
 		case <-ticker.C:
 			if !p.IsAlive() {
@@ -189,7 +203,7 @@ func (p *Process) Stop(ctx context.Context) error {
 			}
 			if time.Now().After(deadline) {
 				// Timeout — force kill.
-				if err := p.deps.kill(p.pid, syscall.SIGKILL); err != nil && !isNoSuchProcess(err) {
+				if err := p.deps.kill(p.killTarget(), syscall.SIGKILL); err != nil && !isNoSuchProcess(err) {
 					return fmt.Errorf("send SIGKILL to pid %d: %w", p.pid, err)
 				}
 				return nil
@@ -260,5 +274,5 @@ func libPathEnvVar() string {
 
 // isNoSuchProcess returns true if the error indicates the process does not exist.
 func isNoSuchProcess(err error) bool {
-	return err == syscall.ESRCH
+	return errors.Is(err, syscall.ESRCH)
 }

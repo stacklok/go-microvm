@@ -309,6 +309,88 @@ func TestIsNoSuchProcess(t *testing.T) {
 	assert.False(t, isNoSuchProcess(os.ErrNotExist))
 }
 
+// --- Process group cleanup tests ---
+
+func TestProcess_Stop_SendsToProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	terminated := false
+
+	var receivedPID int
+	p := &Process{
+		pid: 12345,
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				if terminated {
+					return nil, os.ErrNotExist
+				}
+				return os.FindProcess(os.Getpid())
+			},
+			kill: func(pid int, sig syscall.Signal) error {
+				receivedPID = pid
+				if sig == syscall.SIGTERM {
+					terminated = true
+				}
+				return nil
+			},
+		},
+	}
+
+	err := p.Stop(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, -12345, receivedPID, "kill should receive negative PID for process group")
+}
+
+func TestProcess_Stop_KillSendsToProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	// Process stays alive forever: SIGTERM succeeds but process never exits.
+	// A short-lived context should cause SIGKILL, also to the process group.
+	var killPIDs []int
+	p := &Process{
+		pid: 12345,
+		deps: processDeps{
+			findProcess: func(_ int) (*os.Process, error) {
+				return os.FindProcess(os.Getpid())
+			},
+			kill: func(pid int, _ syscall.Signal) error {
+				killPIDs = append(killPIDs, pid)
+				return nil
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_ = p.Stop(ctx)
+	// Both SIGTERM and SIGKILL should target the process group (negative PID).
+	for i, pid := range killPIDs {
+		assert.Equal(t, -12345, pid, "kill call %d should use negative PID", i)
+	}
+}
+
+func TestProcess_killTarget(t *testing.T) {
+	t.Parallel()
+
+	p := &Process{pid: 42}
+	assert.Equal(t, -42, p.killTarget())
+}
+
+func TestProcess_killTarget_PanicsOnPID0(t *testing.T) {
+	t.Parallel()
+
+	p := &Process{pid: 0}
+	assert.Panics(t, func() { p.killTarget() }, "killTarget with PID 0 should panic")
+}
+
+func TestProcess_killTarget_PanicsOnPID1(t *testing.T) {
+	t.Parallel()
+
+	p := &Process{pid: 1}
+	assert.Panics(t, func() { p.killTarget() }, "killTarget with PID 1 should panic")
+}
+
 // --- Interface compliance ---
 
 func TestDefaultSpawner_ImplementsInterface(t *testing.T) {

@@ -127,6 +127,8 @@ func (vm *VM) Remove(ctx context.Context) error {
 
 // RunnerPID returns the runner process ID, or 0 if the ID cannot be parsed
 // as a PID (e.g. non-process-based backends).
+// Because the runner starts with Setsid: true, its PGID equals its PID.
+// Callers needing process-group signals can use syscall.Kill(-pid, sig).
 func (vm *VM) RunnerPID() int {
 	pid, err := pidFromID(vm.handle.ID())
 	if err != nil {

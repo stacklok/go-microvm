@@ -285,7 +285,7 @@ func terminateStaleRunner(cfg *config) {
 		slog.Debug("could not load state for stale runner check", "error", err)
 		return
 	}
-	if st.PID <= 0 {
+	if st.PID <= 1 {
 		return
 	}
 	if !cfg.processAlive(st.PID) {
@@ -293,8 +293,13 @@ func terminateStaleRunner(cfg *config) {
 		return
 	}
 
-	slog.Warn("terminating stale runner process", "pid", st.PID)
-	if err := cfg.killProcess(st.PID, syscall.SIGTERM); err != nil {
+	// Use negative PID to signal the entire process group (PGID == PID
+	// because the runner starts with Setsid: true). This ensures any
+	// children spawned by the runner are also terminated.
+	target := -st.PID
+
+	slog.Warn("terminating stale runner process group", "pid", st.PID)
+	if err := cfg.killProcess(target, syscall.SIGTERM); err != nil {
 		slog.Warn("failed to send SIGTERM to stale runner", "pid", st.PID, "error", err)
 		return
 	}
@@ -311,7 +316,7 @@ func terminateStaleRunner(cfg *config) {
 
 	// Force kill.
 	slog.Warn("stale runner did not exit after SIGTERM, sending SIGKILL", "pid", st.PID)
-	if err := cfg.killProcess(st.PID, syscall.SIGKILL); err != nil {
+	if err := cfg.killProcess(target, syscall.SIGKILL); err != nil {
 		slog.Warn("failed to send SIGKILL to stale runner", "pid", st.PID, "error", err)
 	}
 }
