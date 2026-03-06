@@ -24,6 +24,10 @@ vars:
     sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
   LIBKRUN_MAJOR:
     sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2 | sed 's/^v//' | cut -d. -f1
+  LIBKRUNFW_VERSION:
+    sh: grep '^LIBKRUNFW_VERSION=' versions.env | cut -d= -f2
+  LIBKRUNFW_MAJOR:
+    sh: grep '^LIBKRUNFW_VERSION=' versions.env | cut -d= -f2 | sed 's/^v//' | cut -d. -f1
   BUILDER_IMAGE_TAG: '{{.LIBKRUN_VERSION}}'
 
 # Quick reference:
@@ -75,20 +79,20 @@ tasks:
     platforms: [darwin]
     cmds:
       - task: build-dev-darwin
-      - cp -f $(brew --prefix libkrun)/lib/libkrun.dylib bin/
-      - cp -f $(brew --prefix libkrunfw)/lib/libkrunfw.dylib bin/
+      - cp -f $(brew --prefix libkrun)/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/
+      - cp -f $(brew --prefix libkrunfw)/lib/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/
       # Rewrite absolute Homebrew install name to @loader_path for portable bundles
       - >-
         install_name_tool -change
         /opt/homebrew/opt/libkrun/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib
-        @loader_path/libkrun.dylib
+        @loader_path/libkrun.{{.LIBKRUN_MAJOR}}.dylib
         bin/{{.RUNNER_NAME}}
       # Re-sign after binary modification (install_name_tool invalidates signature)
       - codesign --entitlements assets/entitlements.plist --force -s - bin/{{.RUNNER_NAME}}
     generates:
       - bin/{{.RUNNER_NAME}}
-      - bin/libkrun.dylib
-      - bin/libkrunfw.dylib
+      - bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
+      - bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib
 
   build-dev-race:
     desc: Build runner with race detector (requires libkrun-devel)
@@ -259,7 +263,7 @@ tasks:
       - |
         staging="propolis-runtime-darwin-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
-        cp bin/propolis-runner bin/libkrun.dylib "${staging}/"
+        cp bin/propolis-runner bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
         tar czf "dist/${staging}.tar.gz" "${staging}"
         rm -rf "${staging}"
@@ -274,7 +278,7 @@ tasks:
       - |
         staging="propolis-firmware-darwin-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
-        cp bin/libkrunfw.dylib "${staging}/"
+        cp bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
         cat > "${staging}/LICENSE-GPL" <<'LICEOF'
         libkrunfw is licensed under the GNU General Public License v2.0 (GPL-2.0).
