@@ -35,8 +35,8 @@ func Configure(logger *slog.Logger) error {
 		return fmt.Errorf("parsing guest address: %w", err)
 	}
 
-	if err := netlink.AddrAdd(link, addr); err != nil {
-		return fmt.Errorf("adding address to eth0: %w", err)
+	if err := netlink.AddrReplace(link, addr); err != nil {
+		return fmt.Errorf("configuring address on eth0: %w", err)
 	}
 
 	if err := netlink.LinkSetUp(link); err != nil {
@@ -46,8 +46,8 @@ func Configure(logger *slog.Logger) error {
 	route := &netlink.Route{
 		Gw: net.ParseIP(topology.GatewayIP),
 	}
-	if err := netlink.RouteAdd(route); err != nil {
-		return fmt.Errorf("adding default route: %w", err)
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("configuring default route: %w", err)
 	}
 
 	if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver "+topology.GatewayIP+"\n"), 0o644); err != nil {
