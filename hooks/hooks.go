@@ -14,6 +14,7 @@ import (
 
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/internal/pathutil"
+	"github.com/stacklok/propolis/internal/xattr"
 )
 
 // validEnvKey matches POSIX-compliant environment variable names.
@@ -179,5 +180,8 @@ func BestEffortLchown(path string, uid, gid int) error {
 			slog.Warn("lchown failed", "path", path, "uid", uid, "gid", gid, "err", err)
 		}
 	}
+	// On macOS, set the override_stat xattr so libkrun's virtiofs reports
+	// correct ownership to the guest (non-root cannot Lchown to a different UID).
+	xattr.SetOverrideStatFromPath(path, uid, gid)
 	return nil
 }
