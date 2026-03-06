@@ -171,6 +171,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		InitConfig:       initCfg,
 		DataDir:          cfg.dataDir,
 		ConsoleLogPath:   filepath.Join(cfg.dataDir, "console.log"),
+		LogLevel:         cfg.logLevel,
 		NetEndpoint:      netEndpoint,
 	}
 	handle, err := backend.Start(ctx, vmCfg)

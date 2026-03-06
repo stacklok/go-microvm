@@ -138,6 +138,7 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 		PortForwards: toRunnerPortForwards(cfg.PortForwards),
 		VirtioFS:     toRunnerVirtioFS(cfg.FilesystemMounts),
 		ConsoleLog:   cfg.ConsoleLogPath,
+		LogLevel:     cfg.LogLevel,
 		LibDir:       libDir,
 		RunnerPath:   runnerPath,
 		VMLogPath:    filepath.Join(cfg.DataDir, "vm.log"),
