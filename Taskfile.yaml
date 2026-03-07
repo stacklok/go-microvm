@@ -210,6 +210,7 @@ tasks:
       - >-
         {{.CONTAINER_RUNTIME}} run --rm -v $(pwd):/src:z -w /src
         -e CGO_ENABLED=1
+        -e GOTOOLCHAIN=auto
         {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
         go build -buildvcs=false -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
     generates:
