@@ -79,6 +79,7 @@ type config struct {
 	externalCache         bool               // true when WithImageCache was called explicitly
 	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
 	backend               hypervisor.Backend // nil = default libkrun backend
+	logLevel              uint32             // libkrun log level (0=off, 5=trace)
 	cleanDataDir          bool
 	removeAll             func(string) error
 	stat                  func(string) (os.FileInfo, error)
@@ -289,4 +290,10 @@ func WithImageCache(cache *image.Cache) Option {
 // the Docker/Podman daemon first, then falls back to remote registry pull.
 func WithImageFetcher(f image.ImageFetcher) Option {
 	return optionFunc(func(c *config) { c.imageFetcher = f })
+}
+
+// WithLogLevel sets the libkrun log verbosity (0=off, 1=error, ..., 5=trace).
+// Logs are written to vm.log in the data directory.
+func WithLogLevel(level uint32) Option {
+	return optionFunc(func(c *config) { c.logLevel = level })
 }

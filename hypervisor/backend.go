@@ -49,6 +49,7 @@ type VMConfig struct {
 	InitConfig       InitConfig
 	DataDir          string
 	ConsoleLogPath   string
+	LogLevel         uint32 // Hypervisor log level (0=off, 5=most verbose)
 	NetEndpoint      NetEndpoint
 }
 
