@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/stacklok/propolis/internal/xattr"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -389,6 +390,7 @@ func copyOwnership(src, dst string) {
 		return
 	}
 	bestEffortLchown(dst, int(stat.Uid), int(stat.Gid))
+	xattr.CopyOverrideStat(src, dst)
 }
 
 // copyFileToDir copies a regular file from src to target within rootDir.
@@ -640,6 +642,13 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 	// Best-effort ownership preservation from tar headers.
 	// When running as non-root, Lchown will fail with EPERM — that's fine.
 	bestEffortLchown(target, hdr.Uid, hdr.Gid)
+
+	// On macOS, set the override_stat xattr so libkrun's virtiofs FUSE
+	// server reports the tar entry's original ownership to the guest.
+	// Note: uid/gid/mode come from untrusted OCI tar headers and are
+	// intentionally forwarded — the guest is hardware-isolated and the
+	// image author already controls everything the guest runs.
+	xattr.SetOverrideStat(target, hdr.Uid, hdr.Gid, hdr.FileInfo().Mode())
 
 	return nil
 }

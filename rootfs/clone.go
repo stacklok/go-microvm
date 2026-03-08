@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/stacklok/propolis/internal/xattr"
 )
 
 // CloneDir recursively clones srcDir into dstDir using platform-native COW
@@ -211,4 +213,5 @@ func bestEffortLchown(src, dst string) {
 		return
 	}
 	_ = os.Lchown(dst, uid, gid)
+	xattr.CopyOverrideStat(src, dst)
 }
