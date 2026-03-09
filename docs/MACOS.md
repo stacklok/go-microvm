@@ -37,11 +37,15 @@ macOS requires binaries that use Hypervisor.framework to be signed with
 specific entitlements. Without these, the process will crash with
 `EXC_BAD_ACCESS` when trying to create a VM context.
 
-Two entitlements are required (see `assets/entitlements.plist`):
+Three entitlements are required (see `assets/entitlements.plist`):
 
 - `com.apple.security.hypervisor` -- access to Hypervisor.framework
 - `com.apple.security.cs.disable-library-validation` -- allows loading
   libkrun from non-system paths (e.g., Homebrew)
+- `com.apple.security.cs.allow-dyld-environment-variables` -- allows
+  `DYLD_LIBRARY_PATH` to propagate to the runner process (the hypervisor
+  entitlement activates hardened runtime, which silently strips `DYLD_*`
+  variables without this entitlement)
 
 The propolis-runner binary must be signed:
 
@@ -55,9 +59,34 @@ The `task build-dev-darwin` command handles signing automatically.
 
 When using bundled (non-system) libraries, the runner subprocess needs
 `DYLD_LIBRARY_PATH` set. propolis handles this automatically via
-`libkrun.WithLibDir()` (passed to `libkrun.NewBackend()`). macOS SIP (System Integrity Protection) strips
-`DYLD_LIBRARY_PATH` from child processes in some contexts -- if the runner
-fails to find libkrun, ensure SIP isn't interfering.
+`libkrun.WithLibDir()` (passed to `libkrun.NewBackend()`).
+
+The hypervisor entitlement activates macOS **hardened runtime**, which silently
+strips `DYLD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` from child
+processes. The `com.apple.security.cs.allow-dyld-environment-variables`
+entitlement (in `assets/entitlements.plist`) opts back in. If the runner fails
+to find libkrun, verify the binary is signed with all three entitlements.
+
+## Filesystem Permissions (virtiofs)
+
+On macOS, non-root users cannot `chown` files to arbitrary UIDs. When propolis
+extracts an OCI image, all files end up owned by the host user. libkrun's
+virtiofs FUSE server performs access checks using host-side ownership, so guest
+processes running as different UIDs (e.g., root) would get `EACCES` errors.
+
+propolis works around this using the `user.containers.override_stat` extended
+attribute, which libkrun's virtiofs server reads to report overridden
+uid/gid/mode to the guest. This is the same mechanism used by podman on macOS.
+The xattr is set automatically during OCI layer extraction and rootfs cloning
+-- no user action is needed.
+
+## Guest Networking
+
+On macOS, libkrun's Hypervisor.framework backend pre-configures the guest
+network interface via DHCP before the custom init process runs. propolis
+handles this transparently by using idempotent network configuration
+(`AddrReplace`/`RouteReplace` instead of `AddrAdd`/`RouteAdd`), so the init
+works correctly regardless of whether the interface is already configured.
 
 ## Troubleshooting
 

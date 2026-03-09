@@ -292,6 +292,7 @@ func main() {
 | `WithEgressPolicy(p)` | Restrict outbound traffic to allowed DNS hostnames | none |
 | `WithImageCache(c)` | Custom image cache instance | `$dataDir/cache/` |
 | `WithImageFetcher(f)` | Custom image fetcher for OCI retrieval | local-then-remote |
+| `WithLogLevel(n)` | libkrun log verbosity (0=off, 1=error, ..., 5=trace) | `0` |
 | `WithBackend(b)` | Hypervisor backend (e.g. `libkrun.NewBackend(...)`) | libkrun |
 
 ## Package Overview
@@ -529,10 +530,16 @@ ss -tlnp | grep ':8080'
 
 ### macOS-Specific Issues
 
-- The runner binary must be code-signed with Hypervisor.framework entitlements.
-  The `task build-dev-darwin` command handles this automatically.
+- The runner binary must be code-signed with three entitlements (hypervisor,
+  disable-library-validation, allow-dyld-environment-variables). The
+  `task build-dev-darwin` command handles signing automatically.
 - If using bundled libraries, set `DYLD_LIBRARY_PATH` (not `LD_LIBRARY_PATH`).
   The `libkrun.WithLibDir` backend option handles this for the runner subprocess.
+- libkrun internally calls `dlopen` with versioned filenames (e.g.,
+  `libkrunfw.5.dylib`). If you see "library not loaded" errors, ensure the
+  versioned dylib names are present, not just unversioned symlinks.
+- See [docs/MACOS.md](docs/MACOS.md) for details on filesystem permissions
+  (virtiofs xattr), guest networking differences, and troubleshooting.
 
 ## Relationship to toolhive-appliance
 
