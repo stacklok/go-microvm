@@ -28,7 +28,8 @@ vars:
     sh: grep '^LIBKRUNFW_VERSION=' versions.env | cut -d= -f2
   LIBKRUNFW_MAJOR:
     sh: grep '^LIBKRUNFW_VERSION=' versions.env | cut -d= -f2 | sed 's/^v//' | cut -d. -f1
-  BUILDER_IMAGE_TAG: '{{.LIBKRUN_VERSION}}'
+  BUILDER_IMAGE_TAG:
+    sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
 
 # Quick reference:
 #   task build-dev        → Fast dev build (requires system libkrun-devel)
@@ -178,6 +179,9 @@ tasks:
   builder-image-build:
     desc: Build builder image for current platform
     platforms: [linux]
+    preconditions:
+      - sh: '[ -n "{{.BUILDER_IMAGE_TAG}}" ]'
+        msg: "BUILDER_IMAGE_TAG is empty — check that versions.env exists and contains LIBKRUN_VERSION"
     cmds:
       - >-
         {{.CONTAINER_RUNTIME}} build
@@ -200,6 +204,9 @@ tasks:
   build-runner:
     desc: Build runner + extract libs using builder container
     platforms: [linux]
+    preconditions:
+      - sh: '[ -n "{{.BUILDER_IMAGE_TAG}}" ]'
+        msg: "BUILDER_IMAGE_TAG is empty — check that versions.env exists and contains LIBKRUN_VERSION"
     cmds:
       - mkdir -p bin
       - |
