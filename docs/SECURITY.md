@@ -378,6 +378,30 @@ sending signals:
 This prevents sending signals to unrelated processes if the PID has
 been reused.
 
+## Host Capabilities (Linux)
+
+When running as a non-root user on Linux, propolis requires `CAP_CHOWN` on the
+process to set correct file ownership during OCI image extraction. Without it,
+all extracted rootfs files are owned by the host user, and the guest sees
+incorrect ownership — which can cause permission errors for processes running
+as different UIDs inside the VM.
+
+A non-required preflight check (`cap-chown`) warns at startup if `CAP_CHOWN`
+is missing. To grant it:
+
+```bash
+# File capability on the binary (persistent across invocations):
+sudo setcap cap_chown+ep /path/to/your-binary
+
+# Or grant via ambient capabilities for a specific invocation:
+capsh --addamb=cap_chown -- -c '/path/to/your-binary'
+```
+
+On macOS, this problem is solved differently: propolis sets the
+`user.containers.override_stat` extended attribute on extracted files so that
+libkrun's virtiofs FUSE server reports correct ownership to the guest. See
+the `internal/xattr` package for details.
+
 ## File Permissions
 
 | Resource | Mode | Description |

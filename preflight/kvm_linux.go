@@ -37,6 +37,15 @@ func registerPlatformChecks(c *checker) {
 		Required:    true,
 	})
 
+	// CAP_CHOWN check — without it, extracted rootfs ownership will be wrong.
+	chown := newChownChecker()
+	c.Register(Check{
+		Name:        "cap-chown",
+		Description: "Verify process can chown files (root or CAP_CHOWN)",
+		Run:         chown.check,
+		Required:    false,
+	})
+
 	// Add resource checks as non-required (advisory) defaults.
 	c.Register(DiskSpaceCheck("", 2.0))
 	c.Register(ResourceCheck(1, 1.0))

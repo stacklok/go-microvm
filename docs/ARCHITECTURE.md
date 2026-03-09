@@ -615,6 +615,7 @@ type Checker interface {
 | Check | Platform | Required | Description |
 |-------|----------|----------|-------------|
 | `kvm` | Linux | Yes | Verifies `/dev/kvm` exists, is a character device, and is read/write accessible. Error messages include remediation hints (modprobe commands, usermod). |
+| `cap-chown` | Linux | No | Verifies the process has `CAP_CHOWN` (or runs as root) so extracted rootfs files get correct ownership. Without it, guest processes may see permission errors. |
 | `disk-space` | Linux | No | Verifies at least 2.0 GB free disk space on the data directory filesystem. Walks up the directory tree to find an existing ancestor if the dir does not yet exist. |
 | `resources` | Linux | No | Verifies the host has at least 1 CPU core and 1.0 GiB RAM. |
 | `ports` | All | Yes | Verifies requested host ports are available for binding. Uses `ss` on Linux to identify the process holding a port. |
