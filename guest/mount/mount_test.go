@@ -40,7 +40,7 @@ func TestEssentialMountPoints(t *testing.T) {
 		{"proc", "/proc", "proc", 0, ""},
 		{"sysfs", "/sys", "sysfs", 0, ""},
 		{"devtmpfs", "/dev", "devtmpfs", 0, ""},
-		{"devpts", "/dev/pts", "devpts", 0, ""},
+		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620,gid=5"},
 		{"tmpfs", "/tmp", "tmpfs", 0, "size=256m"},
 		{"tmpfs", "/run", "tmpfs", 0, "size=64m"},
 	}

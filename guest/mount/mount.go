@@ -28,7 +28,7 @@ func Essential(logger *slog.Logger) error {
 		{"proc", "/proc", "proc", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, ""},
 		{"sysfs", "/sys", "sysfs", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, ""},
 		{"devtmpfs", "/dev", "devtmpfs", syscall.MS_NOSUID | syscall.MS_NOEXEC, ""},
-		{"devpts", "/dev/pts", "devpts", syscall.MS_NOSUID | syscall.MS_NOEXEC, ""},
+		{"devpts", "/dev/pts", "devpts", syscall.MS_NOSUID | syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620,gid=5"},
 		{"tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, "size=256m"},
 		{"tmpfs", "/run", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, "size=64m"},
 	}
@@ -45,6 +45,16 @@ func Essential(logger *slog.Logger) error {
 			}
 			return fmt.Errorf("mounting %s on %s: %w", m.fstype, m.target, err)
 		}
+	}
+
+	// Replace /dev/ptmx with a symlink to /dev/pts/ptmx. With the
+	// newinstance devpts mount, the PTY multiplexer lives at
+	// /dev/pts/ptmx, but glibc's posix_openpt() opens /dev/ptmx.
+	// devtmpfs may auto-create /dev/ptmx as a device node, so remove
+	// it first to ensure the symlink succeeds.
+	_ = os.Remove("/dev/ptmx")
+	if err := os.Symlink("/dev/pts/ptmx", "/dev/ptmx"); err != nil {
+		return fmt.Errorf("creating /dev/ptmx symlink: %w", err)
 	}
 
 	// Create standard /dev symlinks.
