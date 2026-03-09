@@ -31,6 +31,9 @@ vars:
   BUILDER_IMAGE_TAG:
     sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
 
+env:
+  GOTOOLCHAIN: auto
+
 # Quick reference:
 #   task build-dev        → Fast dev build (requires system libkrun-devel)
 #   task build-runner     → Build runner + libs using builder container
