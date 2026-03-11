@@ -130,6 +130,15 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		}
 	}
 
+	// Ensure the rootfs root directory itself is world-accessible and has
+	// the override_stat xattr. The root dir is created by os.MkdirTemp
+	// (mode 0700) and no tar entry covers it, so without this fix the
+	// guest's uid 1000 user cannot traverse /.
+	if err := os.Chmod(tmpDir, 0o755); err != nil {
+		slog.Warn("chmod rootfs root dir failed", "err", err)
+	}
+	xattr.SetOverrideStat(tmpDir, 0, 0, os.ModeDir|0o755)
+
 	// Move into cache if available. The extraction is fresh and this is
 	// the only reference, so FromCache stays false — callers may safely
 	// modify the rootfs in place without a COW clone.
