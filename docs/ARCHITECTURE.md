@@ -18,7 +18,6 @@ state management, security measures, and extension points.
 - [State Management](#state-management)
 - [Security Model](#security-model)
 - [SSH Utilities](#ssh-utilities)
-- [Relationship to toolhive-appliance](#relationship-to-toolhive-appliance)
 
 ## The Two-Process Model
 
@@ -772,8 +771,7 @@ escape blast radius, and hardening recommendations, see
 
 ## SSH Utilities
 
-The `ssh` package provides two capabilities used by consumers like
-toolhive-appliance:
+The `ssh` package provides two capabilities for guest communication:
 
 ### Key Generation
 
@@ -822,38 +820,3 @@ or the context is cancelled. Connection timeout per attempt is 10 seconds.
 **Security note:** The SSH client uses `InsecureIgnoreHostKey()` for host key
 verification. This is acceptable because we trust the VM we just created -- it
 was booted from an image we pulled and configured.
-
-## Relationship to toolhive-appliance
-
-[toolhive-appliance](https://github.com/stacklok/toolhive-appliance) is the
-primary consumer of propolis. It uses the extension points to build a complete
-appliance experience:
-
-| Extension Point | toolhive-appliance Usage |
-|-----------------|--------------------------|
-| `WithName` | Names the VM "toolhive-appliance" |
-| `WithInitOverride` | Injects `toolhive-init.sh` that starts k3s and services |
-| `WithRootFSHook` | Writes SSH keys, TLS certificates, configuration files |
-| `WithPostBoot` | Waits for SSH, pushes runtime config, syncs kubeconfig, verifies health |
-| `WithPreflightChecks` | Validates KVM, disk space, connectivity |
-| `WithVirtioFS` | Shares host directories for data persistence |
-| `WithDataDir` | Uses `~/.config/toolhive-appliance/` |
-| `WithRootFSPath` | Uses pre-built rootfs (skips OCI image pull) |
-| `WithPreflightChecker` | Replaces default preflight with empty checker (appliance has its own) |
-| `WithBackend(libkrun.NewBackend(...))` | Configures libkrun backend with `libkrun.WithRunnerPath` and `libkrun.WithLibDir` for embedded binaries |
-| `WithPorts` | Forwards HTTP (8080), HTTPS (8443), k8s API (6443), SSH (2222) |
-| `WithCPUs` / `WithMemory` | Configures VM resources per user settings |
-
-### Migration Path
-
-propolis was extracted from toolhive-appliance to provide a reusable library.
-If you are building a similar appliance:
-
-1. Import `github.com/stacklok/propolis` as a library
-2. Build your own init script for the guest
-3. Use `WithRootFSHook` to inject your configuration
-4. Use `WithPostBoot` for your post-boot orchestration
-5. Build your own CLI around `propolis.Run()`
-
-The propolis library handles the OCI-to-microVM pipeline. You provide the
-domain-specific logic via hooks and options.

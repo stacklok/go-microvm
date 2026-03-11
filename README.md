@@ -6,12 +6,25 @@
   <p><strong>Run OCI container images as microVMs with libkrun.</strong></p>
 
   <p>
+    <a href="https://github.com/stacklok/propolis/actions/workflows/ci.yaml"><img src="https://github.com/stacklok/propolis/actions/workflows/ci.yaml/badge.svg" alt="CI status" /></a>
+    <a href="https://pkg.go.dev/github.com/stacklok/propolis"><img src="https://pkg.go.dev/badge/github.com/stacklok/propolis.svg" alt="Go Reference" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
+    <a href="https://goreportcard.com/report/github.com/stacklok/propolis"><img src="https://goreportcard.com/badge/github.com/stacklok/propolis" alt="Go Report Card" /></a>
+  </p>
+
+  <p>
     <a href="#quick-start">Quick Start</a> &middot;
     <a href="#architecture">Architecture</a> &middot;
     <a href="docs/ARCHITECTURE.md">Docs</a> &middot;
+    <a href="#contributing">Contributing</a> &middot;
     <a href="#license">License</a>
   </p>
 </div>
+
+> [!WARNING]
+> **Experimental** -- propolis is under active development. APIs, configuration
+> formats, and behavior may change without notice between releases. It is not
+> yet recommended for production use.
 
 ---
 
@@ -22,14 +35,9 @@ into a rootfs, configures in-process networking, and boots the result using
 call.
 
 You would use propolis when you need stronger isolation than containers provide
-but want to keep the OCI image workflow you already have. The framework handles
+but want to keep the OCI image workflow you already have. The library handles
 image caching, preflight validation, port forwarding, virtio-fs mounts, and
 process lifecycle so you can focus on what runs inside the VM.
-
-propolis was extracted from
-[toolhive-appliance](https://github.com/stacklok/toolhive-appliance) to
-provide a reusable, general-purpose OCI-to-microVM pipeline. toolhive-appliance
-remains the primary consumer of this library.
 
 ## Table of Contents
 
@@ -41,7 +49,7 @@ remains the primary consumer of this library.
 - [Architecture](#architecture)
 - [Security Model](#security-model)
 - [Troubleshooting](#troubleshooting)
-- [Relationship to toolhive-appliance](#relationship-to-toolhive-appliance)
+- [Contributing](#contributing)
 - [License](#license)
 
 ## Prerequisites
@@ -114,7 +122,7 @@ sudo modprobe kvm kvm_amd     # AMD CPUs
 
 ### Go Toolchain
 
-propolis requires **Go 1.25.7** or later. The library packages (everything
+propolis requires **Go 1.26** or later. The library packages (everything
 except `krun` and `propolis-runner`) do not require CGO and compile with
 `CGO_ENABLED=0`. The runner binary requires `CGO_ENABLED=1` and `libkrun-devel`.
 
@@ -142,7 +150,7 @@ func main() {
     defer vm.Stop(ctx)
 
     info, _ := vm.Status(ctx)
-    log.Printf("VM %s running (pid %d)", info.Name, info.PID)
+    log.Printf("VM %s running (id %s)", info.Name, info.ID)
 
     // The VM is now serving on localhost:8080.
     // Block until interrupted, or integrate with your own lifecycle.
@@ -157,9 +165,8 @@ or remove the VM.
 
 ## Advanced Usage
 
-For appliance-style deployments (like
-[toolhive-appliance](https://github.com/stacklok/toolhive-appliance)),
-propolis exposes hooks and overrides at every stage of the pipeline:
+For appliance-style deployments, propolis exposes hooks and overrides at every
+stage of the pipeline:
 
 ```go
 package main
@@ -318,7 +325,9 @@ func main() {
 | `runner/cmd/propolis-runner` | **Yes** | The runner binary (calls `krun.StartEnter`, never returns) |
 | `ssh` | No | ECDSA key generation and SSH client for guest communication |
 | `state` | No | flock-based state persistence with atomic JSON writes |
+| `rootfs` | No | Rootfs cloning with reflink (copy-on-write) support |
 | `internal/pathutil` | No | Path traversal validation for safe file operations |
+| `internal/xattr` | No | Extended attribute helpers for `override_stat` ownership mapping |
 
 Only `krun` and `runner/cmd/propolis-runner` require CGO and `libkrun-devel`.
 All other packages are pure Go and can be imported and tested with
@@ -333,7 +342,9 @@ propolis uses [Task](https://taskfile.dev/) as its build tool. Run
 |---------|-------------|
 | `task build-dev` | Build runner for development on Linux (requires system `libkrun-devel`, `CGO_ENABLED=1`) |
 | `task build-dev-darwin` | Build runner on macOS (requires Homebrew libkrun, signs with entitlements) |
-| `task build-dev-race` | Build runner with Go race detector enabled |
+| `task build-runner` | Build runner + libs using builder container (no system libkrun needed) |
+| `task fetch-runtime` | Download pre-built runtime from GitHub Release |
+| `task fetch-firmware` | Download pre-built firmware from GitHub Release |
 | `task test` | Run all tests with race detector (`go test -v -race ./...`) |
 | `task test-coverage` | Run tests with coverage, generates `coverage.html` |
 | `task lint` | Run `golangci-lint` |
@@ -342,7 +353,7 @@ propolis uses [Task](https://taskfile.dev/) as its build tool. Run
 | `task tidy` | Run `go mod tidy` |
 | `task verify` | Run fmt, lint, and test in sequence (CI pipeline) |
 | `task version` | Print version, commit, and build date from git |
-| `task clean` | Remove `bin/` directory and coverage files |
+| `task clean` | Remove `bin/`, `dist/`, and coverage files |
 
 ### Testing Without CGO
 
@@ -541,30 +552,11 @@ ss -tlnp | grep ':8080'
 - See [docs/MACOS.md](docs/MACOS.md) for details on filesystem permissions
   (virtiofs xattr), guest networking differences, and troubleshooting.
 
-## Relationship to toolhive-appliance
+## Contributing
 
-propolis was extracted from
-[toolhive-appliance](https://github.com/stacklok/toolhive-appliance) to
-provide a reusable OCI-to-microVM pipeline. The appliance uses the extension
-points to build a complete appliance experience:
-
-- `WithInitOverride` to inject a custom init script that starts k3s and
-  appliance services
-- `WithRootFSHook` to write SSH keys, TLS certificates, and configuration
-  files into the rootfs before boot
-- `WithPostBoot` to wait for SSH, push runtime configuration, sync kubeconfig,
-  and verify service health
-- `WithPreflightChecks` to validate appliance-specific prerequisites (disk
-  space, connectivity)
-- `WithVirtioFS` to share host directories with the guest
-- `WithDataDir` to use appliance-specific state directories
-- `WithBackend(libkrun.NewBackend(...))` with `libkrun.WithRunnerPath` and
-  `libkrun.WithLibDir` to point at embedded binaries
-
-propolis provides the general-purpose pipeline. The appliance layer adds the
-domain-specific orchestration on top. If you are building something similar --
-a self-contained binary that boots a VM from an OCI image -- propolis gives you
-the building blocks.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for
+development setup, build commands, code conventions, and the workflow for
+submitting changes.
 
 ## License
 

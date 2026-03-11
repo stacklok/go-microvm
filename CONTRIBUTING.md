@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.25.7+**
+- **Go 1.26+**
 - **[Task](https://taskfile.dev/)** -- `go install github.com/go-task/task/v3/cmd/task@latest`
 - **golangci-lint** -- `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
 - **goimports** -- `go install golang.org/x/tools/cmd/goimports@latest`
