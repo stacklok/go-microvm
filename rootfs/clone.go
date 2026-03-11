@@ -115,6 +115,10 @@ func CloneDir(srcDir, dstDir string) error {
 		_ = os.Chmod(dirsToRestore[i].path, dirsToRestore[i].perm)
 	}
 
+	// Copy the override_stat xattr on the root directory itself.
+	// The walk skips "." so the root dir's xattr is not covered above.
+	xattr.CopyOverrideStat(srcDir, dstDir)
+
 	return nil
 }
 
