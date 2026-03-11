@@ -4,6 +4,7 @@
 package extract
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"sync"
@@ -169,4 +170,138 @@ func TestBundle_Ensure_ConcurrentAccess(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(dirs[0], "shared.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("concurrent data"), got)
+}
+
+// --- Direct tests for computeHash and isValid ---
+
+func TestBundle_ComputeHash_Stability(t *testing.T) {
+	t.Parallel()
+
+	files := []File{
+		{Name: "a.txt", Content: []byte("aaa"), Mode: 0o644},
+	}
+	b := NewBundle("v1", files)
+
+	hash1 := b.computeHash()
+	hash2 := b.computeHash()
+
+	assert.Equal(t, hash1, hash2, "same bundle should produce the same hash")
+	assert.Len(t, hash1, 64, "SHA-256 hex digest should be 64 characters")
+
+	// Verify it is valid hex.
+	_, err := hex.DecodeString(hash1)
+	require.NoError(t, err, "hash should be valid hex")
+}
+
+func TestBundle_ComputeHash_Sensitivity(t *testing.T) {
+	t.Parallel()
+
+	baseline := NewBundle("v1", []File{
+		{Name: "a.txt", Content: []byte("hello"), Mode: 0o644},
+	})
+	baseHash := baseline.computeHash()
+
+	tests := []struct {
+		name  string
+		build func() *Bundle
+	}{
+		{
+			name: "different version",
+			build: func() *Bundle {
+				return NewBundle("v2", []File{
+					{Name: "a.txt", Content: []byte("hello"), Mode: 0o644},
+				})
+			},
+		},
+		{
+			name: "different content",
+			build: func() *Bundle {
+				return NewBundle("v1", []File{
+					{Name: "a.txt", Content: []byte("world"), Mode: 0o644},
+				})
+			},
+		},
+		{
+			name: "different filename",
+			build: func() *Bundle {
+				return NewBundle("v1", []File{
+					{Name: "b.txt", Content: []byte("hello"), Mode: 0o644},
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			other := tt.build()
+			assert.NotEqual(t, baseHash, other.computeHash(),
+				"hash should differ when %s changes", tt.name)
+		})
+	}
+}
+
+func TestBundle_ComputeHash_EmptyBundle(t *testing.T) {
+	t.Parallel()
+
+	b1 := NewBundle("v1", nil)
+	b2 := NewBundle("v2", nil)
+
+	hash1 := b1.computeHash()
+	hash2 := b2.computeHash()
+
+	assert.Len(t, hash1, 64, "empty bundle hash should be valid 64-char hex")
+	_, err := hex.DecodeString(hash1)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, hash1, hash2,
+		"empty bundles with different versions should produce different hashes")
+}
+
+func TestBundle_IsValid_MatchingHash(t *testing.T) {
+	t.Parallel()
+
+	b := NewBundle("v1", []File{
+		{Name: "x.txt", Content: []byte("data"), Mode: 0o644},
+	})
+	hash := b.computeHash()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".version"), []byte(hash), 0o644))
+
+	assert.True(t, b.isValid(dir, hash))
+}
+
+func TestBundle_IsValid_WrongHash(t *testing.T) {
+	t.Parallel()
+
+	b := NewBundle("v1", []File{
+		{Name: "x.txt", Content: []byte("data"), Mode: 0o644},
+	})
+	hash := b.computeHash()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".version"), []byte("wronghash"), 0o644))
+
+	assert.False(t, b.isValid(dir, hash))
+}
+
+func TestBundle_IsValid_MissingVersionFile(t *testing.T) {
+	t.Parallel()
+
+	b := NewBundle("v1", nil)
+	hash := b.computeHash()
+
+	dir := t.TempDir()
+	// dir exists but has no .version file.
+	assert.False(t, b.isValid(dir, hash))
+}
+
+func TestBundle_IsValid_NonexistentDir(t *testing.T) {
+	t.Parallel()
+
+	b := NewBundle("v1", nil)
+	hash := b.computeHash()
+
+	assert.False(t, b.isValid("/nonexistent/path/that/does/not/exist", hash))
 }

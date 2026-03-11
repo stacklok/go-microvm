@@ -17,6 +17,12 @@ import (
 	"time"
 )
 
+// Compile-time interface assertions.
+var (
+	_ Spawner       = DefaultSpawner{}
+	_ ProcessHandle = (*Process)(nil)
+)
+
 const (
 	// runnerBinaryName is the name of the propolis-runner binary.
 	runnerBinaryName = "propolis-runner"

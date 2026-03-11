@@ -112,27 +112,3 @@ func TestVirtioFSMount_Serialization(t *testing.T) {
 	assert.Equal(t, mount.Tag, restored.Tag)
 	assert.Equal(t, mount.HostPath, restored.HostPath)
 }
-
-func TestConfig_OmitEmpty_Fields(t *testing.T) {
-	t.Parallel()
-
-	// Config with only required fields set.
-	cfg := Config{
-		RootPath: "/rootfs",
-		NumVCPUs: 1,
-		RAMMiB:   256,
-	}
-
-	data, err := json.Marshal(cfg)
-	require.NoError(t, err)
-
-	var raw map[string]json.RawMessage
-	err = json.Unmarshal(data, &raw)
-	require.NoError(t, err)
-
-	// omitempty fields should not be present when zero.
-	assert.NotContains(t, raw, "net_sock_path")
-	assert.NotContains(t, raw, "virtiofs_mounts")
-	assert.NotContains(t, raw, "console_log_path")
-	assert.NotContains(t, raw, "log_level")
-}

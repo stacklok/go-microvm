@@ -390,15 +390,3 @@ func TestProcess_killTarget_PanicsOnPID1(t *testing.T) {
 	p := &Process{pid: 1}
 	assert.Panics(t, func() { p.killTarget() }, "killTarget with PID 1 should panic")
 }
-
-// --- Interface compliance ---
-
-func TestDefaultSpawner_ImplementsInterface(t *testing.T) {
-	t.Parallel()
-	var _ Spawner = DefaultSpawner{}
-}
-
-func TestProcess_ImplementsProcessHandle(t *testing.T) {
-	t.Parallel()
-	var _ ProcessHandle = &Process{}
-}

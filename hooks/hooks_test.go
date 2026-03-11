@@ -4,6 +4,7 @@
 package hooks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -280,6 +281,88 @@ func TestInjectEnvFile_RejectsPathTraversal(t *testing.T) {
 	err := hook(rootfs, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path traversal")
+}
+
+// failingChown returns a ChownFunc that returns an error when the path
+// ends with the given suffix, and succeeds otherwise.
+func failingChown(pathSuffix string) ChownFunc {
+	return func(path string, _, _ int) error {
+		if filepath.Base(path) == pathSuffix || path == pathSuffix {
+			return fmt.Errorf("simulated chown failure on %s", path)
+		}
+		return nil
+	}
+}
+
+func TestInjectAuthorizedKeys_MultipleKeys(t *testing.T) {
+	t.Parallel()
+
+	chown, _ := recordingChown()
+
+	rootfs := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
+
+	key1 := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST1 user1@host"
+	key2 := "ssh-rsa AAAAB3NzaC1yc2EAAAADTEST2 user2@host"
+	pubKey := key1 + "\n" + key2
+	hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+
+	err := hook(rootfs, nil)
+	require.NoError(t, err)
+
+	akPath := filepath.Join(rootfs, "home", "sandbox", ".ssh", "authorized_keys")
+	got, err := os.ReadFile(akPath)
+	require.NoError(t, err)
+	assert.Equal(t, pubKey+"\n", string(got))
+}
+
+func TestInjectAuthorizedKeys_EmptyKey(t *testing.T) {
+	t.Parallel()
+
+	chown, _ := recordingChown()
+
+	rootfs := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
+
+	hook := InjectAuthorizedKeys("", WithChown(chown))
+
+	err := hook(rootfs, nil)
+	require.NoError(t, err)
+
+	akPath := filepath.Join(rootfs, "home", "sandbox", ".ssh", "authorized_keys")
+	got, err := os.ReadFile(akPath)
+	require.NoError(t, err)
+	assert.Equal(t, "\n", string(got))
+}
+
+func TestInjectAuthorizedKeys_ChownFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("chown fails on .ssh dir", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
+
+		hook := InjectAuthorizedKeys("ssh-ed25519 AAAA test", WithChown(failingChown(".ssh")))
+
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "chown .ssh dir")
+	})
+
+	t.Run("chown fails on authorized_keys file", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
+
+		hook := InjectAuthorizedKeys("ssh-ed25519 AAAA test", WithChown(failingChown("authorized_keys")))
+
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "chown authorized_keys")
+	})
 }
 
 func TestInjectAuthorizedKeys_RejectsPathTraversal(t *testing.T) {
