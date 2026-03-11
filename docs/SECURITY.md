@@ -397,10 +397,19 @@ sudo setcap cap_chown+ep /path/to/your-binary
 capsh --addamb=cap_chown -- -c '/path/to/your-binary'
 ```
 
-On macOS, this problem is solved differently: propolis sets the
-`user.containers.override_stat` extended attribute on extracted files so that
-libkrun's virtiofs FUSE server reports correct ownership to the guest. See
-the `internal/xattr` package for details.
+### override_stat xattr (macOS and Linux)
+
+propolis also sets the `user.containers.override_stat` extended attribute on
+extracted files so that libkrun's virtiofs server reports correct ownership to
+the guest. This is the same mechanism that podman uses on macOS.
+
+On Linux, the xattr is set on regular files and directories. The kernel
+restricts `user.*` xattrs on symlinks and special files, so those are silently
+skipped. Once libkrun's Linux virtiofs passthrough adds support for reading
+these xattrs (the same support already exists on macOS), file ownership in the
+guest will be correct without requiring `CAP_CHOWN`.
+
+See the `internal/xattr` package for details.
 
 ## File Permissions
 

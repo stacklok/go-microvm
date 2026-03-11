@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build darwin
+//go:build linux
 
 package xattr
 
@@ -59,7 +59,7 @@ func TestSetOverrideStat_RestrictiveMode(t *testing.T) {
 	assert.Equal(t, "1000:1000:0100600", readXattr(t, f))
 }
 
-func TestSetOverrideStat_Symlink(t *testing.T) {
+func TestSetOverrideStat_Symlink_Skipped(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -68,9 +68,13 @@ func TestSetOverrideStat_Symlink(t *testing.T) {
 	link := filepath.Join(dir, "link")
 	require.NoError(t, os.Symlink(target, link))
 
+	// On Linux, user.* xattrs are not allowed on symlinks.
+	// SetOverrideStat should silently skip when ModeSymlink is set.
 	SetOverrideStat(link, 0, 0, os.ModeSymlink|0o777)
 
-	assert.Equal(t, "0:0:0120777", readXattr(t, link))
+	buf := make([]byte, 256)
+	_, err := unix.Lgetxattr(link, overrideKey, buf)
+	assert.Error(t, err, "symlink should not have override_stat xattr on Linux")
 }
 
 func TestSetOverrideStatFromPath(t *testing.T) {
@@ -83,6 +87,23 @@ func TestSetOverrideStatFromPath(t *testing.T) {
 
 	// Mode should be read from the file (regular + 0755).
 	assert.Equal(t, "0:0:0100755", readXattr(t, f))
+}
+
+func TestSetOverrideStatFromPath_Symlink_Skipped(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	require.NoError(t, os.WriteFile(target, []byte("data"), 0o644))
+	link := filepath.Join(dir, "link")
+	require.NoError(t, os.Symlink(target, link))
+
+	// Lstat returns ModeSymlink, so SetOverrideStat's guard should fire.
+	SetOverrideStatFromPath(link, 0, 0)
+
+	buf := make([]byte, 256)
+	_, err := unix.Lgetxattr(link, overrideKey, buf)
+	assert.Error(t, err, "symlink should not have override_stat xattr on Linux")
 }
 
 func TestCopyOverrideStat(t *testing.T) {
