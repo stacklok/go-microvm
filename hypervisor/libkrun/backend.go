@@ -45,14 +45,32 @@ func WithFirmware(src extract.Source) Option { return func(b *Backend) { b.firmw
 // Ignored when Sources are directory-based.
 func WithCacheDir(dir string) Option { return func(b *Backend) { b.cacheDir = dir } }
 
+// WithUserNamespaceUID configures the runner to spawn inside a Linux user
+// namespace (CLONE_NEWUSER) with a single UID/GID mapping. The child
+// process gains CAP_SETUID and CAP_SETGID within the namespace, which
+// allows libkrun's virtiofs passthrough to call set_creds() without
+// requiring host-level capabilities.
+//
+// uid and gid specify the namespace-side IDs that map to the host
+// process's real UID/GID. For example, if the guest expects UID 1000
+// and the host runs as UID 1000, pass uid=1000, gid=1000.
+//
+// On non-Linux platforms, this option is accepted but has no effect.
+func WithUserNamespaceUID(uid, gid uint32) Option {
+	return func(b *Backend) {
+		b.userNamespace = &runner.UserNamespaceConfig{UID: uid, GID: gid}
+	}
+}
+
 // Backend implements hypervisor.Backend using libkrun.
 type Backend struct {
-	runnerPath string
-	libDir     string
-	spawner    runner.Spawner
-	runtime    extract.Source
-	firmware   extract.Source
-	cacheDir   string
+	runnerPath    string
+	libDir        string
+	spawner       runner.Spawner
+	runtime       extract.Source
+	firmware      extract.Source
+	cacheDir      string
+	userNamespace *runner.UserNamespaceConfig
 }
 
 // NewBackend creates a libkrun backend with the given options.
@@ -131,17 +149,18 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 	}
 
 	runCfg := runner.Config{
-		RootPath:     cfg.RootFSPath,
-		NumVCPUs:     cfg.NumVCPUs,
-		RAMMiB:       cfg.RAMMiB,
-		NetSocket:    netSocket,
-		PortForwards: toRunnerPortForwards(cfg.PortForwards),
-		VirtioFS:     toRunnerVirtioFS(cfg.FilesystemMounts),
-		ConsoleLog:   cfg.ConsoleLogPath,
-		LogLevel:     cfg.LogLevel,
-		LibDir:       libDir,
-		RunnerPath:   runnerPath,
-		VMLogPath:    filepath.Join(cfg.DataDir, "vm.log"),
+		RootPath:      cfg.RootFSPath,
+		NumVCPUs:      cfg.NumVCPUs,
+		RAMMiB:        cfg.RAMMiB,
+		NetSocket:     netSocket,
+		PortForwards:  toRunnerPortForwards(cfg.PortForwards),
+		VirtioFS:      toRunnerVirtioFS(cfg.FilesystemMounts),
+		ConsoleLog:    cfg.ConsoleLogPath,
+		LogLevel:      cfg.LogLevel,
+		LibDir:        libDir,
+		RunnerPath:    runnerPath,
+		VMLogPath:     filepath.Join(cfg.DataDir, "vm.log"),
+		UserNamespace: b.userNamespace,
 	}
 
 	spawner := b.spawner

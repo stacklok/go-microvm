@@ -448,5 +448,62 @@ func TestBackend_Start_DefaultUnchanged(t *testing.T) {
 	assert.Equal(t, "/my/lib", spawner.captured.LibDir)
 }
 
+func TestBackend_Options_UserNamespaceUID(t *testing.T) {
+	t.Parallel()
+
+	b := NewBackend(WithUserNamespaceUID(1000, 1000))
+
+	require.NotNil(t, b.userNamespace)
+	assert.Equal(t, uint32(1000), b.userNamespace.UID)
+	assert.Equal(t, uint32(1000), b.userNamespace.GID)
+}
+
+func TestBackend_Start_WithUserNamespaceUID(t *testing.T) {
+	t.Parallel()
+
+	proc := &mockProcessHandle{pid: 77, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(
+		WithUserNamespaceUID(1000, 1000),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	// Verify the user namespace config was threaded through.
+	require.NotNil(t, spawner.captured.UserNamespace)
+	assert.Equal(t, uint32(1000), spawner.captured.UserNamespace.UID)
+	assert.Equal(t, uint32(1000), spawner.captured.UserNamespace.GID)
+}
+
+func TestBackend_Start_WithoutUserNamespace(t *testing.T) {
+	t.Parallel()
+
+	proc := &mockProcessHandle{pid: 78, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(WithSpawner(spawner))
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	handle, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, handle)
+
+	// UserNamespace should be nil when not configured.
+	assert.Nil(t, spawner.captured.UserNamespace)
+}
+
 // Verify mockSource implements extract.Source.
 var _ extract.Source = (*mockSource)(nil)

@@ -116,6 +116,7 @@ func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true, // Create new session (detach from terminal)
 	}
+	applyUserNamespace(cmd, cfg.UserNamespace)
 
 	// Set library search path for bundled libraries if available.
 	if cfg.LibDir != "" {
@@ -135,6 +136,10 @@ func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
+		if cfg.UserNamespace != nil && isPermissionError(err) {
+			return nil, fmt.Errorf("start runner process: %w; user namespaces may be disabled — "+
+				"check that kernel.unprivileged_userns_clone=1 (sysctl kernel.unprivileged_userns_clone)", err)
+		}
 		return nil, fmt.Errorf("start runner process: %w", err)
 	}
 
@@ -281,4 +286,11 @@ func libPathEnvVar() string {
 // isNoSuchProcess returns true if the error indicates the process does not exist.
 func isNoSuchProcess(err error) bool {
 	return errors.Is(err, syscall.ESRCH)
+}
+
+// isPermissionError returns true if the error indicates a permission denial
+// (EPERM or EINVAL, the latter being returned by some kernels when
+// CLONE_NEWUSER is disabled).
+func isPermissionError(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL)
 }

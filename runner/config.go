@@ -44,6 +44,11 @@ type Config struct {
 	// VMLogPath is the path to the file where runner stdout/stderr is written.
 	// Not serialized to JSON; used by Spawn to redirect output.
 	VMLogPath string `json:"-"`
+	// UserNamespace configures a Linux user namespace for the runner subprocess.
+	// When non-nil, the runner is spawned inside CLONE_NEWUSER so that
+	// libkrun's virtiofs passthrough can call set_creds() without host caps.
+	// Not serialized to JSON; applied by SpawnProcess before exec.
+	UserNamespace *UserNamespaceConfig `json:"-"`
 }
 
 // VirtioFSMount exposes a host directory to the guest via virtio-fs.
