@@ -83,20 +83,75 @@ tasks:
     platforms: [darwin]
     cmds:
       - task: build-dev-darwin
+      # Copy all required dylibs from Homebrew
       - cp -f $(brew --prefix libkrun)/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/
       - cp -f $(brew --prefix libkrunfw)/lib/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/
-      # Rewrite absolute Homebrew install name to @loader_path for portable bundles
+      - cp -f $(brew --prefix libepoxy)/lib/libepoxy.0.dylib bin/
+      - cp -f $(brew --prefix virglrenderer)/lib/libvirglrenderer.1.dylib bin/
+      - cp -f $(brew --prefix molten-vk)/lib/libMoltenVK.dylib bin/
+      # Rewrite LC_ID_DYLIB (each dylib's own identity) for portable bundles
+      - install_name_tool -id @loader_path/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
+      - install_name_tool -id @loader_path/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib
+      - install_name_tool -id @loader_path/libepoxy.0.dylib bin/libepoxy.0.dylib
+      - install_name_tool -id @loader_path/libvirglrenderer.1.dylib bin/libvirglrenderer.1.dylib
+      - install_name_tool -id @loader_path/libMoltenVK.dylib bin/libMoltenVK.dylib
+      # Rewrite propolis-runner → libkrun reference
       - >-
         install_name_tool -change
         /opt/homebrew/opt/libkrun/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib
         @loader_path/libkrun.{{.LIBKRUN_MAJOR}}.dylib
         bin/{{.RUNNER_NAME}}
-      # Re-sign after binary modification (install_name_tool invalidates signature)
+      # Rewrite libkrun → libepoxy, virglrenderer references
+      - >-
+        install_name_tool -change
+        /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib
+        @loader_path/libepoxy.0.dylib
+        bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
+      - >-
+        install_name_tool -change
+        /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib
+        @loader_path/libvirglrenderer.1.dylib
+        bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
+      # Rewrite virglrenderer → MoltenVK, libepoxy references
+      - >-
+        install_name_tool -change
+        /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib
+        @loader_path/libMoltenVK.dylib
+        bin/libvirglrenderer.1.dylib
+      - >-
+        install_name_tool -change
+        /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib
+        @loader_path/libepoxy.0.dylib
+        bin/libvirglrenderer.1.dylib
+      # Remove stale Homebrew rpaths (ignore errors if none exist)
+      - for f in bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/libepoxy.0.dylib bin/libvirglrenderer.1.dylib bin/libMoltenVK.dylib; do
+          for rp in $(otool -l "$f" 2>/dev/null | grep -A2 LC_RPATH | grep 'path /opt/homebrew' | awk '{print $2}'); do
+            install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null || true;
+          done;
+        done
+      # Code-sign dylibs ad-hoc (no entitlements), then runner last with entitlements
+      - codesign --force -s - bin/libMoltenVK.dylib
+      - codesign --force -s - bin/libepoxy.0.dylib
+      - codesign --force -s - bin/libvirglrenderer.1.dylib
+      - codesign --force -s - bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib
+      - codesign --force -s - bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
       - codesign --entitlements assets/entitlements.plist --force -s - bin/{{.RUNNER_NAME}}
+      # Verify no Homebrew references remain in bundled files
+      - |
+        for f in bin/{{.RUNNER_NAME}} bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/libepoxy.0.dylib bin/libvirglrenderer.1.dylib bin/libMoltenVK.dylib; do
+          if otool -L "$f" | grep -q /opt/homebrew; then
+            echo "FAIL: $f still references /opt/homebrew"
+            otool -L "$f" | grep /opt/homebrew
+            exit 1
+          fi
+        done
     generates:
       - bin/{{.RUNNER_NAME}}
       - bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
       - bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib
+      - bin/libepoxy.0.dylib
+      - bin/libvirglrenderer.1.dylib
+      - bin/libMoltenVK.dylib
 
   build-dev-race:
     desc: Build runner with race detector (requires libkrun-devel)
@@ -265,7 +320,7 @@ tasks:
         rm -rf "${staging}"
 
   package-runtime-darwin:
-    desc: Package macOS runtime tarball (runner + libkrun)
+    desc: Package macOS runtime tarball (runner + libkrun + GPU dylibs)
     platforms: [darwin]
     vars:
       TAG: '{{.TAG | default .VERSION}}'
@@ -274,7 +329,9 @@ tasks:
       - |
         staging="propolis-runtime-darwin-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
-        cp bin/propolis-runner bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib "${staging}/"
+        cp bin/propolis-runner bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib \
+           bin/libepoxy.0.dylib bin/libvirglrenderer.1.dylib bin/libMoltenVK.dylib \
+           "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
         tar czf "dist/${staging}.tar.gz" "${staging}"
         rm -rf "${staging}"

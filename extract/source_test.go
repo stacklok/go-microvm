@@ -155,6 +155,42 @@ func TestBundleSource_EmptyCacheDir(t *testing.T) {
 	assert.Contains(t, err.Error(), "cache directory must not be empty")
 }
 
+func TestRuntimeBundle_ExtraLibs(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	runnerData := []byte("runner-binary")
+	libkrunData := []byte("libkrun-data")
+	epoxyData := []byte("libepoxy-data")
+	virglData := []byte("virgl-data")
+
+	src := RuntimeBundle("v1.0.0", runnerData, libkrunData,
+		File{Name: "libepoxy.0.dylib", Content: epoxyData, Mode: 0o755},
+		File{Name: "libvirglrenderer.1.dylib", Content: virglData, Mode: 0o755},
+	)
+
+	dir, err := src.Ensure(context.Background(), cacheDir)
+	require.NoError(t, err)
+
+	// Verify core files still present.
+	got, err := os.ReadFile(filepath.Join(dir, RunnerBinaryName))
+	require.NoError(t, err)
+	assert.Equal(t, runnerData, got)
+
+	got, err = os.ReadFile(filepath.Join(dir, LibName("krun", 1)))
+	require.NoError(t, err)
+	assert.Equal(t, libkrunData, got)
+
+	// Verify extra libs.
+	got, err = os.ReadFile(filepath.Join(dir, "libepoxy.0.dylib"))
+	require.NoError(t, err)
+	assert.Equal(t, epoxyData, got)
+
+	got, err = os.ReadFile(filepath.Join(dir, "libvirglrenderer.1.dylib"))
+	require.NoError(t, err)
+	assert.Equal(t, virglData, got)
+}
+
 func TestRuntimeBundle_ConcurrentEnsure(t *testing.T) {
 	t.Parallel()
 
