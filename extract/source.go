@@ -62,11 +62,15 @@ func (s *dirSource) Ensure(_ context.Context, _ string) (string, error) {
 // into a versioned cache directory. The runner and libkrun byte slices are
 // the file contents to extract. The libkrun major soname version is always 1
 // because the runner binary is built against a specific libkrun ABI.
-func RuntimeBundle(version string, runner, libkrun []byte) Source {
-	return &bundleSource{bundle: NewBundle(version, []File{
+// Additional dylibs (e.g. libepoxy, virglrenderer, MoltenVK on macOS) can be
+// passed via extraLibs and will be extracted alongside the core files.
+func RuntimeBundle(version string, runner, libkrun []byte, extraLibs ...File) Source {
+	files := []File{
 		{Name: RunnerBinaryName, Content: runner, Mode: 0o755},
 		{Name: LibName("krun", 1), Content: libkrun, Mode: 0o755},
-	})}
+	}
+	files = append(files, extraLibs...)
+	return &bundleSource{bundle: NewBundle(version, files)}
 }
 
 // FirmwareBundle creates a Source that extracts libkrunfw into a versioned
