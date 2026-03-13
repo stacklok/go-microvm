@@ -9,6 +9,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/containers/gvisor-tap-vsock v0.8.8
 	github.com/creack/pty v1.1.24
+	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.21.2
 	github.com/klauspost/compress v1.18.4

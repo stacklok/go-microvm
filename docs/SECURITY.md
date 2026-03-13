@@ -151,12 +151,19 @@ process, providing natural process-level separation.
 For security-critical deployments, layer additional isolation around
 the runner process:
 
-### seccomp (recommended)
+### seccomp — guest-side (built-in)
+
+The `guest/harden` package provides a built-in seccomp BPF blocklist
+filter for the guest VM. Enable it with `boot.WithSeccomp(true)` or
+call `harden.ApplySeccomp()` directly. See [Seccomp BPF filter](#seccomp-bpf-filter)
+for the full blocklist.
+
+### seccomp — runner-side (recommended)
 
 Restrict the runner's syscalls to only what libkrun and gvisor-tap-vsock
-need. This is the highest-impact hardening measure. After a guest escape,
-the attacker lands in a seccomp jail that limits what syscalls they can
-make.
+need. This is the highest-impact host-side hardening measure. After a
+guest escape, the attacker lands in a seccomp jail that limits what
+syscalls they can make.
 
 ```
 Runner process
@@ -205,8 +212,8 @@ lifetime with no extra coordination.
 
 ## Guest Hardening
 
-The `guest/harden` package provides reusable kernel and capability
-hardening for microVM init processes. It is guest-side code
+The `guest/harden` package provides reusable kernel, capability, and
+syscall hardening for microVM init processes. It is guest-side code
 (`//go:build linux`) with no CGO or krun dependencies.
 
 ### Recommended usage
@@ -217,6 +224,10 @@ Call the hardening functions in your guest init boot sequence:
 2. Call `harden.KernelDefaults(logger)` to apply sysctls.
 3. Perform all privileged operations (mounts, network config, chown).
 4. Call `harden.DropBoundingCaps(keep...)` as the last privileged step.
+5. Call `harden.ApplySeccomp()` as the very last hardening step.
+
+Alternatively, use `boot.WithSeccomp(true)` to have the boot sequence
+apply the seccomp filter automatically after SSH starts.
 
 ### Kernel sysctls
 
@@ -266,6 +277,47 @@ process itself (e.g., an init that doesn't use `os/exec`) can call
 Note: `no_new_privs` does not affect `setresuid`/`setresgid` syscalls
 used by Go's `SysProcAttr.Credential` — credential switching for SSH
 sessions continues to work after the bit is set.
+
+### Seccomp BPF filter
+
+`ApplySeccomp()` installs a seccomp BPF blocklist filter on all OS
+threads. The filter uses `SECCOMP_FILTER_FLAG_TSYNC` to synchronize
+across threads and sets `no_new_privs`. Once applied, it is inherited
+by all child processes and cannot be removed.
+
+The blocklist is split into two tiers:
+
+**Exploitation indicators** (`SECCOMP_RET_KILL_PROCESS`): syscalls that
+legitimate workloads never call — any attempt strongly indicates
+active exploitation.
+
+| Syscall | Reason |
+|---------|--------|
+| `io_uring_setup/enter/register` | Prolific source of kernel CVEs |
+| `ptrace`, `process_vm_readv/writev` | Process debugging / cross-process memory access |
+| `kexec_load/file_load` | Kernel replacement |
+| `init_module/finit_module/delete_module` | Kernel module loading |
+| `bpf` | eBPF — kernel attack surface |
+| `seccomp` | Prevent installing additional filters |
+
+**Operational blocks** (`SECCOMP_RET_ERRNO`/`EPERM`): syscalls that
+runtimes or build tools might innocuously probe — fail gracefully.
+
+| Category | Syscalls |
+|----------|----------|
+| Filesystem manipulation | `mount`, `umount2`, `pivot_root`, `chroot`, `fsopen`, `fsconfig`, `fspick`, `move_mount`, `open_tree` |
+| Namespace creation | `unshare`, `setns`, `clone` (with `CLONE_NEW*` flags) |
+| Side-channel attacks | `perf_event_open`, `userfaultfd` |
+| Kernel keyring | `add_key`, `request_key`, `keyctl` |
+| Landlock | `landlock_create_ruleset`, `landlock_add_rule`, `landlock_restrict_self` |
+| Dangerous socket families | `AF_NETLINK`, `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK` |
+
+`AF_INET`, `AF_INET6`, and `AF_UNIX` remain allowed for normal
+workload operation.
+
+Note: `clone3` is NOT blocked because glibc 2.34+ uses it for
+`fork()`. Its namespace flags live inside a struct pointer (`arg0`)
+which seccomp BPF cannot inspect.
 
 ### Filesystem hardening
 

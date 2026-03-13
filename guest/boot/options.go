@@ -32,6 +32,7 @@ type config struct {
 	userGID             uint32
 	lockdownRoot        bool
 	sshAgentForwarding  bool
+	seccomp             bool
 }
 
 func defaultConfig() *config {
@@ -113,4 +114,20 @@ func WithSSHHostKeyPath(path string) Option {
 // server creates a Unix socket and sets SSH_AUTH_SOCK for the session.
 func WithSSHAgentForwarding(enabled bool) Option {
 	return optionFunc(func(c *config) { c.sshAgentForwarding = enabled })
+}
+
+// WithSeccomp controls whether a seccomp BPF blocklist filter is
+// applied as the last step of the boot sequence. When enabled, the
+// filter blocks dangerous syscalls (io_uring, ptrace, bpf, mount,
+// namespace creation, etc.) while allowing normal workload operation.
+//
+// The filter is applied after the SSH server starts so all privileged
+// operations are already complete. It is inherited by all child
+// processes via fork+exec.
+//
+// Consumers that need to perform additional privileged operations
+// after boot (e.g. custom mounts) should leave this disabled and
+// call [harden.ApplySeccomp] manually at the appropriate time.
+func WithSeccomp(enabled bool) Option {
+	return optionFunc(func(c *config) { c.seccomp = enabled })
 }

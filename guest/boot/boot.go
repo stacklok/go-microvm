@@ -36,6 +36,7 @@ import (
 //  8. Parse SSH authorized keys
 //  9. Drop bounding capabilities + set no_new_privs
 //  10. Start SSH server
+//  11. Apply seccomp BPF filter (if enabled via [WithSeccomp])
 func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 	cfg := defaultConfig()
 	for _, o := range opts {
@@ -155,6 +156,15 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 			logger.Error("SSH server error", "error", err)
 		}
 	}()
+
+	// 11. Apply seccomp BPF filter (if enabled). This must be the last
+	// step — all mounts, networking, and privileged operations are done.
+	if cfg.seccomp {
+		logger.Info("applying seccomp BPF filter")
+		if err := harden.ApplySeccomp(); err != nil {
+			return nil, fmt.Errorf("applying seccomp filter: %w", err)
+		}
+	}
 
 	logger.Info("sandbox init ready", "ssh_port", cfg.sshPort)
 
