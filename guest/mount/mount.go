@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const defaultTmpSizeMiB = 256
+
 type mountEntry struct {
 	source string
 	target string
@@ -23,13 +25,17 @@ type mountEntry struct {
 }
 
 // Essential mounts the core filesystems required for a minimal Linux userspace.
-func Essential(logger *slog.Logger) error {
+// tmpSizeMiB sets the size of the /tmp tmpfs in MiB; 0 uses the default (256 MiB).
+func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
+	if tmpSizeMiB == 0 {
+		tmpSizeMiB = defaultTmpSizeMiB
+	}
 	mounts := []mountEntry{
 		{"proc", "/proc", "proc", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, ""},
 		{"sysfs", "/sys", "sysfs", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, ""},
 		{"devtmpfs", "/dev", "devtmpfs", syscall.MS_NOSUID | syscall.MS_NOEXEC, ""},
 		{"devpts", "/dev/pts", "devpts", syscall.MS_NOSUID | syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620,gid=5"},
-		{"tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, "size=256m"},
+		{"tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, fmt.Sprintf("size=%dm", tmpSizeMiB)},
 		{"tmpfs", "/run", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, "size=64m"},
 	}
 

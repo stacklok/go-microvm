@@ -4,6 +4,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,29 @@ import (
 	"github.com/stacklok/propolis/internal/pathutil"
 	"github.com/stacklok/propolis/internal/xattr"
 )
+
+// vmConfigGuestPath is the guest path for the VM config file written by InjectVMConfig.
+const vmConfigGuestPath = "/etc/propolis-vm.json"
+
+// VMConfig holds settings written by the host into the rootfs and read by the
+// guest init before mounting filesystems. Fields use omitempty so the file is
+// only written when a non-default value is present.
+type VMConfig struct {
+	TmpSizeMiB uint32 `json:"tmp_size_mib,omitempty"`
+}
+
+// InjectVMConfig returns a RootFSHook that writes the given VM config as JSON
+// to /etc/propolis-vm.json inside the rootfs. The guest init reads this file
+// to configure mounts before the SSH server starts.
+func InjectVMConfig(cfg VMConfig) func(string, *image.OCIConfig) error {
+	return func(rootfsPath string, _ *image.OCIConfig) error {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal vm config: %w", err)
+		}
+		return InjectFile(vmConfigGuestPath, data, 0o644)(rootfsPath, nil)
+	}
+}
 
 // validEnvKey matches POSIX-compliant environment variable names.
 var validEnvKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
