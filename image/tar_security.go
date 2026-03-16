@@ -6,7 +6,7 @@ package image
 import (
 	"os"
 
-	"github.com/stacklok/propolis/internal/pathutil"
+	"github.com/stacklok/go-microvm/internal/pathutil"
 )
 
 // SanitizeTarPath validates and resolves a tar entry path to prevent path

@@ -20,7 +20,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/stacklok/propolis/internal/xattr"
+	"github.com/stacklok/go-microvm/internal/xattr"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -100,7 +100,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	if cache != nil {
 		tmpDir, err = cache.TempDir()
 	} else {
-		tmpDir, err = os.MkdirTemp("", "propolis-rootfs-*")
+		tmpDir, err = os.MkdirTemp("", "go-microvm-rootfs-*")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir for rootfs: %w", err)

@@ -7,5 +7,5 @@
 // public-key authentication, command execution with PTY support, environment
 // variable injection, signal forwarding, and window-change handling. The
 // server is designed to run inside a microVM as the primary remote access
-// mechanism, paired with the host-side ssh.Client from the propolis/ssh package.
+// mechanism, paired with the host-side ssh.Client from the go-microvm/ssh package.
 package sshd

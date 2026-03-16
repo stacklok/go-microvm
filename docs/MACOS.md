@@ -1,6 +1,6 @@
 # macOS Support
 
-propolis supports macOS on Apple Silicon (arm64) using Hypervisor.framework.
+go-microvm supports macOS on Apple Silicon (arm64) using Hypervisor.framework.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ brew install libkrun libkrunfw
 ```
 
 This installs the libraries and headers into Homebrew's prefix (`/opt/homebrew`
-on Apple Silicon, `/usr/local` on Intel). The CGO directives in propolis
+on Apple Silicon, `/usr/local` on Intel). The CGO directives in go-microvm
 automatically search both paths.
 
 ## Key Platform Differences
@@ -47,10 +47,10 @@ Three entitlements are required (see `assets/entitlements.plist`):
   entitlement activates hardened runtime, which silently strips `DYLD_*`
   variables without this entitlement)
 
-The propolis-runner binary must be signed:
+The go-microvm-runner binary must be signed:
 
 ```bash
-codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
+codesign --entitlements assets/entitlements.plist --force -s - bin/go-microvm-runner
 ```
 
 The `task build-dev-darwin` command handles signing automatically.
@@ -58,7 +58,7 @@ The `task build-dev-darwin` command handles signing automatically.
 ## DYLD_LIBRARY_PATH
 
 When using bundled (non-system) libraries, the runner subprocess needs
-`DYLD_LIBRARY_PATH` set. propolis handles this automatically via
+`DYLD_LIBRARY_PATH` set. go-microvm handles this automatically via
 `libkrun.WithLibDir()` (passed to `libkrun.NewBackend()`).
 
 The hypervisor entitlement activates macOS **hardened runtime**, which silently
@@ -69,12 +69,12 @@ to find libkrun, verify the binary is signed with all three entitlements.
 
 ## Filesystem Permissions (virtiofs)
 
-On macOS, non-root users cannot `chown` files to arbitrary UIDs. When propolis
+On macOS, non-root users cannot `chown` files to arbitrary UIDs. When go-microvm
 extracts an OCI image, all files end up owned by the host user. libkrun's
 virtiofs FUSE server performs access checks using host-side ownership, so guest
 processes running as different UIDs (e.g., root) would get `EACCES` errors.
 
-propolis works around this using the `user.containers.override_stat` extended
+go-microvm works around this using the `user.containers.override_stat` extended
 attribute, which libkrun's virtiofs server reads to report overridden
 uid/gid/mode to the guest. This is the same mechanism used by podman on macOS.
 The xattr is set automatically during OCI layer extraction and rootfs cloning
@@ -83,7 +83,7 @@ The xattr is set automatically during OCI layer extraction and rootfs cloning
 ## Guest Networking
 
 On macOS, libkrun's Hypervisor.framework backend pre-configures the guest
-network interface via DHCP before the custom init process runs. propolis
+network interface via DHCP before the custom init process runs. go-microvm
 handles this transparently by using idempotent network configuration
 (`AddrReplace`/`RouteReplace` instead of `AddrAdd`/`RouteAdd`), so the init
 works correctly regardless of whether the interface is already configured.
@@ -106,11 +106,11 @@ nested virtualization).
 EXC_BAD_ACCESS (code=1, address=0x0)
 ```
 
-The propolis-runner binary is not signed with the hypervisor entitlement.
+The go-microvm-runner binary is not signed with the hypervisor entitlement.
 Re-sign it:
 
 ```bash
-codesign --entitlements assets/entitlements.plist --force -s - bin/propolis-runner
+codesign --entitlements assets/entitlements.plist --force -s - bin/go-microvm-runner
 ```
 
 ### DYLD_LIBRARY_PATH issues

@@ -15,17 +15,17 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
-	"github.com/stacklok/propolis/internal/logbridge"
-	propnet "github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/net/egress"
-	"github.com/stacklok/propolis/net/firewall"
-	"github.com/stacklok/propolis/net/topology"
+	"github.com/stacklok/go-microvm/internal/logbridge"
+	propnet "github.com/stacklok/go-microvm/net"
+	"github.com/stacklok/go-microvm/net/egress"
+	"github.com/stacklok/go-microvm/net/firewall"
+	"github.com/stacklok/go-microvm/net/topology"
 )
 
 const socketName = "hosted-net.sock"
 
 // Provider runs a gvisor-tap-vsock VirtualNetwork in the caller's process
-// and exposes a Unix socket for propolis-runner to connect to.
+// and exposes a Unix socket for go-microvm-runner to connect to.
 type Provider struct {
 	mu              sync.Mutex
 	vn              *virtualnetwork.VirtualNetwork
@@ -119,7 +119,7 @@ func (p *Provider) Start(ctx context.Context, cfg propnet.Config) error {
 	return nil
 }
 
-// SocketPath returns the path to the Unix socket for propolis-runner.
+// SocketPath returns the path to the Unix socket for go-microvm-runner.
 func (p *Provider) SocketPath() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -250,7 +250,7 @@ func (p *Provider) buildEgressRelay(ctx context.Context, cfg propnet.Config) *fi
 	return firewall.NewRelayWithDNSHook(filter, interceptor)
 }
 
-// acceptLoop accepts connections from propolis-runner and bridges them
+// acceptLoop accepts connections from go-microvm-runner and bridges them
 // to the VirtualNetwork.
 func (p *Provider) acceptLoop() {
 	defer p.wg.Done()

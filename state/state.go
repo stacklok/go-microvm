@@ -26,13 +26,13 @@ const (
 	stateVersion = 1
 
 	// stateFileName is the name of the state JSON file within the data directory.
-	// Named "propolis-state.json" to avoid collision with the caller's own
+	// Named "go-microvm-state.json" to avoid collision with the caller's own
 	// state file (e.g. toolhive-appliance's "state.json") when both share
 	// the same dataDir.
-	stateFileName = "propolis-state.json"
+	stateFileName = "go-microvm-state.json"
 
 	// lockFileName is the name of the lock file within the data directory.
-	lockFileName = "propolis-state.lock"
+	lockFileName = "go-microvm-state.lock"
 
 	// retryInterval is the interval between lock acquisition retries.
 	retryInterval = 500 * time.Millisecond

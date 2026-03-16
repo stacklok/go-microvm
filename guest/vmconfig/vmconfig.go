@@ -11,7 +11,7 @@ import (
 )
 
 // GuestPath is the guest path where the host writes the VM config.
-const GuestPath = "/etc/propolis-vm.json"
+const GuestPath = "/etc/go-microvm.json"
 
 // Config holds settings written by the host and read by the guest init.
 // Zero values mean "use the built-in default" for each field.
@@ -21,7 +21,7 @@ type Config struct {
 	TmpSizeMiB uint32 `json:"tmp_size_mib,omitempty"`
 }
 
-// Read loads the VM config from /etc/propolis-vm.json.
+// Read loads the VM config from /etc/go-microvm.json.
 // Returns a zero-value Config (all defaults) if the file does not exist,
 // ensuring backward compatibility with hosts that do not write the file.
 func Read() (Config, error) {

@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/guest/vmconfig"
+	"github.com/stacklok/go-microvm/guest/vmconfig"
 )
 
 // chownCall records a single chown invocation.
@@ -71,14 +71,14 @@ func TestInjectVMConfig(t *testing.T) {
 			err := hook(rootfs, nil)
 			require.NoError(t, err)
 
-			data, err := os.ReadFile(filepath.Join(rootfs, "etc", "propolis-vm.json"))
+			data, err := os.ReadFile(filepath.Join(rootfs, "etc", "go-microvm.json"))
 			require.NoError(t, err)
 
 			var got vmconfig.Config
 			require.NoError(t, json.Unmarshal(data, &got))
 			assert.Equal(t, tt.cfg, got)
 
-			info, err := os.Stat(filepath.Join(rootfs, "etc", "propolis-vm.json"))
+			info, err := os.Stat(filepath.Join(rootfs, "etc", "go-microvm.json"))
 			require.NoError(t, err)
 			assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 		})

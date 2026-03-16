@@ -6,7 +6,7 @@ package net
 import (
 	"context"
 
-	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/go-microvm/net/firewall"
 )
 
 // PortForward describes a TCP port forwarding rule from host to guest.

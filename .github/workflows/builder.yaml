@@ -20,7 +20,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: stacklok/propolis-builder
+  IMAGE_NAME: stacklok/go-microvm-builder
 
 jobs:
   build:

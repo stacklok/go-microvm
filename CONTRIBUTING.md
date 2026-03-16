@@ -1,4 +1,4 @@
-# Contributing to propolis
+# Contributing to go-microvm
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ Run `task --list` for the full list. Key tasks for development:
 - **Error wrapping**: `fmt.Errorf("context: %w", err)`
 - **Table-driven tests** with testify
 - **Functional options**: follow the `With*` pattern in `options.go`
-- **CGO boundary**: only `krun/` and `runner/cmd/propolis-runner/` use CGO.
+- **CGO boundary**: only `krun/` and `runner/cmd/go-microvm-runner/` use CGO.
   Never import `krun` from other packages.
 
 ## Commit Guidelines

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/go-microvm/net/firewall"
 )
 
 // buildDNSQueryFrame builds a complete Ethernet frame containing a DNS query.

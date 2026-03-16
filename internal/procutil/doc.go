@@ -2,5 +2,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package procutil provides platform-specific process identity verification
-// utilities shared by the propolis library and runner packages.
+// utilities shared by the go-microvm library and runner packages.
 package procutil

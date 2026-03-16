@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/internal/testutil"
-	propnet "github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/go-microvm/internal/testutil"
+	propnet "github.com/stacklok/go-microvm/net"
+	"github.com/stacklok/go-microvm/net/firewall"
 )
 
 // freePort returns a TCP port that is currently available on localhost.

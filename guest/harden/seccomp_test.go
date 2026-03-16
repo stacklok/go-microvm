@@ -133,7 +133,7 @@ func TestBlockedSyscallsReturnsFourGroups(t *testing.T) {
 func TestApplySeccompBlocksSyscalls(t *testing.T) {
 	t.Parallel()
 
-	if os.Getenv("PROPOLIS_SECCOMP_CHILD") == "1" {
+	if os.Getenv("GO_MICROVM_SECCOMP_CHILD") == "1" {
 		// Child process: apply filter, probe blocked syscalls, print results.
 		runSeccompChild()
 		return
@@ -142,7 +142,7 @@ func TestApplySeccompBlocksSyscalls(t *testing.T) {
 	// Parent process: re-exec ourselves running only this test.
 	//nolint:gosec // Test helper — arguments are not user-controlled.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestApplySeccompBlocksSyscalls$", "-test.v")
-	cmd.Env = append(os.Environ(), "PROPOLIS_SECCOMP_CHILD=1")
+	cmd.Env = append(os.Environ(), "GO_MICROVM_SECCOMP_CHILD=1")
 
 	out, err := cmd.CombinedOutput()
 	output := string(out)

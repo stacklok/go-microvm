@@ -7,7 +7,7 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/stacklok/propolis/runner"
+	"github.com/stacklok/go-microvm/runner"
 )
 
 // processHandle wraps a runner.ProcessHandle as a hypervisor.VMHandle.

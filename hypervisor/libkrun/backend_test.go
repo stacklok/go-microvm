@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/extract"
-	"github.com/stacklok/propolis/hypervisor"
-	"github.com/stacklok/propolis/runner"
+	"github.com/stacklok/go-microvm/extract"
+	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/runner"
 )
 
 func TestBackend_Name(t *testing.T) {
@@ -205,7 +205,7 @@ func (m *mockSource) Ensure(_ context.Context, cacheDir string) (string, error) 
 	return m.dir, m.err
 }
 
-// makeRuntimeDir creates a temp directory with a dummy propolis-runner binary.
+// makeRuntimeDir creates a temp directory with a dummy go-microvm-runner binary.
 func makeRuntimeDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -387,7 +387,7 @@ func TestBackend_Start_FirmwareEnsureError(t *testing.T) {
 func TestBackend_Start_RuntimeMissingRunner(t *testing.T) {
 	t.Parallel()
 
-	// Dir exists but has no propolis-runner binary.
+	// Dir exists but has no go-microvm-runner binary.
 	emptyDir := t.TempDir()
 
 	b := NewBackend(
@@ -402,7 +402,7 @@ func TestBackend_Start_RuntimeMissingRunner(t *testing.T) {
 
 	_, err := b.Start(context.Background(), cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "propolis-runner not found")
+	assert.Contains(t, err.Error(), "go-microvm-runner not found")
 }
 
 func TestBackend_Options_Sources(t *testing.T) {

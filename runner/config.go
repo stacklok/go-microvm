@@ -11,7 +11,7 @@ type PortForward struct {
 	Guest uint16 `json:"guest"`
 }
 
-// Config contains the configuration for running a VM via the propolis-runner subprocess.
+// Config contains the configuration for running a VM via the go-microvm-runner subprocess.
 type Config struct {
 	// RootPath is the path to the root filesystem directory (virtiofs).
 	RootPath string `json:"root_path"`
@@ -38,7 +38,7 @@ type Config struct {
 	// libraries. The runner subprocess uses this via LD_LIBRARY_PATH.
 	// Not serialized to JSON; set by the caller before spawning.
 	LibDir string `json:"-"`
-	// RunnerPath is the explicit path to the propolis-runner binary.
+	// RunnerPath is the explicit path to the go-microvm-runner binary.
 	// Not serialized to JSON; used by Spawn to locate the binary.
 	RunnerPath string `json:"-"`
 	// VMLogPath is the path to the file where runner stdout/stderr is written.

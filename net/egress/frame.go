@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/go-microvm/net/firewall"
 )
 
 const (

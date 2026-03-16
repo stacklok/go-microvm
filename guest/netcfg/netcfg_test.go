@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/stacklok/propolis/net/topology"
+	"github.com/stacklok/go-microvm/net/topology"
 )
 
 func TestConfigureRequiresRoot(t *testing.T) {

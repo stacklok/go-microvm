@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package propolis
+package microvm
 
 import (
 	"context"
@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/net/firewall"
-	"github.com/stacklok/propolis/preflight"
+	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/net/firewall"
+	"github.com/stacklok/go-microvm/preflight"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -23,7 +23,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, uint32(1), cfg.cpus)
 	assert.Equal(t, uint32(512), cfg.memory)
-	assert.Equal(t, "propolis", cfg.name)
+	assert.Equal(t, "microvm", cfg.name)
 	assert.NotNil(t, cfg.preflight)
 	assert.Nil(t, cfg.netProvider) // lazy-initialized in Run() when not set by WithNetProvider
 	assert.NotNil(t, cfg.imageCache)

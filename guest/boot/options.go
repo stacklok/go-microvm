@@ -118,8 +118,8 @@ func WithSSHAgentForwarding(enabled bool) Option {
 }
 
 // WithTmpSize sets the size of the /tmp tmpfs in MiB. Defaults to 256 MiB when
-// 0 or not set. The value is read from /etc/propolis-vm.json when provided by
-// the host via [github.com/stacklok/propolis.WithTmpSize].
+// 0 or not set. The value is read from /etc/go-microvm.json when provided by
+// the host via [github.com/stacklok/go-microvm.WithTmpSize].
 func WithTmpSize(mib uint32) Option {
 	return optionFunc(func(c *config) {
 		if mib > 0 {

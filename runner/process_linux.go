@@ -5,7 +5,7 @@
 
 package runner
 
-import "github.com/stacklok/propolis/internal/procutil"
+import "github.com/stacklok/go-microvm/internal/procutil"
 
 // isExpectedProcess checks if the process at pid is running the expected binary.
 // Delegates to the shared implementation in internal/procutil.

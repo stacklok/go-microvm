@@ -4,7 +4,7 @@
 version: '3'
 
 vars:
-  RUNNER_NAME: propolis-runner
+  RUNNER_NAME: go-microvm-runner
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
   COMMIT:
@@ -12,14 +12,14 @@ vars:
   BUILD_DATE:
     sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
   LDFLAGS: >-
-    -X github.com/stacklok/propolis/internal/version.Version={{.VERSION}}
-    -X github.com/stacklok/propolis/internal/version.Commit={{.COMMIT}}
-    -X github.com/stacklok/propolis/internal/version.BuildDate={{.BUILD_DATE}}
+    -X github.com/stacklok/go-microvm/internal/version.Version={{.VERSION}}
+    -X github.com/stacklok/go-microvm/internal/version.Commit={{.COMMIT}}
+    -X github.com/stacklok/go-microvm/internal/version.BuildDate={{.BUILD_DATE}}
   HOST_ARCH:
     sh: uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'
   CONTAINER_RUNTIME:
     sh: command -v podman >/dev/null 2>&1 && echo podman || echo docker
-  BUILDER_IMAGE: ghcr.io/stacklok/propolis-builder
+  BUILDER_IMAGE: ghcr.io/stacklok/go-microvm-builder
   LIBKRUN_VERSION:
     sh: grep '^LIBKRUN_VERSION=' versions.env | cut -d= -f2
   LIBKRUN_MAJOR:
@@ -61,7 +61,7 @@ tasks:
       CGO_ENABLED: "1"
     cmds:
       - mkdir -p bin
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/go-microvm-runner
     sources:
       - ./**/*.go
       - go.mod
@@ -74,7 +74,7 @@ tasks:
     platforms: [darwin]
     cmds:
       - mkdir -p bin
-      - CGO_ENABLED=1 go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+      - CGO_ENABLED=1 go build -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/go-microvm-runner
       # Hypervisor.framework requires entitlements
       - codesign --entitlements assets/entitlements.plist --force -s - bin/{{.RUNNER_NAME}}
 
@@ -95,7 +95,7 @@ tasks:
       - install_name_tool -id @loader_path/libepoxy.0.dylib bin/libepoxy.0.dylib
       - install_name_tool -id @loader_path/libvirglrenderer.1.dylib bin/libvirglrenderer.1.dylib
       - install_name_tool -id @loader_path/libMoltenVK.dylib bin/libMoltenVK.dylib
-      # Rewrite propolis-runner → libkrun reference
+      # Rewrite go-microvm-runner → libkrun reference
       - >-
         install_name_tool -change
         /opt/homebrew/opt/libkrun/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib
@@ -159,7 +159,7 @@ tasks:
       CGO_ENABLED: "1"
     cmds:
       - mkdir -p bin
-      - go build -race -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+      - go build -race -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/go-microvm-runner
 
   # =============================================================================
   # Standard Tasks
@@ -173,7 +173,7 @@ tasks:
   test-nocgo:
     desc: Run unit tests excluding CGO packages
     cmds:
-      - go test -v -race $(go list ./... | grep -v krun | grep -v propolis-runner)
+      - go test -v -race $(go list ./... | grep -v krun | grep -v go-microvm-runner)
 
   test-coverage:
     desc: Run tests with coverage
@@ -208,7 +208,7 @@ tasks:
     env:
       CGO_ENABLED: "0"
     cmds:
-      - go build $(go list ./... | grep -v krun | grep -v propolis-runner)
+      - go build $(go list ./... | grep -v krun | grep -v go-microvm-runner)
 
   verify:
     desc: Verify code (fmt, lint, test)
@@ -277,7 +277,7 @@ tasks:
         -e CGO_ENABLED=1
         -e GOTOOLCHAIN=auto
         {{.BUILDER_IMAGE}}:{{.BUILDER_IMAGE_TAG}}
-        go build -buildvcs=false -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/propolis-runner
+        go build -buildvcs=false -ldflags "{{.LDFLAGS}}" -o bin/{{.RUNNER_NAME}} ./runner/cmd/go-microvm-runner
     generates:
       - bin/{{.RUNNER_NAME}}
       - bin/libkrun.so.1
@@ -294,9 +294,9 @@ tasks:
     cmds:
       - mkdir -p dist
       - |
-        staging="propolis-runtime-linux-{{.HOST_ARCH}}"
+        staging="go-microvm-runtime-linux-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
-        cp bin/propolis-runner bin/libkrun.so.1 "${staging}/"
+        cp bin/go-microvm-runner bin/libkrun.so.1 "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
         tar czf "dist/${staging}.tar.gz" "${staging}"
         rm -rf "${staging}"
@@ -308,7 +308,7 @@ tasks:
     cmds:
       - mkdir -p dist
       - |
-        staging="propolis-firmware-linux-{{.HOST_ARCH}}"
+        staging="go-microvm-firmware-linux-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
         cp bin/libkrunfw.so.5 "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
@@ -327,9 +327,9 @@ tasks:
     cmds:
       - mkdir -p dist
       - |
-        staging="propolis-runtime-darwin-{{.HOST_ARCH}}"
+        staging="go-microvm-runtime-darwin-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
-        cp bin/propolis-runner bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib \
+        cp bin/go-microvm-runner bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib \
            bin/libepoxy.0.dylib bin/libvirglrenderer.1.dylib bin/libMoltenVK.dylib \
            "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
@@ -344,7 +344,7 @@ tasks:
     cmds:
       - mkdir -p dist
       - |
-        staging="propolis-firmware-darwin-{{.HOST_ARCH}}"
+        staging="go-microvm-firmware-darwin-{{.HOST_ARCH}}"
         mkdir -p "${staging}"
         cp bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib "${staging}/"
         echo "{{.TAG}}" > "${staging}/VERSION"
@@ -367,11 +367,11 @@ tasks:
       - mkdir -p bin
       - >-
         gh release download {{.RELEASE_TAG}}
-        --repo stacklok/propolis
-        --pattern "propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz"
+        --repo stacklok/go-microvm
+        --pattern "go-microvm-runtime-linux-{{.HOST_ARCH}}.tar.gz"
         --dir bin/ --clobber
-      - tar -xzf bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
-      - rm -f bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz
+      - tar -xzf bin/go-microvm-runtime-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/go-microvm-runtime-linux-{{.HOST_ARCH}}.tar.gz
 
   fetch-firmware:
     desc: Download pre-built firmware tarball from GitHub Release
@@ -381,11 +381,11 @@ tasks:
       - mkdir -p bin
       - >-
         gh release download {{.RELEASE_TAG}}
-        --repo stacklok/propolis
-        --pattern "propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz"
+        --repo stacklok/go-microvm
+        --pattern "go-microvm-firmware-linux-{{.HOST_ARCH}}.tar.gz"
         --dir bin/ --clobber
-      - tar -xzf bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
-      - rm -f bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz
+      - tar -xzf bin/go-microvm-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/go-microvm-firmware-linux-{{.HOST_ARCH}}.tar.gz
 
   fetch-runtime-darwin:
     desc: Download pre-built macOS runtime tarball from GitHub Release
@@ -395,11 +395,11 @@ tasks:
       - mkdir -p bin
       - >-
         gh release download {{.RELEASE_TAG}}
-        --repo stacklok/propolis
-        --pattern "propolis-runtime-darwin-{{.HOST_ARCH}}.tar.gz"
+        --repo stacklok/go-microvm
+        --pattern "go-microvm-runtime-darwin-{{.HOST_ARCH}}.tar.gz"
         --dir bin/ --clobber
-      - tar -xzf bin/propolis-runtime-darwin-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
-      - rm -f bin/propolis-runtime-darwin-{{.HOST_ARCH}}.tar.gz
+      - tar -xzf bin/go-microvm-runtime-darwin-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/go-microvm-runtime-darwin-{{.HOST_ARCH}}.tar.gz
 
   fetch-firmware-darwin:
     desc: Download pre-built macOS firmware tarball from GitHub Release
@@ -409,11 +409,11 @@ tasks:
       - mkdir -p bin
       - >-
         gh release download {{.RELEASE_TAG}}
-        --repo stacklok/propolis
-        --pattern "propolis-firmware-darwin-{{.HOST_ARCH}}.tar.gz"
+        --repo stacklok/go-microvm
+        --pattern "go-microvm-firmware-darwin-{{.HOST_ARCH}}.tar.gz"
         --dir bin/ --clobber
-      - tar -xzf bin/propolis-firmware-darwin-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
-      - rm -f bin/propolis-firmware-darwin-{{.HOST_ARCH}}.tar.gz
+      - tar -xzf bin/go-microvm-firmware-darwin-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/go-microvm-firmware-darwin-{{.HOST_ARCH}}.tar.gz
 
   fetch-runtime-oci:
     desc: Pull pre-built runtime OCI artifact from ghcr.io
@@ -423,10 +423,10 @@ tasks:
       - mkdir -p bin
       - >-
         oras pull
-        ghcr.io/stacklok/propolis/runtime:{{.RELEASE_TAG}}-linux-{{.HOST_ARCH}}
+        ghcr.io/stacklok/go-microvm/runtime:{{.RELEASE_TAG}}-linux-{{.HOST_ARCH}}
         -o bin/
-      - tar -xzf bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
-      - rm -f bin/propolis-runtime-linux-{{.HOST_ARCH}}.tar.gz
+      - tar -xzf bin/go-microvm-runtime-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/go-microvm-runtime-linux-{{.HOST_ARCH}}.tar.gz
 
   fetch-firmware-oci:
     desc: Pull pre-built firmware OCI artifact from ghcr.io
@@ -436,7 +436,7 @@ tasks:
       - mkdir -p bin
       - >-
         oras pull
-        ghcr.io/stacklok/propolis/firmware:{{.RELEASE_TAG}}-linux-{{.HOST_ARCH}}
+        ghcr.io/stacklok/go-microvm/firmware:{{.RELEASE_TAG}}-linux-{{.HOST_ARCH}}
         -o bin/
-      - tar -xzf bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
-      - rm -f bin/propolis-firmware-linux-{{.HOST_ARCH}}.tar.gz
+      - tar -xzf bin/go-microvm-firmware-linux-{{.HOST_ARCH}}.tar.gz -C bin/ --strip-components=1
+      - rm -f bin/go-microvm-firmware-linux-{{.HOST_ARCH}}.tar.gz

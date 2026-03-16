@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Common issues when using propolis and how to resolve them.
+Common issues when using go-microvm and how to resolve them.
 
 ## VM Fails to Start
 
@@ -28,28 +28,28 @@ sysctl kern.hv_support
 
 ### Code signing required (macOS)
 
-If propolis-runner crashes immediately with `EXC_BAD_ACCESS`, it needs the
+If go-microvm-runner crashes immediately with `EXC_BAD_ACCESS`, it needs the
 hypervisor entitlement. See [docs/MACOS.md](MACOS.md).
 
 ## Log Files
 
-propolis writes log files to the data directory
-(`~/.config/propolis/` by default, or the path set via `WithDataDir()`):
+go-microvm writes log files to the data directory
+(`~/.config/go-microvm/` by default, or the path set via `WithDataDir()`):
 
 | File | Contents |
 |------|----------|
 | `console.log` | Guest console output (kernel messages, init script) |
-| `vm.log` | propolis-runner stdout/stderr (libkrun errors) |
+| `vm.log` | go-microvm-runner stdout/stderr (libkrun errors) |
 
 Networking logs are emitted via `log/slog` and appear in the application's
 structured logging output rather than a separate file.
 
 ```bash
 # Check for guest-side errors (kernel, init script)
-cat ~/.config/propolis/console.log
+cat ~/.config/go-microvm/console.log
 
 # Check for host-side runner errors
-cat ~/.config/propolis/vm.log
+cat ~/.config/go-microvm/vm.log
 ```
 
 ## Port Conflicts
@@ -77,17 +77,17 @@ successfully by checking the application's log output for errors from
 
 ## Runner Binary Not Found
 
-propolis searches for `propolis-runner` in this order:
+go-microvm searches for `go-microvm-runner` in this order:
 1. Explicit path via `libkrun.WithRunnerPath()` (passed to `libkrun.NewBackend()`)
 2. System `$PATH`
 3. Next to the calling executable
 
 ```bash
 # Check if it's in PATH
-which propolis-runner
+which go-microvm-runner
 
 # Build it (requires system libkrun-devel)
-cd propolis && task build-dev
+cd go-microvm && task build-dev
 ```
 
 ## Resource Limits
@@ -100,7 +100,7 @@ guests to 8 vCPUs. Requesting more will fail at `SetVMConfig()`.
 ### Memory
 
 There is no hard memory limit from libkrun. The practical limit is
-available host RAM. propolis defaults to 512 MiB.
+available host RAM. go-microvm defaults to 512 MiB.
 
 ## Licensing
 

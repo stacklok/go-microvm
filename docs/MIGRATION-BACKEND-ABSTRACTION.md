@@ -8,35 +8,35 @@ consumers.
 
 | Removed API | Replacement | Affected projects |
 |---|---|---|
-| `propolis.WithRunnerPath(p)` | `libkrun.WithRunnerPath(p)` passed to `libkrun.NewBackend()` | waggle, apiary, toolhive-appliance |
-| `propolis.WithLibDir(d)` | `libkrun.WithLibDir(d)` passed to `libkrun.NewBackend()` | waggle, toolhive-appliance |
-| `propolis.WithSpawner(s)` | `libkrun.WithSpawner(s)` passed to `libkrun.NewBackend()` | tests only |
-| `propolis.VM.PID() int` | `propolis.VM.ID() string` | waggle, toolhive-appliance |
+| `microvm.WithRunnerPath(p)` | `libkrun.WithRunnerPath(p)` passed to `libkrun.NewBackend()` | waggle, apiary, toolhive-appliance |
+| `microvm.WithLibDir(d)` | `libkrun.WithLibDir(d)` passed to `libkrun.NewBackend()` | waggle, toolhive-appliance |
+| `microvm.WithSpawner(s)` | `libkrun.WithSpawner(s)` passed to `libkrun.NewBackend()` | tests only |
+| `microvm.VM.PID() int` | `microvm.VM.ID() string` | waggle, toolhive-appliance |
 
 ## New Imports
 
 ```go
-import "github.com/stacklok/propolis/hypervisor/libkrun"
+import "github.com/stacklok/go-microvm/hypervisor/libkrun"
 ```
 
 ## Migration Examples
 
-### waggle (`pkg/infra/vm/propolis.go`)
+### waggle (`pkg/infra/vm/microvm.go`)
 
 **Before:**
 ```go
 if opts.RunnerPath != "" {
-    propolisOpts = append(propolisOpts, propolis.WithRunnerPath(opts.RunnerPath))
+    microvmOpts = append(microvmOpts, microvm.WithRunnerPath(opts.RunnerPath))
 }
 if opts.LibDir != "" {
-    propolisOpts = append(propolisOpts, propolis.WithLibDir(opts.LibDir))
+    microvmOpts = append(microvmOpts, microvm.WithLibDir(opts.LibDir))
 }
 slog.Info("microVM created", "pid", vm.PID())
 ```
 
 **After:**
 ```go
-import "github.com/stacklok/propolis/hypervisor/libkrun"
+import "github.com/stacklok/go-microvm/hypervisor/libkrun"
 
 var backendOpts []libkrun.Option
 if opts.RunnerPath != "" {
@@ -45,7 +45,7 @@ if opts.RunnerPath != "" {
 if opts.LibDir != "" {
     backendOpts = append(backendOpts, libkrun.WithLibDir(opts.LibDir))
 }
-propolisOpts = append(propolisOpts, propolis.WithBackend(libkrun.NewBackend(backendOpts...)))
+microvmOpts = append(microvmOpts, microvm.WithBackend(libkrun.NewBackend(backendOpts...)))
 slog.Info("microVM created", "id", vm.ID())
 ```
 
@@ -54,16 +54,16 @@ slog.Info("microVM created", "id", vm.ID())
 **Before:**
 ```go
 if r.runnerPath != "" {
-    opts = append(opts, propolis.WithRunnerPath(r.runnerPath))
+    opts = append(opts, microvm.WithRunnerPath(r.runnerPath))
 }
 ```
 
 **After:**
 ```go
-import "github.com/stacklok/propolis/hypervisor/libkrun"
+import "github.com/stacklok/go-microvm/hypervisor/libkrun"
 
 if r.runnerPath != "" {
-    opts = append(opts, propolis.WithBackend(libkrun.NewBackend(
+    opts = append(opts, microvm.WithBackend(libkrun.NewBackend(
         libkrun.WithRunnerPath(r.runnerPath),
     )))
 }
@@ -74,10 +74,10 @@ if r.runnerPath != "" {
 **Before:**
 ```go
 if runnerPath != "" {
-    propolisOpts = append(propolisOpts, propolis.WithRunnerPath(runnerPath))
+    microvmOpts = append(microvmOpts, microvm.WithRunnerPath(runnerPath))
 }
 if libDir != "" {
-    propolisOpts = append(propolisOpts, propolis.WithLibDir(libDir))
+    microvmOpts = append(microvmOpts, microvm.WithLibDir(libDir))
 }
 PID: vmInstance.PID(),
 go m.reaperLoop(vmInstance.PID())
@@ -87,7 +87,7 @@ go m.reaperLoop(vmInstance.PID())
 ```go
 import (
     "strconv"
-    "github.com/stacklok/propolis/hypervisor/libkrun"
+    "github.com/stacklok/go-microvm/hypervisor/libkrun"
 )
 
 var backendOpts []libkrun.Option
@@ -97,7 +97,7 @@ if runnerPath != "" {
 if libDir != "" {
     backendOpts = append(backendOpts, libkrun.WithLibDir(libDir))
 }
-propolisOpts = append(propolisOpts, propolis.WithBackend(libkrun.NewBackend(backendOpts...)))
+microvmOpts = append(microvmOpts, microvm.WithBackend(libkrun.NewBackend(backendOpts...)))
 
 // For PID — parse ID string:
 id := vmInstance.ID()
@@ -110,8 +110,8 @@ pid, _ := strconv.Atoi(id)
 **Before:**
 ```go
 spawner := &mockSpawner{proc: mockProc, err: nil}
-opts := []propolis.Option{
-    propolis.WithSpawner(spawner),
+opts := []microvm.Option{
+    microvm.WithSpawner(spawner),
 }
 ```
 
@@ -131,7 +131,7 @@ func (m *mockBackend) Start(_ context.Context, _ hypervisor.VMConfig) (hyperviso
     return m.handle, m.err
 }
 
-opts := []propolis.Option{
-    propolis.WithBackend(&mockBackend{handle: mockHandle}),
+opts := []microvm.Option{
+    microvm.WithBackend(&mockBackend{handle: mockHandle}),
 }
 ```

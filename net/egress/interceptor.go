@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/go-microvm/net/firewall"
 )
 
 const (

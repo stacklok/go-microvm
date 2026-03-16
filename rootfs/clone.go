@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/stacklok/propolis/internal/xattr"
+	"github.com/stacklok/go-microvm/internal/xattr"
 )
 
 // CloneDir recursively clones srcDir into dstDir using platform-native COW

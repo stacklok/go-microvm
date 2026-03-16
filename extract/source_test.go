@@ -26,7 +26,7 @@ func TestRuntimeBundle_ExtractsFiles(t *testing.T) {
 	dir, err := src.Ensure(context.Background(), cacheDir)
 	require.NoError(t, err)
 
-	// Verify propolis-runner.
+	// Verify go-microvm-runner.
 	got, err := os.ReadFile(filepath.Join(dir, RunnerBinaryName))
 	require.NoError(t, err)
 	assert.Equal(t, runnerData, got)
