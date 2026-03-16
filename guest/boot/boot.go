@@ -45,7 +45,7 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 
 	// 1. Essential mounts — /proc is needed before netlink can work.
 	logger.Info("mounting essential filesystems")
-	if err := mount.Essential(logger); err != nil {
+	if err := mount.Essential(logger, cfg.tmpSizeMiB); err != nil {
 		return nil, fmt.Errorf("essential mounts: %w", err)
 	}
 

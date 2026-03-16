@@ -4,6 +4,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,10 +13,24 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/stacklok/propolis/guest/vmconfig"
 	"github.com/stacklok/propolis/image"
 	"github.com/stacklok/propolis/internal/pathutil"
 	"github.com/stacklok/propolis/internal/xattr"
 )
+
+// InjectVMConfig returns a RootFSHook that writes the given VM config as JSON
+// to /etc/propolis-vm.json inside the rootfs. The guest init reads this file
+// to configure mounts before the SSH server starts.
+func InjectVMConfig(cfg vmconfig.Config) func(string, *image.OCIConfig) error {
+	return func(rootfsPath string, _ *image.OCIConfig) error {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal vm config: %w", err)
+		}
+		return InjectFile(vmconfig.GuestPath, data, 0o644)(rootfsPath, nil)
+	}
+}
 
 // validEnvKey matches POSIX-compliant environment variable names.
 var validEnvKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

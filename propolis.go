@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/stacklok/propolis/guest/vmconfig"
+	"github.com/stacklok/propolis/hooks"
 	"github.com/stacklok/propolis/hypervisor"
 	"github.com/stacklok/propolis/hypervisor/libkrun"
 	"github.com/stacklok/propolis/image"
@@ -120,6 +122,16 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	for _, hook := range cfg.rootfsHooks {
 		if err := hook(rootfs.Path, rootfs.Config); err != nil {
 			return nil, fmt.Errorf("rootfs hook: %w", err)
+		}
+	}
+
+	// 3b. Inject VM config for the guest init (e.g. /tmp size).
+	// Only written when a non-default value is configured, keeping the
+	// file absent for callers that rely on the built-in 256 MiB default.
+	if cfg.tmpSizeMiB > 0 {
+		vmCfgHook := hooks.InjectVMConfig(vmconfig.Config{TmpSizeMiB: cfg.tmpSizeMiB})
+		if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
+			return nil, fmt.Errorf("inject vm config: %w", err)
 		}
 	}
 

@@ -18,7 +18,7 @@ func TestEssentialRequiresRoot(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("test must run as non-root")
 	}
-	err := Essential(slog.Default())
+	err := Essential(slog.Default(), 0)
 	assert.Error(t, err)
 }
 
@@ -31,20 +31,30 @@ func TestWorkspaceReturnsErrorForInvalidMount(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestEssentialMountPoints(t *testing.T) {
+func TestEssentialMounts(t *testing.T) {
 	t.Parallel()
 
-	// Verify the mount table contains the expected entries.
-	expected := []string{"/proc", "/sys", "/dev", "/dev/pts", "/tmp", "/run"}
-	mounts := []mountEntry{
-		{"proc", "/proc", "proc", 0, ""},
-		{"sysfs", "/sys", "sysfs", 0, ""},
-		{"devtmpfs", "/dev", "devtmpfs", 0, ""},
-		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620,gid=5"},
-		{"tmpfs", "/tmp", "tmpfs", 0, "size=256m"},
-		{"tmpfs", "/run", "tmpfs", 0, "size=64m"},
-	}
-	for i, m := range mounts {
-		assert.Equal(t, expected[i], m.target)
-	}
+	t.Run("default targets", func(t *testing.T) {
+		t.Parallel()
+		mounts := EssentialMountsForTest(0)
+		expected := []string{"/proc", "/sys", "/dev", "/dev/pts", "/tmp", "/run"}
+		targets := make([]string, len(mounts))
+		for i, m := range mounts {
+			targets[i] = m.target
+		}
+		assert.Equal(t, expected, targets)
+	})
+
+	t.Run("zero uses default tmp size", func(t *testing.T) {
+		t.Parallel()
+		mounts := EssentialMountsForTest(0)
+		// /tmp is the 5th entry.
+		assert.Equal(t, "size=256m", mounts[4].data)
+	})
+
+	t.Run("custom tmp size flows through", func(t *testing.T) {
+		t.Parallel()
+		mounts := EssentialMountsForTest(512)
+		assert.Equal(t, "size=512m", mounts[4].data)
+	})
 }

@@ -63,6 +63,7 @@ type config struct {
 	name                  string
 	cpus                  uint32
 	memory                uint32 // MiB
+	tmpSizeMiB            uint32 // /tmp tmpfs size in MiB; 0 = use guest default (256)
 	ports                 []PortForward
 	initOverride          []string
 	rootfsPath            string // pre-built rootfs directory; skips OCI image pull when set
@@ -296,4 +297,14 @@ func WithImageFetcher(f image.ImageFetcher) Option {
 // Logs are written to vm.log in the data directory.
 func WithLogLevel(level uint32) Option {
 	return optionFunc(func(c *config) { c.logLevel = level })
+}
+
+// WithTmpSize sets the size of the /tmp tmpfs inside the guest VM in MiB.
+// Defaults to 256 MiB when 0 or not set. The kernel enforces available
+// memory as the upper bound; unreasonable values will cause a mount failure
+// inside the guest.
+// The value is written to /etc/propolis-vm.json in the rootfs and read by
+// the guest init before mounting filesystems.
+func WithTmpSize(mib uint32) Option {
+	return optionFunc(func(c *config) { c.tmpSizeMiB = mib })
 }

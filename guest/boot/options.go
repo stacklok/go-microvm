@@ -33,6 +33,7 @@ type config struct {
 	lockdownRoot        bool
 	sshAgentForwarding  bool
 	seccomp             bool
+	tmpSizeMiB          uint32
 }
 
 func defaultConfig() *config {
@@ -114,6 +115,17 @@ func WithSSHHostKeyPath(path string) Option {
 // server creates a Unix socket and sets SSH_AUTH_SOCK for the session.
 func WithSSHAgentForwarding(enabled bool) Option {
 	return optionFunc(func(c *config) { c.sshAgentForwarding = enabled })
+}
+
+// WithTmpSize sets the size of the /tmp tmpfs in MiB. Defaults to 256 MiB when
+// 0 or not set. The value is read from /etc/propolis-vm.json when provided by
+// the host via [github.com/stacklok/propolis.WithTmpSize].
+func WithTmpSize(mib uint32) Option {
+	return optionFunc(func(c *config) {
+		if mib > 0 {
+			c.tmpSizeMiB = mib
+		}
+	})
 }
 
 // WithSeccomp controls whether a seccomp BPF blocklist filter is
