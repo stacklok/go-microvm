@@ -300,7 +300,9 @@ func WithLogLevel(level uint32) Option {
 }
 
 // WithTmpSize sets the size of the /tmp tmpfs inside the guest VM in MiB.
-// Defaults to 256 MiB when 0 or not set.
+// Defaults to 256 MiB when 0 or not set. The kernel enforces available
+// memory as the upper bound; unreasonable values will cause a mount failure
+// inside the guest.
 // The value is written to /etc/propolis-vm.json in the rootfs and read by
 // the guest init before mounting filesystems.
 func WithTmpSize(mib uint32) Option {

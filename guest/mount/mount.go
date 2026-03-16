@@ -24,13 +24,13 @@ type mountEntry struct {
 	data   string
 }
 
-// Essential mounts the core filesystems required for a minimal Linux userspace.
-// tmpSizeMiB sets the size of the /tmp tmpfs in MiB; 0 uses the default (256 MiB).
-func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
+// essentialMounts returns the mount table for Essential, applying the default
+// tmp size when tmpSizeMiB is zero.
+func essentialMounts(tmpSizeMiB uint32) []mountEntry {
 	if tmpSizeMiB == 0 {
 		tmpSizeMiB = defaultTmpSizeMiB
 	}
-	mounts := []mountEntry{
+	return []mountEntry{
 		{"proc", "/proc", "proc", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, ""},
 		{"sysfs", "/sys", "sysfs", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, ""},
 		{"devtmpfs", "/dev", "devtmpfs", syscall.MS_NOSUID | syscall.MS_NOEXEC, ""},
@@ -38,6 +38,12 @@ func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
 		{"tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, fmt.Sprintf("size=%dm", tmpSizeMiB)},
 		{"tmpfs", "/run", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, "size=64m"},
 	}
+}
+
+// Essential mounts the core filesystems required for a minimal Linux userspace.
+// tmpSizeMiB sets the size of the /tmp tmpfs in MiB; 0 uses the default (256 MiB).
+func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
+	mounts := essentialMounts(tmpSizeMiB)
 
 	for _, m := range mounts {
 		if err := os.MkdirAll(m.target, 0o755); err != nil {

@@ -4,6 +4,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/propolis/guest/vmconfig"
 )
 
 // chownCall records a single chown invocation.
@@ -39,6 +42,47 @@ func recordingChown() (ChownFunc, func() []chownCall) {
 		return append([]chownCall{}, calls...)
 	}
 	return fn, get
+}
+
+func TestInjectVMConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  vmconfig.Config
+	}{
+		{
+			name: "non-zero config",
+			cfg:  vmconfig.Config{TmpSizeMiB: 512},
+		},
+		{
+			name: "zero-value config",
+			cfg:  vmconfig.Config{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rootfs := t.TempDir()
+			hook := InjectVMConfig(tt.cfg)
+
+			err := hook(rootfs, nil)
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(filepath.Join(rootfs, "etc", "propolis-vm.json"))
+			require.NoError(t, err)
+
+			var got vmconfig.Config
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, tt.cfg, got)
+
+			info, err := os.Stat(filepath.Join(rootfs, "etc", "propolis-vm.json"))
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+		})
+	}
 }
 
 func TestInjectFile_WritesContent(t *testing.T) {

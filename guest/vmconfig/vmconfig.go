@@ -10,8 +10,8 @@ import (
 	"os"
 )
 
-// configPath is the guest path where the host writes the VM config.
-const configPath = "/etc/propolis-vm.json"
+// GuestPath is the guest path where the host writes the VM config.
+const GuestPath = "/etc/propolis-vm.json"
 
 // Config holds settings written by the host and read by the guest init.
 // Zero values mean "use the built-in default" for each field.
@@ -25,7 +25,12 @@ type Config struct {
 // Returns a zero-value Config (all defaults) if the file does not exist,
 // ensuring backward compatibility with hosts that do not write the file.
 func Read() (Config, error) {
-	data, err := os.ReadFile(configPath)
+	return readFrom(GuestPath)
+}
+
+// readFrom loads the VM config from the given path.
+func readFrom(path string) (Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Config{}, nil
