@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package propolis
+package microvm
 
 import (
 	"context"
@@ -17,12 +17,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/hypervisor"
-	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/internal/testutil"
-	"github.com/stacklok/propolis/net/firewall"
-	"github.com/stacklok/propolis/preflight"
-	"github.com/stacklok/propolis/state"
+	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/testutil"
+	"github.com/stacklok/go-microvm/net/firewall"
+	"github.com/stacklok/go-microvm/preflight"
+	"github.com/stacklok/go-microvm/state"
 )
 
 // --- Pure function tests ---
@@ -304,7 +304,7 @@ func TestForceRemoveAll(t *testing.T) {
 
 	t.Run("no error on nonexistent path", func(t *testing.T) {
 		t.Parallel()
-		require.NoError(t, forceRemoveAll("/tmp/does-not-exist-propolis-test"))
+		require.NoError(t, forceRemoveAll("/tmp/does-not-exist-go-microvm-test"))
 	})
 }
 

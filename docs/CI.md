@@ -1,6 +1,6 @@
 # CI & Release Pipelines
 
-propolis uses three GitHub Actions workflows. They form a dependency chain:
+go-microvm uses three GitHub Actions workflows. They form a dependency chain:
 the **Builder** produces a container image that **CI** and **Release** consume.
 
 ## Workflows
@@ -34,7 +34,7 @@ setup tools, call task).
 
 ### Builder (`builder.yaml`)
 
-Builds the `ghcr.io/stacklok/propolis-builder` container image, which
+Builds the `ghcr.io/stacklok/go-microvm-builder` container image, which
 compiles libkrun and libkrunfw from source. This image provides the CGO
 toolchain that CI and Release need.
 
@@ -66,7 +66,7 @@ Both architectures (amd64, arm64) build on native runners.
 
 **Where artifacts go:**
 - GitHub Release with checksums
-- OCI artifacts pushed to `ghcr.io/stacklok/propolis/{runtime,firmware}`
+- OCI artifacts pushed to `ghcr.io/stacklok/go-microvm/{runtime,firmware}`
 
 The runtime and firmware are split into separate tarballs because they
 have different licenses.

@@ -13,10 +13,10 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"github.com/stacklok/propolis/net/topology"
+	"github.com/stacklok/go-microvm/net/topology"
 )
 
-// Configure brings up the guest network interface with the standard propolis
+// Configure brings up the guest network interface with the standard go-microvm
 // topology: eth0 gets the guest IP (192.168.127.2/24), a default route via
 // the gateway (192.168.127.1), and /etc/resolv.conf pointing at the gateway.
 func Configure(logger *slog.Logger) error {

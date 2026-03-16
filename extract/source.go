@@ -9,9 +9,9 @@ import (
 	"os"
 )
 
-// RunnerBinaryName is the expected filename for the propolis-runner binary
+// RunnerBinaryName is the expected filename for the go-microvm-runner binary
 // within a runtime source directory.
-const RunnerBinaryName = "propolis-runner"
+const RunnerBinaryName = "go-microvm-runner"
 
 // Source resolves a set of files into a directory, using cacheDir for
 // extraction-based implementations. The context allows caller-implemented
@@ -58,7 +58,7 @@ func (s *dirSource) Ensure(_ context.Context, _ string) (string, error) {
 	return s.path, nil
 }
 
-// RuntimeBundle creates a Source that extracts propolis-runner and libkrun
+// RuntimeBundle creates a Source that extracts go-microvm-runner and libkrun
 // into a versioned cache directory. The runner and libkrun byte slices are
 // the file contents to extract. The libkrun major soname version is always 1
 // because the runner binary is built against a specific libkrun ABI.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package propolis
+package microvm
 
 import (
 	"context"
@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/stacklok/propolis/hypervisor"
-	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/net/firewall"
-	"github.com/stacklok/propolis/preflight"
+	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/net"
+	"github.com/stacklok/go-microvm/net/firewall"
+	"github.com/stacklok/go-microvm/preflight"
 )
 
 // Option configures a VM. Use the With* functions to create options.
@@ -91,7 +91,7 @@ type config struct {
 func defaultConfig() *config {
 	dataDir := defaultDataDir()
 	return &config{
-		name:        "propolis",
+		name:        "microvm",
 		cpus:        1,
 		memory:      512,
 		ports:       nil,
@@ -113,14 +113,14 @@ func defaultConfig() *config {
 }
 
 func defaultDataDir() string {
-	if dir := os.Getenv("PROPOLIS_DATA_DIR"); dir != "" {
+	if dir := os.Getenv("GO_MICROVM_DATA_DIR"); dir != "" {
 		return dir
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "/tmp"
 	}
-	return filepath.Join(home, ".config", "propolis")
+	return filepath.Join(home, ".config", "go-microvm")
 }
 
 func (c *config) buildNetConfig() net.Config {
@@ -150,7 +150,7 @@ func (c *config) buildNetConfig() net.Config {
 
 // --- Option constructors ---
 
-// WithName sets the VM name. Defaults to "propolis".
+// WithName sets the VM name. Defaults to "microvm".
 func WithName(name string) Option {
 	return optionFunc(func(c *config) { c.name = name })
 }
@@ -215,7 +215,7 @@ func WithFirewallDefaultAction(action firewall.Action) Option {
 // WithPreflightChecker replaces the entire preflight checker. Use this when
 // the caller manages its own preflight logic and wants to skip the built-in
 // defaults (KVM, port availability, disk space). Pass [preflight.NewEmpty]()
-// to disable all propolis preflight checks.
+// to disable all microvm preflight checks.
 func WithPreflightChecker(checker preflight.Checker) Option {
 	return optionFunc(func(c *config) { c.preflight = checker })
 }
@@ -242,7 +242,7 @@ func WithBackend(b hypervisor.Backend) Option {
 }
 
 // WithDataDir sets the base directory for VM state, caches, and logs.
-// Defaults to ~/.config/propolis or $PROPOLIS_DATA_DIR.
+// Defaults to ~/.config/go-microvm or $GO_MICROVM_DATA_DIR.
 func WithDataDir(path string) Option {
 	return optionFunc(func(c *config) {
 		c.dataDir = path
@@ -303,7 +303,7 @@ func WithLogLevel(level uint32) Option {
 // Defaults to 256 MiB when 0 or not set. The kernel enforces available
 // memory as the upper bound; unreasonable values will cause a mount failure
 // inside the guest.
-// The value is written to /etc/propolis-vm.json in the rootfs and read by
+// The value is written to /etc/go-microvm.json in the rootfs and read by
 // the guest init before mounting filesystems.
 func WithTmpSize(mib uint32) Option {
 	return optionFunc(func(c *config) { c.tmpSizeMiB = mib })

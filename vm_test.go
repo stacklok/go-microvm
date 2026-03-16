@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package propolis
+package microvm
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/state"
+	"github.com/stacklok/go-microvm/net"
+	"github.com/stacklok/go-microvm/state"
 )
 
 // mockVMHandle is a test double for hypervisor.VMHandle.

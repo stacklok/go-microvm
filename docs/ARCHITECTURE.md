@@ -1,6 +1,6 @@
-# propolis Architecture
+# go-microvm Architecture
 
-This document describes the internal architecture of propolis: how it turns an
+This document describes the internal architecture of go-microvm: how it turns an
 OCI container image into a running microVM, the two-process model, networking,
 state management, security measures, and extension points.
 
@@ -26,12 +26,12 @@ success it never returns -- the process becomes the VM supervisor and
 eventually calls `exit()` when the guest shuts down. This means we cannot call
 it from a normal Go application without losing the Go runtime entirely.
 
-propolis solves this with two processes:
+go-microvm solves this with two processes:
 
 ```
 +----------------------------------+       +----------------------------------+
-|        Your application          |       |        propolis-runner           |
-|   (links propolis library)       |       |   (CGO binary, links libkrun)   |
+|        Your application          |       |        go-microvm-runner           |
+|   (links go-microvm library)     |       |   (CGO binary, links libkrun)   |
 |                                  |       |                                  |
 |   1. Preflight checks            | spawn |   1. Parse Config from argv[1]   |
 |   2. Pull & cache OCI image      |------>|   2. Validate (rootfs, vCPUs>0)  |
@@ -39,7 +39,7 @@ propolis solves this with two processes:
 |   4. Run rootfs hooks            | config|   4. SetVMConfig(vCPUs, RAM)      |
 |   5. Write .krun_config.json     |       |   5. SetRoot(rootfsPath)          |
 |   6. Start networking (if custom)|       |   6. Setup networking             |
-|   7. Spawn propolis-runner       |       |   7. AddVirtioFS (for each mount) |
+|   7. Spawn go-microvm-runner       |       |   7. AddVirtioFS (for each mount) |
 |   8. Run post-boot hooks         |       |   8. SetConsoleOutput(logPath)    |
 |   9. Return *VM handle           |       |   9. krun_start_enter()           |
 |                                  |       |      (NEVER RETURNS ON SUCCESS)   |
@@ -54,7 +54,7 @@ propolis solves this with two processes:
 ### Library Side (your application)
 
 The library is pure Go with no CGO dependency. It performs the following steps
-in `propolis.Run()`:
+in `microvm.Run()`:
 
 1. **Preflight checks** -- Runs all registered `preflight.Checker` validations.
    Built-in checks verify KVM/HVF access, disk space, and system resources.
@@ -92,7 +92,7 @@ in `propolis.Run()`:
 
 6. **Start VM via backend** -- The `hypervisor.Backend` handles rootfs
    preparation and VM launch. The default libkrun backend serializes
-   `runner.Config` as JSON and spawns `propolis-runner` as a detached
+   `runner.Config` as JSON and spawns `go-microvm-runner` as a detached
    subprocess (`setsid` for new session). The runner is located by
    searching: explicit path, system PATH, then next to the calling
    executable. Custom backends can be provided via `WithBackend()`.
@@ -100,9 +100,9 @@ in `propolis.Run()`:
 7. **Post-boot hooks** -- Runs caller-provided `PostBootHook` functions. If
    any hook fails, the VM is stopped and the error is returned.
 
-### Runner Side (propolis-runner)
+### Runner Side (go-microvm-runner)
 
-The runner binary (`runner/cmd/propolis-runner/main.go`) is intentionally
+The runner binary (`runner/cmd/go-microvm-runner/main.go`) is intentionally
 minimal. It is a thin translation layer between JSON config and the libkrun
 C API:
 
@@ -147,7 +147,7 @@ testing or to customize how the runner subprocess is launched.
 
 ## Hypervisor Backend Abstraction
 
-The `hypervisor` package defines the `Backend` interface that decouples propolis
+The `hypervisor` package defines the `Backend` interface that decouples go-microvm
 from any specific hypervisor implementation:
 
 ```go
@@ -169,7 +169,7 @@ type VMHandle interface {
 The default backend (`hypervisor/libkrun`) implements `Backend` by:
 
 1. **PrepareRootFS**: Writes `/.krun_config.json` to the rootfs from `InitConfig`
-2. **Start**: Converts `VMConfig` to `runner.Config`, spawns `propolis-runner`
+2. **Start**: Converts `VMConfig` to `runner.Config`, spawns `go-microvm-runner`
    via the `runner.Spawner` interface, and returns a `processHandle` wrapping
    the subprocess
 
@@ -177,15 +177,15 @@ The libkrun backend accepts its own options via `libkrun.NewBackend(opts...)`:
 
 | Option | Description |
 |--------|-------------|
-| `libkrun.WithRunnerPath(p)` | Path to propolis-runner binary |
+| `libkrun.WithRunnerPath(p)` | Path to go-microvm-runner binary |
 | `libkrun.WithLibDir(d)` | Directory for libkrun/libkrunfw shared libraries |
 | `libkrun.WithSpawner(s)` | Custom runner subprocess spawner (for testing) |
 
 ### Custom Backends
 
 To support a different hypervisor, implement `hypervisor.Backend` and pass it
-via `propolis.WithBackend()`. The backend handles all hypervisor-specific logic
-while propolis handles OCI image management, networking, hooks, and lifecycle.
+via `microvm.WithBackend()`. The backend handles all hypervisor-specific logic
+while go-microvm handles OCI image management, networking, hooks, and lifecycle.
 
 For migration details from the older top-level `WithRunnerPath`/`WithLibDir`/
 `WithSpawner` options, see [MIGRATION-BACKEND-ABSTRACTION.md](MIGRATION-BACKEND-ABSTRACTION.md).
@@ -268,7 +268,7 @@ Step 9: NETWORKING
   Custom provider: net.Provider.Start() in caller's process, socket path to runner
        |
 Step 10: SPAWN
-  runner.Spawner.Spawn() --> propolis-runner subprocess
+  runner.Spawner.Spawn() --> go-microvm-runner subprocess
   Detached (setsid), stdout/stderr redirected to vm.log
        |
 Step 11: POST-BOOT
@@ -281,7 +281,7 @@ Step 11: POST-BOOT
 Images are cached by manifest digest under the data directory:
 
 ```
-~/.config/propolis/cache/
+~/.config/go-microvm/cache/
     sha256-abc123def456.../    <-- extracted rootfs for this digest
     sha256-789012345678.../    <-- another cached image
 ```
@@ -309,14 +309,14 @@ This ensures no partial writes and no corruption from concurrent access.
 
 ### Cache Directory
 
-The cache directory defaults to `~/.config/propolis/cache/`. It can be
+The cache directory defaults to `~/.config/go-microvm/cache/`. It can be
 customized via `WithDataDir()` (which sets the cache under `$dataDir/cache/`)
 or directly via `WithImageCache(image.NewCache("/custom/path"))`.
 
 ## .krun_config.json
 
 libkrun's built-in init process reads `/.krun_config.json` from the root of
-the guest filesystem to determine what program to execute. propolis constructs
+the guest filesystem to determine what program to execute. go-microvm constructs
 this file from the OCI image config with optional overrides.
 
 ### Format
@@ -352,7 +352,7 @@ This is the same mechanism used by krunvm and podman machine.
 
 ## Networking
 
-propolis uses a userspace network stack powered by
+go-microvm uses a userspace network stack powered by
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock). All VM
 traffic flows as Ethernet frames with no kernel networking between host and
 guest.
@@ -443,7 +443,7 @@ type Provider interface {
 To replace the default runner-side networking with a different backend
 (e.g., passt, slirp4netns, a custom bridge, or the built-in hosted
 provider), implement this interface and pass it via
-`propolis.WithNetProvider()`. The `SocketPath()` return value is passed to
+`microvm.WithNetProvider()`. The `SocketPath()` return value is passed to
 the runner as the Unix socket path for `krun_add_net_unixstream`.
 
 ### Network Topology Constants
@@ -464,16 +464,16 @@ these values to ensure a consistent topology.
 ### Hosted Network Provider
 
 The `net/hosted` package implements a `net.Provider` that runs the
-VirtualNetwork in the caller's process rather than inside propolis-runner.
+VirtualNetwork in the caller's process rather than inside go-microvm-runner.
 This enables callers to access the VirtualNetwork directly -- for example,
 to create in-process TCP listeners via gonet that are reachable from the
 guest VM without opening real host sockets.
 
 ```go
 p := hosted.NewProvider()
-vm, err := propolis.Run(ctx, image,
-    propolis.WithNetProvider(p),
-    propolis.WithPorts(propolis.PortForward{Host: sshPort, Guest: 22}),
+vm, err := microvm.Run(ctx, image,
+    microvm.WithNetProvider(p),
+    microvm.WithPorts(microvm.PortForward{Host: sshPort, Guest: 22}),
 )
 // p.VirtualNetwork() is now available for gonet listeners.
 ```
@@ -487,12 +487,12 @@ before the guest boots and are reachable from inside the VM:
 ```go
 p := hosted.NewProvider()
 p.AddService(hosted.Service{Port: 4483, Handler: myHandler})
-vm, err := propolis.Run(ctx, image, propolis.WithNetProvider(p))
+vm, err := microvm.Run(ctx, image, microvm.WithNetProvider(p))
 // Guest can reach http://192.168.127.1:4483/
 ```
 
 The hosted provider exposes a Unix socket (`hosted-net.sock` in the data
-directory) that propolis-runner connects to. When firewall rules are
+directory) that go-microvm-runner connects to. When firewall rules are
 configured, a `firewall.Relay` is inserted between the runner connection
 and the VirtualNetwork to filter traffic. The relay is accessible via
 `Provider.Relay()` for metrics.
@@ -500,7 +500,7 @@ and the VirtualNetwork to filter traffic. The relay is accessible via
 ## Extension Points
 
 ```
-                    propolis.Run()
+                    microvm.Run()
                          |
             +------------+------------+
             |                         |
@@ -540,14 +540,14 @@ and the VirtualNetwork to filter traffic. The relay is accessible via
 
 Inject validation before any work begins:
 ```go
-propolis.WithPreflightChecks(check1, check2)
+microvm.WithPreflightChecks(check1, check2)
 ```
 
 ### Rootfs Hooks
 
 Modify the extracted filesystem before boot:
 ```go
-propolis.WithRootFSHook(func(rootfs string, cfg *image.OCIConfig) error {
+microvm.WithRootFSHook(func(rootfs string, cfg *image.OCIConfig) error {
     // Write files, install keys, modify configs
     return nil
 })
@@ -557,14 +557,14 @@ propolis.WithRootFSHook(func(rootfs string, cfg *image.OCIConfig) error {
 
 Replace the OCI ENTRYPOINT/CMD:
 ```go
-propolis.WithInitOverride("/sbin/my-init", "--flag")
+microvm.WithInitOverride("/sbin/my-init", "--flag")
 ```
 
 ### Network Provider
 
 Replace the default runner-side networking with a custom provider:
 ```go
-propolis.WithNetProvider(myProvider)
+microvm.WithNetProvider(myProvider)
 ```
 
 The `net/hosted` package provides a built-in hosted provider that runs the
@@ -572,7 +572,7 @@ VirtualNetwork in the caller's process:
 ```go
 p := hosted.NewProvider()
 p.AddService(hosted.Service{Port: 4483, Handler: myHandler})
-propolis.WithNetProvider(p)
+microvm.WithNetProvider(p)
 // After Run(), p.VirtualNetwork() is available for gonet listeners.
 ```
 
@@ -580,7 +580,7 @@ propolis.WithNetProvider(p)
 
 Run logic after the VM process is confirmed alive:
 ```go
-propolis.WithPostBoot(func(ctx context.Context, vm *propolis.VM) error {
+microvm.WithPostBoot(func(ctx context.Context, vm *microvm.VM) error {
     // Wait for SSH, push config, verify health
     return nil
 })
@@ -633,8 +633,8 @@ via `slog.Warn` but do not prevent the pipeline from proceeding.
 Pass checks via `WithPreflightChecks()`:
 
 ```go
-propolis.Run(ctx, ref,
-    propolis.WithPreflightChecks(
+microvm.Run(ctx, ref,
+    microvm.WithPreflightChecks(
         preflight.PortCheck(8080, 2222),
         preflight.Check{
             Name:     "my-check",
@@ -650,7 +650,7 @@ Custom checks are appended to (not replacing) the built-in platform defaults.
 
 To replace the entire preflight checker (e.g., when the caller manages its own):
 ```go
-propolis.WithPreflightChecker(preflight.NewEmpty())
+microvm.WithPreflightChecker(preflight.NewEmpty())
 ```
 
 ## Guest-Side Packages
@@ -663,7 +663,7 @@ processes to orchestrate guest boot.
 |---------|---------|
 | `guest/boot` | Orchestrates the guest boot sequence: mounts, networking, workspace, hardening, environment, SSH, capabilities. Functional options pattern for configuration. |
 | `guest/mount` | Handles essential filesystem mounts (devtmpfs, sysfs, procfs) and workspace mounts |
-| `guest/env` | Loads environment variables from `/.propolis/env.sh` |
+| `guest/env` | Loads environment variables from `/.go-microvm/env.sh` |
 | `guest/netcfg` | Guest-side network configuration (DHCP, routes) |
 | `guest/harden` | VM kernel hardening: capability dropping (CAP_NET_ADMIN, etc.), CIS benchmark sysctls, `PR_SET_NO_NEW_PRIVS` |
 | `guest/reaper` | Zombie process reaping (init process duties) |
@@ -674,7 +674,7 @@ processes to orchestrate guest boot.
 | Package | Purpose |
 |---------|---------|
 | `hooks` | RootFS hook factories: `InjectAuthorizedKeys`, `InjectFile`, `InjectBinary`, `InjectEnvFile`. Uses `internal/pathutil` for path traversal validation. |
-| `extract` | Binary bundle caching with SHA-256 versioning, atomic extraction, and cross-process file locking. Used to cache and extract the propolis-runner binary and libraries. |
+| `extract` | Binary bundle caching with SHA-256 versioning, atomic extraction, and cross-process file locking. Used to cache and extract the go-microvm-runner binary and libraries. |
 | `image/disk` | Streaming disk image download with retry support and decompression (gzip, bzip2, xz). |
 
 ## State Management
@@ -684,14 +684,14 @@ The `state` package provides persistent VM state with file-based locking.
 ### Directory Layout
 
 ```
-~/.config/propolis/           (or $PROPOLIS_DATA_DIR, or WithDataDir path)
-    propolis-state.json       <-- VM state (atomic JSON)
-    propolis-state.lock       <-- flock for exclusive access
+~/.config/go-microvm/           (or $GO_MICROVM_DATA_DIR, or WithDataDir path)
+    go-microvm-state.json       <-- VM state (atomic JSON)
+    go-microvm-state.lock       <-- flock for exclusive access
     cache/
         sha256-abc123.../     <-- cached rootfs by digest
         sha256-def456.../
     console.log               <-- guest console output (kernel, init)
-    vm.log                    <-- propolis-runner stdout/stderr
+    vm.log                    <-- go-microvm-runner stdout/stderr
     hosted-net.sock           <-- networking Unix socket (only with hosted provider)
 ```
 
@@ -725,8 +725,8 @@ The `state` package provides persistent VM state with file-based locking.
 
 The `state.Manager` provides atomic load-and-lock semantics:
 
-1. `LoadAndLock(ctx)` acquires an exclusive `flock` on `propolis-state.lock`
-2. Reads and parses `propolis-state.json` (or returns a default State if the file
+1. `LoadAndLock(ctx)` acquires an exclusive `flock` on `go-microvm-state.lock`
+2. Reads and parses `go-microvm-state.json` (or returns a default State if the file
    does not exist)
 3. Returns a `LockedState` that holds the lock
 
@@ -757,7 +757,7 @@ for cases where another process may hold the lock temporarily.
 
 1. Marshals the state to JSON with indentation
 2. Writes to a temporary file in the same directory (`state-*.json.tmp`)
-3. Calls `os.Rename()` to atomically replace `propolis-state.json`
+3. Calls `os.Rename()` to atomically replace `go-microvm-state.json`
 
 If a crash occurs during write, either the old state remains intact or the
 new state is fully written -- never a partial file. The `flock` ensures only
@@ -807,7 +807,7 @@ safe use in shell commands.
 The standard post-boot hook pattern uses `WaitForReady`:
 
 ```go
-propolis.WithPostBoot(func(ctx context.Context, vm *propolis.VM) error {
+microvm.WithPostBoot(func(ctx context.Context, vm *microvm.VM) error {
     client := ssh.NewClient("127.0.0.1", 2222, "root", keyPath)
     return client.WaitForReady(ctx)
 })

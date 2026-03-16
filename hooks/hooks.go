@@ -13,14 +13,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/stacklok/propolis/guest/vmconfig"
-	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/internal/pathutil"
-	"github.com/stacklok/propolis/internal/xattr"
+	"github.com/stacklok/go-microvm/guest/vmconfig"
+	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/pathutil"
+	"github.com/stacklok/go-microvm/internal/xattr"
 )
 
 // InjectVMConfig returns a RootFSHook that writes the given VM config as JSON
-// to /etc/propolis-vm.json inside the rootfs. The guest init reads this file
+// to /etc/go-microvm.json inside the rootfs. The guest init reads this file
 // to configure mounts before the SSH server starts.
 func InjectVMConfig(cfg vmconfig.Config) func(string, *image.OCIConfig) error {
 	return func(rootfsPath string, _ *image.OCIConfig) error {

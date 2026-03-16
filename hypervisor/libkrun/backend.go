@@ -9,16 +9,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/stacklok/propolis/extract"
-	"github.com/stacklok/propolis/hypervisor"
-	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/runner"
+	"github.com/stacklok/go-microvm/extract"
+	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/runner"
 )
 
 // Option configures a libkrun Backend.
 type Option func(*Backend)
 
-// WithRunnerPath sets the path to the propolis-runner binary.
+// WithRunnerPath sets the path to the go-microvm-runner binary.
 // When empty, the runner is found via $PATH or alongside the calling binary.
 func WithRunnerPath(p string) Option { return func(b *Backend) { b.runnerPath = p } }
 
@@ -30,7 +30,7 @@ func WithLibDir(d string) Option { return func(b *Backend) { b.libDir = d } }
 // When nil (default), the standard runner.DefaultSpawner is used.
 func WithSpawner(s runner.Spawner) Option { return func(b *Backend) { b.spawner = s } }
 
-// WithRuntime sets a Source that provides propolis-runner and libkrun.
+// WithRuntime sets a Source that provides go-microvm-runner and libkrun.
 // Mutually exclusive with WithRunnerPath and WithLibDir.
 // When using bundle-based sources, WithCacheDir must also be set.
 func WithRuntime(src extract.Source) Option { return func(b *Backend) { b.runtime = src } }
@@ -109,7 +109,7 @@ func (b *Backend) validate() error {
 	return nil
 }
 
-// Start launches the VM via the propolis-runner subprocess.
+// Start launches the VM via the go-microvm-runner subprocess.
 func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hypervisor.VMHandle, error) {
 	if err := b.validate(); err != nil {
 		return nil, err

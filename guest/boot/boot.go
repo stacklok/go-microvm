@@ -14,11 +14,11 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/stacklok/propolis/guest/env"
-	"github.com/stacklok/propolis/guest/harden"
-	"github.com/stacklok/propolis/guest/mount"
-	"github.com/stacklok/propolis/guest/netcfg"
-	"github.com/stacklok/propolis/guest/sshd"
+	"github.com/stacklok/go-microvm/guest/env"
+	"github.com/stacklok/go-microvm/guest/harden"
+	"github.com/stacklok/go-microvm/guest/mount"
+	"github.com/stacklok/go-microvm/guest/netcfg"
+	"github.com/stacklok/go-microvm/guest/sshd"
 )
 
 // Run executes the full guest boot sequence and returns a shutdown function

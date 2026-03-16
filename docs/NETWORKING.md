@@ -1,6 +1,6 @@
 # Networking and Firewall
 
-This document provides a deep dive into the propolis networking subsystem,
+This document provides a deep dive into the go-microvm networking subsystem,
 including the in-process userspace network stack, wire protocol, firewall
 architecture, and extension points.
 
@@ -18,7 +18,7 @@ architecture, and extension points.
 
 ## Overview
 
-propolis uses a userspace network stack powered by
+go-microvm uses a userspace network stack powered by
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock). All VM
 traffic flows as Ethernet frames with no kernel networking between host and
 guest, and no separate gvproxy binary is needed.
@@ -59,7 +59,7 @@ When no `WithNetProvider()` is set, the runner creates a VirtualNetwork
 in-process and connects it to libkrun via a socketpair:
 
 ```
-+----------------------------------propolis-runner process---------+
++----------------------------------go-microvm-runner process------+
 |                                                                  |
 | +----------+   socketpair      +-------------------+  Go net     |
 | | libkrun  |   (fd pair)       | VirtualNetwork    |----------+ |
@@ -375,15 +375,15 @@ Return traffic for allowed connections is automatically permitted via
 connection tracking.
 
 ```go
-import "github.com/stacklok/propolis/net/firewall"
+import "github.com/stacklok/go-microvm/net/firewall"
 
-vm, err := propolis.Run(ctx, "my-app:latest",
-    propolis.WithPorts(
-        propolis.PortForward{Host: 8080, Guest: 80},
-        propolis.PortForward{Host: 2222, Guest: 22},
+vm, err := microvm.Run(ctx, "my-app:latest",
+    microvm.WithPorts(
+        microvm.PortForward{Host: 8080, Guest: 80},
+        microvm.PortForward{Host: 2222, Guest: 22},
     ),
-    propolis.WithFirewallDefaultAction(firewall.Deny),
-    propolis.WithFirewallRules(
+    microvm.WithFirewallDefaultAction(firewall.Deny),
+    microvm.WithFirewallRules(
         // Egress: allow DNS and HTTPS
         firewall.Rule{
             Direction: firewall.Egress,
@@ -417,13 +417,13 @@ vm, err := propolis.Run(ctx, "my-app:latest",
 ### Allow Specific Ingress Ports Only
 
 ```go
-vm, err := propolis.Run(ctx, "my-server:latest",
-    propolis.WithPorts(
-        propolis.PortForward{Host: 8443, Guest: 443},
-        propolis.PortForward{Host: 6443, Guest: 6443},
+vm, err := microvm.Run(ctx, "my-server:latest",
+    microvm.WithPorts(
+        microvm.PortForward{Host: 8443, Guest: 443},
+        microvm.PortForward{Host: 6443, Guest: 6443},
     ),
-    propolis.WithFirewallDefaultAction(firewall.Deny),
-    propolis.WithFirewallRules(
+    microvm.WithFirewallDefaultAction(firewall.Deny),
+    microvm.WithFirewallRules(
         // Allow all egress (VM can reach the internet)
         firewall.Rule{
             Direction: firewall.Egress,
@@ -458,8 +458,8 @@ When no firewall rules are configured, all traffic passes through
 unrestricted. This is the default behavior:
 
 ```go
-vm, err := propolis.Run(ctx, "alpine:latest",
-    propolis.WithPorts(propolis.PortForward{Host: 8080, Guest: 80}),
+vm, err := microvm.Run(ctx, "alpine:latest",
+    microvm.WithPorts(microvm.PortForward{Host: 8080, Guest: 80}),
 )
 ```
 
@@ -467,13 +467,13 @@ vm, err := propolis.Run(ctx, "alpine:latest",
 
 `WithEgressPolicy()` restricts VM outbound traffic to a set of allowed DNS
 hostnames. Instead of writing firewall rules for specific IPs (which change
-often), you specify hostnames and let propolis handle the rest.
+often), you specify hostnames and let go-microvm handle the rest.
 
 ```go
-vm, err := propolis.Run(ctx, "my-app:latest",
-    propolis.WithPorts(propolis.PortForward{Host: 8080, Guest: 80}),
-    propolis.WithEgressPolicy(propolis.EgressPolicy{
-        AllowedHosts: []propolis.EgressHost{
+vm, err := microvm.Run(ctx, "my-app:latest",
+    microvm.WithPorts(microvm.PortForward{Host: 8080, Guest: 80}),
+    microvm.WithEgressPolicy(microvm.EgressPolicy{
+        AllowedHosts: []microvm.EgressHost{
             {Name: "api.github.com", Ports: []uint16{443}},
             {Name: "*.docker.io"},
             {Name: "ntp.ubuntu.com", Ports: []uint16{123}, Protocol: 17},
@@ -555,7 +555,7 @@ To replace the default runner-side networking with an alternative backend
 2. `Start()` must block until the Unix socket is ready for connections.
 3. The socket must use `SOCK_STREAM` with 4-byte big-endian length-prefixed
    Ethernet frames (the QEMU transport protocol).
-4. Pass your provider via `propolis.WithNetProvider(myProvider)`.
+4. Pass your provider via `microvm.WithNetProvider(myProvider)`.
 
 The `SocketPath()` return value is passed to the runner as the Unix socket
 path for `krun_add_net_unixstream`. See `net/hosted/provider.go` for the

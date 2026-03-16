@@ -24,8 +24,8 @@ var (
 )
 
 const (
-	// runnerBinaryName is the name of the propolis-runner binary.
-	runnerBinaryName = "propolis-runner"
+	// runnerBinaryName is the name of the go-microvm-runner binary.
+	runnerBinaryName = "go-microvm-runner"
 	// stopTimeout is the maximum time to wait for the process to exit after SIGTERM.
 	stopTimeout = 30 * time.Second
 	// stopPollInterval is the interval between process liveness checks during stop.
@@ -46,7 +46,7 @@ func newProcessDeps() processDeps {
 	}
 }
 
-// runnerFinder locates the propolis-runner binary with injectable lookups.
+// runnerFinder locates the go-microvm-runner binary with injectable lookups.
 type runnerFinder struct {
 	stat       func(string) (os.FileInfo, error)
 	lookPath   func(string) (string, error)
@@ -86,13 +86,13 @@ func (p *Process) killTarget() int {
 	return -p.pid
 }
 
-// Spawn starts the propolis-runner binary as a detached subprocess.
+// Spawn starts the go-microvm-runner binary as a detached subprocess.
 // Deprecated: Use SpawnProcess or DefaultSpawner instead.
 func Spawn(ctx context.Context, cfg Config) (*Process, error) {
 	return SpawnProcess(ctx, cfg)
 }
 
-// SpawnProcess starts the propolis-runner binary as a detached subprocess.
+// SpawnProcess starts the go-microvm-runner binary as a detached subprocess.
 // The runner binary receives the VM configuration as a JSON string in argv[1].
 // On success, the returned Process can be used to monitor and stop the VM.
 func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
@@ -244,7 +244,7 @@ func (p *Process) IsAlive() bool {
 	return true
 }
 
-// find locates the propolis-runner binary. It checks, in order:
+// find locates the go-microvm-runner binary. It checks, in order:
 // 1. The explicit path provided in cfg.RunnerPath
 // 2. The system PATH
 // 3. Next to the current executable

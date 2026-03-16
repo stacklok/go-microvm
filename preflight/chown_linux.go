@@ -45,7 +45,7 @@ func (c *chownChecker) check(_ context.Context) error {
 
 	return fmt.Errorf("process lacks CAP_CHOWN: extracted rootfs files will have incorrect ownership, " +
 		"which may cause permission errors inside the guest; " +
-		"grant CAP_CHOWN to the propolis process or run as root")
+		"grant CAP_CHOWN to the go-microvm process or run as root")
 }
 
 // getEffectiveCaps returns the low 32 bits of the effective capability set

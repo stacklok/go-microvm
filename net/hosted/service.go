@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stacklok/propolis/net/topology"
+	"github.com/stacklok/go-microvm/net/topology"
 )
 
 // Service describes an HTTP service to expose inside the virtual network.

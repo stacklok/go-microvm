@@ -1,7 +1,7 @@
 # Security Model
 
 This document describes the security properties, trust boundaries, and
-hardening recommendations for propolis.
+hardening recommendations for go-microvm.
 
 ## Table of Contents
 
@@ -19,14 +19,14 @@ hardening recommendations for propolis.
 
 ## Trust Boundaries
 
-propolis has two trust boundaries:
+go-microvm has two trust boundaries:
 
 ```
                     Trust boundary 1: KVM/HVF
                     (hardware isolation)
                            |
 +-------------------------+|+------------------------------------------+
-|       Guest VM          |||       propolis-runner                     |
+|       Guest VM          |||       go-microvm-runner                     |
 |    (untrusted code)     ||| +------------------+ +------------------+|
 |                         ||| | libkrun VMM      | | VirtualNetwork   ||
 |  Runs user workload     ||| | (virtio devices, | | (gvisor-tap-vsock||
@@ -136,9 +136,9 @@ security-sensitive deployments.
 The collapsed trust boundary (default mode) would matter more if:
 
 - **Multiple VMs shared a VirtualNetwork** (multi-tenant): one VM could
-  sniff or poison another's traffic. propolis does not support this.
+  sniff or poison another's traffic. go-microvm does not support this.
 - **The network stack held secrets** (TLS termination, auth tokens):
-  a guest escape would expose them. propolis port forwards are plain TCP.
+  a guest escape would expose them. go-microvm port forwards are plain TCP.
 - **The network stack ran with higher privileges** than the VMM: not the
   case here, both share the same process and UID.
 
@@ -199,7 +199,7 @@ network stack out of the runner process. This achieves process-level
 separation without a custom helper binary:
 
 ```
-propolis-runner (VMM only)
+go-microvm-runner (VMM only)
     └── Unix socket → hosted provider in caller's process
 caller's process (network stack)
     └── hosted.Provider → VirtualNetwork + HTTP services
@@ -387,7 +387,7 @@ The egress policy prevents a compromised or untrusted VM from:
 
 ## Tar Extraction Defenses
 
-When extracting OCI image layers, propolis applies multiple layers of
+When extracting OCI image layers, go-microvm applies multiple layers of
 defense against malicious tar archives:
 
 **Path traversal prevention.** Every tar entry name is cleaned via
@@ -418,7 +418,7 @@ are silently skipped.
 
 ## Process Identity Verification
 
-When managing VM lifecycle, propolis verifies process identity before
+When managing VM lifecycle, go-microvm verifies process identity before
 sending signals:
 
 - `IsAlive()` sends signal 0 to the PID (no-op that verifies the
@@ -432,7 +432,7 @@ been reused.
 
 ## Host Capabilities (Linux)
 
-When running as a non-root user on Linux, propolis requires `CAP_CHOWN` on the
+When running as a non-root user on Linux, go-microvm requires `CAP_CHOWN` on the
 process to set correct file ownership during OCI image extraction. Without it,
 all extracted rootfs files are owned by the host user, and the guest sees
 incorrect ownership — which can cause permission errors for processes running
@@ -451,7 +451,7 @@ capsh --addamb=cap_chown -- -c '/path/to/your-binary'
 
 ### override_stat xattr (macOS and Linux)
 
-propolis also sets the `user.containers.override_stat` extended attribute on
+go-microvm also sets the `user.containers.override_stat` extended attribute on
 extracted files so that libkrun's virtiofs server reports correct ownership to
 the guest. This is the same mechanism that podman uses on macOS.
 
@@ -478,11 +478,11 @@ See the `internal/xattr` package for details.
 ## SSH Client Security
 
 The SSH client uses `InsecureIgnoreHostKey()` for host key verification.
-This is acceptable because the client only connects to VMs that propolis
+This is acceptable because the client only connects to VMs that go-microvm
 just created -- the guest was booted from an image we pulled and configured,
 and the connection is over a localhost port forward that is not exposed to
 the network.
 
-If propolis is used in a scenario where the SSH connection traverses an
+If go-microvm is used in a scenario where the SSH connection traverses an
 untrusted network, host key verification should be implemented by the
 caller using a custom SSH client rather than the built-in one.

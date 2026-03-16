@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package propolis
+package microvm
 
 import (
 	"context"
@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stacklok/propolis/hypervisor"
-	"github.com/stacklok/propolis/net"
-	"github.com/stacklok/propolis/state"
+	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/net"
+	"github.com/stacklok/go-microvm/state"
 )
 
 // VM represents a running microVM.

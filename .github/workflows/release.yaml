@@ -52,14 +52,14 @@ jobs:
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v7
         with:
-          name: propolis-runtime-linux-${{ matrix.arch }}
-          path: dist/propolis-runtime-linux-${{ matrix.arch }}.tar.gz
+          name: go-microvm-runtime-linux-${{ matrix.arch }}
+          path: dist/go-microvm-runtime-linux-${{ matrix.arch }}.tar.gz
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v7
         with:
-          name: propolis-firmware-linux-${{ matrix.arch }}
-          path: dist/propolis-firmware-linux-${{ matrix.arch }}.tar.gz
+          name: go-microvm-firmware-linux-${{ matrix.arch }}
+          path: dist/go-microvm-firmware-linux-${{ matrix.arch }}.tar.gz
 
   build-artifacts-darwin:
     name: Build macOS (${{ matrix.arch }})
@@ -101,14 +101,14 @@ jobs:
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v7
         with:
-          name: propolis-runtime-darwin-${{ matrix.arch }}
-          path: dist/propolis-runtime-darwin-${{ matrix.arch }}.tar.gz
+          name: go-microvm-runtime-darwin-${{ matrix.arch }}
+          path: dist/go-microvm-runtime-darwin-${{ matrix.arch }}.tar.gz
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v7
         with:
-          name: propolis-firmware-darwin-${{ matrix.arch }}
-          path: dist/propolis-firmware-darwin-${{ matrix.arch }}.tar.gz
+          name: go-microvm-firmware-darwin-${{ matrix.arch }}
+          path: dist/go-microvm-firmware-darwin-${{ matrix.arch }}.tar.gz
 
   create-release:
     name: Create Release
@@ -126,7 +126,7 @@ jobs:
 
       - name: Generate checksums
         run: |
-          sha256sum propolis-*.tar.gz > sha256sums.txt
+          sha256sum go-microvm-*.tar.gz > sha256sums.txt
 
       - name: Create or update GitHub Release
         env:
@@ -134,10 +134,10 @@ jobs:
         run: |
           if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
             gh release upload "${{ github.ref_name }}" --clobber \
-              propolis-*.tar.gz sha256sums.txt
+              go-microvm-*.tar.gz sha256sums.txt
           else
             gh release create "${{ github.ref_name }}" --generate-notes \
-              propolis-*.tar.gz sha256sums.txt
+              go-microvm-*.tar.gz sha256sums.txt
           fi
 
   push-oci:
@@ -153,12 +153,12 @@ jobs:
       - name: Download runtime artifact
         uses: actions/download-artifact@v8
         with:
-          name: propolis-runtime-linux-${{ matrix.arch }}
+          name: go-microvm-runtime-linux-${{ matrix.arch }}
 
       - name: Download firmware artifact
         uses: actions/download-artifact@v8
         with:
-          name: propolis-firmware-linux-${{ matrix.arch }}
+          name: go-microvm-firmware-linux-${{ matrix.arch }}
 
       - name: Install oras
         uses: oras-project/setup-oras@v1
@@ -169,15 +169,15 @@ jobs:
 
       - name: Push runtime OCI artifact
         run: |
-          oras push ghcr.io/stacklok/propolis/runtime:${{ github.ref_name }}-linux-${{ matrix.arch }} \
-            --artifact-type application/vnd.stacklok.propolis.runtime \
-            propolis-runtime-linux-${{ matrix.arch }}.tar.gz:application/gzip
+          oras push ghcr.io/stacklok/go-microvm/runtime:${{ github.ref_name }}-linux-${{ matrix.arch }} \
+            --artifact-type application/vnd.stacklok.go-microvm.runtime \
+            go-microvm-runtime-linux-${{ matrix.arch }}.tar.gz:application/gzip
 
       - name: Push firmware OCI artifact
         run: |
-          oras push ghcr.io/stacklok/propolis/firmware:${{ github.ref_name }}-linux-${{ matrix.arch }} \
-            --artifact-type application/vnd.stacklok.propolis.firmware \
-            propolis-firmware-linux-${{ matrix.arch }}.tar.gz:application/gzip
+          oras push ghcr.io/stacklok/go-microvm/firmware:${{ github.ref_name }}-linux-${{ matrix.arch }} \
+            --artifact-type application/vnd.stacklok.go-microvm.firmware \
+            go-microvm-firmware-linux-${{ matrix.arch }}.tar.gz:application/gzip
 
   push-oci-darwin:
     name: Push OCI macOS (${{ matrix.arch }})
@@ -191,12 +191,12 @@ jobs:
       - name: Download runtime artifact
         uses: actions/download-artifact@v8
         with:
-          name: propolis-runtime-darwin-${{ matrix.arch }}
+          name: go-microvm-runtime-darwin-${{ matrix.arch }}
 
       - name: Download firmware artifact
         uses: actions/download-artifact@v8
         with:
-          name: propolis-firmware-darwin-${{ matrix.arch }}
+          name: go-microvm-firmware-darwin-${{ matrix.arch }}
 
       - name: Install oras
         uses: oras-project/setup-oras@v1
@@ -207,12 +207,12 @@ jobs:
 
       - name: Push runtime OCI artifact
         run: |
-          oras push ghcr.io/stacklok/propolis/runtime:${{ github.ref_name }}-darwin-${{ matrix.arch }} \
-            --artifact-type application/vnd.stacklok.propolis.runtime \
-            propolis-runtime-darwin-${{ matrix.arch }}.tar.gz:application/gzip
+          oras push ghcr.io/stacklok/go-microvm/runtime:${{ github.ref_name }}-darwin-${{ matrix.arch }} \
+            --artifact-type application/vnd.stacklok.go-microvm.runtime \
+            go-microvm-runtime-darwin-${{ matrix.arch }}.tar.gz:application/gzip
 
       - name: Push firmware OCI artifact
         run: |
-          oras push ghcr.io/stacklok/propolis/firmware:${{ github.ref_name }}-darwin-${{ matrix.arch }} \
-            --artifact-type application/vnd.stacklok.propolis.firmware \
-            propolis-firmware-darwin-${{ matrix.arch }}.tar.gz:application/gzip
+          oras push ghcr.io/stacklok/go-microvm/firmware:${{ github.ref_name }}-darwin-${{ matrix.arch }} \
+            --artifact-type application/vnd.stacklok.go-microvm.firmware \
+            go-microvm-firmware-darwin-${{ matrix.arch }}.tar.gz:application/gzip

@@ -3,8 +3,8 @@
 
 //go:build (linux || darwin) && cgo
 
-// Package main provides the propolis-runner helper binary.
-// This binary is spawned as a subprocess by the propolis framework
+// Package main provides the go-microvm-runner helper binary.
+// This binary is spawned as a subprocess by the go-microvm framework
 // to run VMs using libkrun's CGO bindings.
 //
 // IMPORTANT: libkrun's krun_start_enter() takes over the calling process
@@ -25,9 +25,9 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
-	"github.com/stacklok/propolis/internal/logbridge"
-	"github.com/stacklok/propolis/krun"
-	"github.com/stacklok/propolis/net/topology"
+	"github.com/stacklok/go-microvm/internal/logbridge"
+	"github.com/stacklok/go-microvm/krun"
+	"github.com/stacklok/go-microvm/net/topology"
 )
 
 // sentinel errors for classifying exit codes.
@@ -86,7 +86,7 @@ const (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <config-json>\n", filepath.Base(os.Args[0]))
-		fmt.Fprintf(os.Stderr, "\nThis is a helper binary for propolis.\n")
+		fmt.Fprintf(os.Stderr, "\nThis is a helper binary for go-microvm.\n")
 		fmt.Fprintf(os.Stderr, "It should not be run directly.\n")
 		os.Exit(exitConfigError)
 	}

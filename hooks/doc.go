@@ -6,5 +6,5 @@
 // before VM boot.
 //
 // Functions return func(string, *image.OCIConfig) error which is structurally
-// identical to propolis.RootFSHook.
+// identical to microvm.RootFSHook.
 package hooks

@@ -1,15 +1,15 @@
 <div align="center">
-  <img src="assets/propolis.png" alt="propolis mascot" width="250" />
+  <img src="assets/go-microvm.png" alt="go-microvm mascot" width="250" />
 
-  <h1>propolis</h1>
+  <h1>go-microvm</h1>
 
   <p><strong>Run OCI container images as microVMs with libkrun.</strong></p>
 
   <p>
-    <a href="https://github.com/stacklok/propolis/actions/workflows/ci.yaml"><img src="https://github.com/stacklok/propolis/actions/workflows/ci.yaml/badge.svg" alt="CI status" /></a>
-    <a href="https://pkg.go.dev/github.com/stacklok/propolis"><img src="https://pkg.go.dev/badge/github.com/stacklok/propolis.svg" alt="Go Reference" /></a>
+    <a href="https://github.com/stacklok/go-microvm/actions/workflows/ci.yaml"><img src="https://github.com/stacklok/go-microvm/actions/workflows/ci.yaml/badge.svg" alt="CI status" /></a>
+    <a href="https://pkg.go.dev/github.com/stacklok/go-microvm"><img src="https://pkg.go.dev/badge/github.com/stacklok/go-microvm.svg" alt="Go Reference" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
-    <a href="https://goreportcard.com/report/github.com/stacklok/propolis"><img src="https://goreportcard.com/badge/github.com/stacklok/propolis" alt="Go Report Card" /></a>
+    <a href="https://goreportcard.com/report/github.com/stacklok/go-microvm"><img src="https://goreportcard.com/badge/github.com/stacklok/go-microvm" alt="Go Report Card" /></a>
   </p>
 
   <p>
@@ -22,19 +22,19 @@
 </div>
 
 > [!WARNING]
-> **Experimental** -- propolis is under active development. APIs, configuration
+> **Experimental** -- go-microvm is under active development. APIs, configuration
 > formats, and behavior may change without notice between releases. It is not
 > yet recommended for production use.
 
 ---
 
-propolis is a Go library and runner binary that turns any OCI container image
+go-microvm is a Go library and runner binary that turns any OCI container image
 into a lightweight virtual machine. It pulls the image, flattens its layers
 into a rootfs, configures in-process networking, and boots the result using
 [libkrun](https://github.com/containers/libkrun) -- all in a single function
 call.
 
-You would use propolis when you need stronger isolation than containers provide
+You would use go-microvm when you need stronger isolation than containers provide
 but want to keep the OCI image workflow you already have. The library handles
 image caching, preflight validation, port forwarding, virtio-fs mounts, and
 process lifecycle so you can focus on what runs inside the VM.
@@ -54,7 +54,7 @@ process lifecycle so you can focus on what runs inside the VM.
 
 ## Prerequisites
 
-propolis requires hardware virtualization support and a few system packages.
+go-microvm requires hardware virtualization support and a few system packages.
 
 ### Linux -- Fedora
 
@@ -122,8 +122,8 @@ sudo modprobe kvm kvm_amd     # AMD CPUs
 
 ### Go Toolchain
 
-propolis requires **Go 1.26** or later. The library packages (everything
-except `krun` and `propolis-runner`) do not require CGO and compile with
+go-microvm requires **Go 1.26** or later. The library packages (everything
+except `krun` and `go-microvm-runner`) do not require CGO and compile with
 `CGO_ENABLED=0`. The runner binary requires `CGO_ENABLED=1` and `libkrun-devel`.
 
 ## Quick Start
@@ -135,14 +135,14 @@ import (
     "context"
     "log"
 
-    "github.com/stacklok/propolis"
+    "github.com/stacklok/go-microvm"
 )
 
 func main() {
     ctx := context.Background()
 
-    vm, err := propolis.Run(ctx, "alpine:latest",
-        propolis.WithPorts(propolis.PortForward{Host: 8080, Guest: 80}),
+    vm, err := microvm.Run(ctx, "alpine:latest",
+        microvm.WithPorts(microvm.PortForward{Host: 8080, Guest: 80}),
     )
     if err != nil {
         log.Fatal(err)
@@ -158,14 +158,14 @@ func main() {
 }
 ```
 
-`propolis.Run` executes the full pipeline: preflight checks, OCI image pull,
+`microvm.Run` executes the full pipeline: preflight checks, OCI image pull,
 layer extraction, rootfs caching, networking setup, subprocess spawn, and
 post-boot hooks. It returns a `*VM` handle that you use to query status, stop,
 or remove the VM.
 
 ## Advanced Usage
 
-For appliance-style deployments, propolis exposes hooks and overrides at every
+For appliance-style deployments, go-microvm exposes hooks and overrides at every
 stage of the pipeline:
 
 ```go
@@ -176,41 +176,41 @@ import (
     "os"
     "path/filepath"
 
-    "github.com/stacklok/propolis"
-    "github.com/stacklok/propolis/hypervisor/libkrun"
-    "github.com/stacklok/propolis/image"
-    "github.com/stacklok/propolis/preflight"
-    "github.com/stacklok/propolis/ssh"
+    "github.com/stacklok/go-microvm"
+    "github.com/stacklok/go-microvm/hypervisor/libkrun"
+    "github.com/stacklok/go-microvm/image"
+    "github.com/stacklok/go-microvm/preflight"
+    "github.com/stacklok/go-microvm/ssh"
 )
 
 func main() {
     ctx := context.Background()
 
-    vm, err := propolis.Run(ctx, "my-appliance:latest",
-        // Name the VM (defaults to "propolis").
-        propolis.WithName("my-appliance"),
+    vm, err := microvm.Run(ctx, "my-appliance:latest",
+        // Name the VM (defaults to "go-microvm").
+        microvm.WithName("my-appliance"),
 
         // Configure VM resources.
         // vCPUs default to 1, memory defaults to 512 MiB.
         // Stock libkrunfw caps vCPUs at 8.
-        propolis.WithCPUs(4),
-        propolis.WithMemory(2048),
+        microvm.WithCPUs(4),
+        microvm.WithMemory(2048),
 
         // Port forwards from host to guest.
-        propolis.WithPorts(
-            propolis.PortForward{Host: 443, Guest: 443},
-            propolis.PortForward{Host: 2222, Guest: 22},
+        microvm.WithPorts(
+            microvm.PortForward{Host: 443, Guest: 443},
+            microvm.PortForward{Host: 2222, Guest: 22},
         ),
 
         // Replace the OCI ENTRYPOINT/CMD with a custom init script.
         // The command is written into /.krun_config.json and executed
         // by libkrun's built-in init process (PID 1).
-        propolis.WithInitOverride("/sbin/my-init"),
+        microvm.WithInitOverride("/sbin/my-init"),
 
         // Inject files into the rootfs before boot.
         // Hooks run after image extraction but before .krun_config.json
         // is written, so they can modify anything in the filesystem.
-        propolis.WithRootFSHook(func(rootfs string, cfg *image.OCIConfig) error {
+        microvm.WithRootFSHook(func(rootfs string, cfg *image.OCIConfig) error {
             return os.WriteFile(
                 filepath.Join(rootfs, "etc", "my-app.conf"),
                 []byte("key=value\n"), 0o644,
@@ -219,31 +219,31 @@ func main() {
 
         // Run setup after the VM process is alive.
         // Common use: wait for SSH, push configuration, run health checks.
-        propolis.WithPostBoot(func(ctx context.Context, vm *propolis.VM) error {
+        microvm.WithPostBoot(func(ctx context.Context, vm *microvm.VM) error {
             keyPath := filepath.Join(vm.DataDir(), "id_ecdsa")
             sshClient := ssh.NewClient("127.0.0.1", 2222, "root", keyPath)
             return sshClient.WaitForReady(ctx)
         }),
 
         // Mount a host directory into the guest via virtio-fs.
-        propolis.WithVirtioFS(propolis.VirtioFSMount{
+        microvm.WithVirtioFS(microvm.VirtioFSMount{
             Tag: "shared", HostPath: "/srv/data",
         }),
 
         // Use a custom data directory for state, caches, and logs.
-        // Defaults to ~/.config/propolis or $PROPOLIS_DATA_DIR.
-        propolis.WithDataDir("/var/lib/my-appliance"),
+        // Defaults to ~/.config/go-microvm or $GO_MICROVM_DATA_DIR.
+        microvm.WithDataDir("/var/lib/my-appliance"),
 
         // Configure the libkrun backend with a specific runner binary
         // and library search path. These options are backend-specific.
-        propolis.WithBackend(libkrun.NewBackend(
-            libkrun.WithRunnerPath("/usr/local/bin/propolis-runner"),
+        microvm.WithBackend(libkrun.NewBackend(
+            libkrun.WithRunnerPath("/usr/local/bin/go-microvm-runner"),
             libkrun.WithLibDir("/opt/libs"),
         )),
 
         // Add custom preflight checks beyond the built-in defaults
         // (KVM access, disk space, system resources, port availability).
-        propolis.WithPreflightChecks(
+        microvm.WithPreflightChecks(
             preflight.PortCheck(443, 2222),
             preflight.Check{
                 Name:        "connectivity",
@@ -257,7 +257,7 @@ func main() {
         ),
 
         // Provide a custom image cache location.
-        propolis.WithImageCache(image.NewCache("/var/cache/propolis")),
+        microvm.WithImageCache(image.NewCache("/var/cache/go-microvm")),
     )
     if err != nil {
         panic(err)
@@ -280,7 +280,7 @@ func main() {
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `WithName(s)` | VM name for identification | `"propolis"` |
+| `WithName(s)` | VM name for identification | `"go-microvm"` |
 | `WithCPUs(n)` | Virtual CPUs (max 8 with stock libkrunfw, max 255 hard limit) | `1` |
 | `WithMemory(mib)` | RAM in MiB | `512` |
 | `WithPorts(...)` | TCP port forwards from host to guest | none |
@@ -294,7 +294,7 @@ func main() {
 | `WithPreflightChecker(c)` | Replace entire preflight checker | platform defaults |
 | `WithPreflightChecks(...)` | Add custom pre-boot checks | KVM + resources |
 | `WithVirtioFS(...)` | Host directory mounts via virtio-fs | none |
-| `WithDataDir(p)` | State, cache, and log directory | `~/.config/propolis` |
+| `WithDataDir(p)` | State, cache, and log directory | `~/.config/go-microvm` |
 | `WithCleanDataDir()` | Remove existing data dir contents before boot | disabled |
 | `WithEgressPolicy(p)` | Restrict outbound traffic to allowed DNS hostnames | none |
 | `WithImageCache(c)` | Custom image cache instance | `$dataDir/cache/` |
@@ -306,9 +306,9 @@ func main() {
 
 | Package | CGO? | Description |
 |---------|------|-------------|
-| `propolis` (root) | No | Top-level API: `Run()`, `VM` type, functional options, hook types |
+| `microvm` (root) | No | Top-level API: `Run()`, `VM` type, functional options, hook types |
 | `hypervisor` | No | `Backend` and `VMHandle` interfaces, `VMConfig`, `InitConfig` types |
-| `hypervisor/libkrun` | No | libkrun backend: spawns propolis-runner subprocess, `WithRunnerPath`/`WithLibDir`/`WithSpawner` |
+| `hypervisor/libkrun` | No | libkrun backend: spawns go-microvm-runner subprocess, `WithRunnerPath`/`WithLibDir`/`WithSpawner` |
 | `image` | No | OCI image pull via `ImageFetcher`, layer flattening, rootfs extraction |
 | `image/disk` | No | Disk image download with decompression (gzip/bzip2/xz) |
 | `krun` | **Yes** | CGO bindings to libkrun C API (context, VM config, `StartEnter`) |
@@ -321,21 +321,21 @@ func main() {
 | `net/hosted` | No | Hosted `net.Provider` running VirtualNetwork in caller's process with HTTP services |
 | `net/topology` | No | Shared network topology constants (subnet, gateway, IPs, MTU) |
 | `preflight` | No | `Checker` interface, `Check` struct, built-in KVM/HVF and port checks |
-| `runner` | No | `Spawner` / `ProcessHandle` interfaces for managing the propolis-runner subprocess |
-| `runner/cmd/propolis-runner` | **Yes** | The runner binary (calls `krun.StartEnter`, never returns) |
+| `runner` | No | `Spawner` / `ProcessHandle` interfaces for managing the go-microvm-runner subprocess |
+| `runner/cmd/go-microvm-runner` | **Yes** | The runner binary (calls `krun.StartEnter`, never returns) |
 | `ssh` | No | ECDSA key generation and SSH client for guest communication |
 | `state` | No | flock-based state persistence with atomic JSON writes |
 | `rootfs` | No | Rootfs cloning with reflink (copy-on-write) support |
 | `internal/pathutil` | No | Path traversal validation for safe file operations |
 | `internal/xattr` | No | Extended attribute helpers for `override_stat` ownership mapping |
 
-Only `krun` and `runner/cmd/propolis-runner` require CGO and `libkrun-devel`.
+Only `krun` and `runner/cmd/go-microvm-runner` require CGO and `libkrun-devel`.
 All other packages are pure Go and can be imported and tested with
 `CGO_ENABLED=0`.
 
 ## Build
 
-propolis uses [Task](https://taskfile.dev/) as its build tool. Run
+go-microvm uses [Task](https://taskfile.dev/) as its build tool. Run
 `task --list` for all available commands.
 
 | Command | Description |
@@ -361,22 +361,22 @@ The library packages do not require CGO and can be validated separately:
 
 ```bash
 # Test pure-Go packages only (no libkrun needed)
-CGO_ENABLED=0 go test $(go list ./... | grep -v krun | grep -v propolis-runner)
+CGO_ENABLED=0 go test $(go list ./... | grep -v krun | grep -v go-microvm-runner)
 
 # Vet pure-Go packages
-CGO_ENABLED=0 go vet $(go list ./... | grep -v krun | grep -v propolis-runner)
+CGO_ENABLED=0 go vet $(go list ./... | grep -v krun | grep -v go-microvm-runner)
 ```
 
 ## Architecture
 
-propolis uses a **two-process model**:
+go-microvm uses a **two-process model**:
 
 ```
 +---------------------------+         +---------------------------+
-|     Your application      |         |     propolis-runner       |
-|  (links propolis library) |  spawn  |  (CGO binary, links      |
+|     Your application      |         |     go-microvm-runner       |
+|  (links go-microvm lib)   |  spawn  |  (CGO binary, links      |
 |                           |-------->|   libkrun)                |
-|  propolis.Run()           |  JSON   |                           |
+|  microvm.Run()           |  JSON   |                           |
 |                           |  config |  1. Parse Config (argv[1])|
 |  Pure Go, no CGO          |         |  2. krun.CreateContext()  |
 |                           |         |  3. SetVMConfig, SetRoot  |
@@ -389,11 +389,11 @@ propolis uses a **two-process model**:
          +------------------------------------->|  this process
 ```
 
-1. **Your application** links the propolis library (pure Go, no CGO). It pulls
+1. **Your application** links the go-microvm library (pure Go, no CGO). It pulls
    the OCI image, configures networking, runs preflight checks, and spawns a
    subprocess.
 
-2. **propolis-runner** is a small CGO binary that receives the VM configuration
+2. **go-microvm-runner** is a small CGO binary that receives the VM configuration
    as JSON in `argv[1]`. It calls libkrun's C API to configure the VM context,
    then calls `krun_start_enter()` -- which **never returns** on success. The
    calling process becomes the VM supervisor until the guest shuts down.
@@ -417,7 +417,7 @@ Go runtime.
        |
   Start networking (in-process vnet)
        |
-  Spawn propolis-runner subprocess
+  Spawn go-microvm-runner subprocess
        |
   Runner calls krun_start_enter()
        |
@@ -475,7 +475,7 @@ sandboxed hypervisor like Firecracker.
 
 ### Tar Extraction Security
 
-When extracting OCI image layers, propolis applies multiple defenses against
+When extracting OCI image layers, go-microvm applies multiple defenses against
 malicious tar archives:
 
 - **Path traversal prevention**: `sanitizeTarPath` rejects absolute paths and
@@ -506,13 +506,13 @@ ls -la /dev/kvm
 # If permission denied: sudo usermod -aG kvm $USER
 
 # 2. Check console output for guest-side errors
-cat ~/.config/propolis/console.log
+cat ~/.config/go-microvm/console.log
 
 # 3. Check runner stderr for host-side errors
-cat ~/.config/propolis/vm.log
+cat ~/.config/go-microvm/vm.log
 
 # 4. Verify the runner binary is available
-which propolis-runner
+which go-microvm-runner
 # Or check next to your binary
 ```
 
@@ -535,8 +535,8 @@ crane pull alpine:latest /tmp/test.tar
 # Check which process is using a port
 ss -tlnp | grep ':8080'
 
-# Or use the propolis preflight check directly:
-# propolis.WithPreflightChecks(preflight.PortCheck(8080))
+# Or use the go-microvm preflight check directly:
+# microvm.WithPreflightChecks(preflight.PortCheck(8080))
 ```
 
 ### macOS-Specific Issues

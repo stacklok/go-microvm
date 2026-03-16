@@ -10,7 +10,7 @@ paths:
 - Create a function returning `preflight.Check` with Name, Description, Run, and Required fields
 - See existing checks in `preflight/kvm_linux.go` and `preflight/ports.go` for patterns
 - Platform-specific checks go in build-tagged files (`//go:build linux` or `//go:build darwin`)
-- Register via `propolis.WithPreflightChecks()` or add to `registerPlatformChecks()` for defaults
+- Register via `microvm.WithPreflightChecks()` or add to `registerPlatformChecks()` for defaults
 
 ## Adding a Network Provider
 - Implement the `net.Provider` interface (Start, SocketPath, Stop)
@@ -22,4 +22,4 @@ paths:
 - Type: `func(rootfsPath string, cfg *image.OCIConfig) error`
 - Run before `.krun_config.json` is written and before VM boot
 - Multiple hooks run in registration order; any error aborts the pipeline
-- Register via `propolis.WithRootFSHook()`
+- Register via `microvm.WithRootFSHook()`

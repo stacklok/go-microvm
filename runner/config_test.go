@@ -15,7 +15,7 @@ func TestConfig_MarshalUnmarshal_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	original := Config{
-		RootPath:   "/var/lib/propolis/rootfs",
+		RootPath:   "/var/lib/go-microvm/rootfs",
 		NumVCPUs:   4,
 		RAMMiB:     1024,
 		NetSocket:  "/tmp/net.sock",
@@ -24,7 +24,7 @@ func TestConfig_MarshalUnmarshal_RoundTrip(t *testing.T) {
 		LogLevel:   3,
 		// These should NOT appear in JSON.
 		LibDir:     "/usr/local/lib/krun",
-		RunnerPath: "/usr/bin/propolis-runner",
+		RunnerPath: "/usr/bin/go-microvm-runner",
 		VMLogPath:  "/var/log/vm.log",
 	}
 

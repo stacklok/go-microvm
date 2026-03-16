@@ -5,7 +5,7 @@
 // attribute on macOS and Linux so that the virtiofs server reports correct
 // guest-visible ownership and permissions for rootfs files.
 //
-// When propolis extracts an OCI image, the host user ends up owning all
+// When go-microvm extracts an OCI image, the host user ends up owning all
 // files because non-root cannot chown. libkrun's virtiofs server
 // performs access checks against these host-side attributes, causing
 // permission denied errors for guest processes running as UIDs that

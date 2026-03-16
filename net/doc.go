@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package net defines the networking abstraction for propolis microVMs.
+// Package net defines the networking abstraction for go-microvm microVMs.
 //
 // A [Provider] manages the lifecycle of a network backend that connects the
 // host to the guest VM. The default implementation uses an in-process

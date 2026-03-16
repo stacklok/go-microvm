@@ -1,19 +1,19 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package propolis provides a simple framework for running OCI container images
+// Package microvm provides a simple framework for running OCI container images
 // as microVMs using libkrun.
 //
 // The happy path is a single function call:
 //
-//	vm, err := propolis.Run(ctx, "alpine:latest",
-//	    propolis.WithPorts(propolis.PortForward{Host: 8080, Guest: 80}),
+//	vm, err := microvm.Run(ctx, "alpine:latest",
+//	    microvm.WithPorts(microvm.PortForward{Host: 8080, Guest: 80}),
 //	)
 //	defer vm.Stop(ctx)
 //
 // For advanced use cases, every layer is pluggable: custom init scripts,
 // rootfs hooks, network providers, preflight checks, and post-boot hooks.
-package propolis
+package microvm
 
 import (
 	"context"
@@ -27,15 +27,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stacklok/propolis/guest/vmconfig"
-	"github.com/stacklok/propolis/hooks"
-	"github.com/stacklok/propolis/hypervisor"
-	"github.com/stacklok/propolis/hypervisor/libkrun"
-	"github.com/stacklok/propolis/image"
-	"github.com/stacklok/propolis/net/firewall"
-	"github.com/stacklok/propolis/net/hosted"
-	rootfspkg "github.com/stacklok/propolis/rootfs"
-	"github.com/stacklok/propolis/state"
+	"github.com/stacklok/go-microvm/guest/vmconfig"
+	"github.com/stacklok/go-microvm/hooks"
+	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/hypervisor/libkrun"
+	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/net/firewall"
+	"github.com/stacklok/go-microvm/net/hosted"
+	rootfspkg "github.com/stacklok/go-microvm/rootfs"
+	"github.com/stacklok/go-microvm/state"
 )
 
 // Run pulls an OCI image and boots it as a microVM. It is the primary entry

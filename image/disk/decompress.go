@@ -16,7 +16,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/stacklok/propolis/image"
+	"github.com/stacklok/go-microvm/image"
 )
 
 // MaxDecompressedSize is the safety limit for decompression (30 GiB).

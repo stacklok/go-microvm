@@ -3,7 +3,7 @@
 
 package topology
 
-// Network topology constants for the propolis virtual network.
+// Network topology constants for the go-microvm virtual network.
 // These match the gvisor-tap-vsock defaults used by libkrun/krunvm.
 const (
 	// Subnet is the CIDR notation for the virtual network subnet.

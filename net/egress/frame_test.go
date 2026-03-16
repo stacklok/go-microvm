@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/propolis/net/firewall"
+	"github.com/stacklok/go-microvm/net/firewall"
 )
 
 // buildTestUDPFrame constructs a minimal Ethernet + IPv4 + UDP frame with

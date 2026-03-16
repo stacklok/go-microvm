@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package hosted implements a [net.Provider] that runs the gvisor-tap-vsock
-// VirtualNetwork in the caller's process rather than inside propolis-runner.
+// VirtualNetwork in the caller's process rather than inside go-microvm-runner.
 //
 // This enables callers to access the VirtualNetwork directly — for example,
 // to create in-process TCP listeners via gonet that are reachable from the
@@ -11,9 +11,9 @@
 // # Usage
 //
 //	p := hosted.NewProvider()
-//	vm, err := propolis.Run(ctx, image,
-//	    propolis.WithNetProvider(p),
-//	    propolis.WithPorts(propolis.PortForward{Host: sshPort, Guest: 22}),
+//	vm, err := microvm.Run(ctx, image,
+//	    microvm.WithNetProvider(p),
+//	    microvm.WithPorts(microvm.PortForward{Host: sshPort, Guest: 22}),
 //	)
 //	// p.VirtualNetwork() is now available for gonet listeners.
 //
@@ -25,10 +25,10 @@
 //
 //	p := hosted.NewProvider()
 //	p.AddService(hosted.Service{Port: 4483, Handler: myHandler})
-//	vm, err := propolis.Run(ctx, image, propolis.WithNetProvider(p))
+//	vm, err := microvm.Run(ctx, image, microvm.WithNetProvider(p))
 //	// Guest can reach http://192.168.127.1:4483/
 //
-// The provider exposes a Unix socket that propolis-runner connects to. Frames
+// The provider exposes a Unix socket that go-microvm-runner connects to. Frames
 // are bridged between the runner connection and the VirtualNetwork's QEMU
 // transport. When firewall rules are configured, a [firewall.Relay] is
 // inserted to filter traffic.
