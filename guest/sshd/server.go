@@ -274,32 +274,12 @@ func (s *Server) handleConnection(netConn net.Conn) {
 }
 
 // handleGlobalRequests processes connection-level SSH requests.
-// It handles agent forwarding requests when enabled and discards
-// all other global requests.
-func (s *Server) handleGlobalRequests(reqs <-chan *ssh.Request, conn *ssh.ServerConn) {
+// It rejects all global requests; session-specific requests like
+// agent forwarding are handled in handleSession.
+func (s *Server) handleGlobalRequests(reqs <-chan *ssh.Request, _ *ssh.ServerConn) {
 	for req := range reqs {
-		switch req.Type {
-		case "auth-agent-req@openssh.com":
-			if s.cfg.AgentForwarding {
-				s.setAgentForwarding(conn, true)
-				s.logger.Info("agent forwarding enabled",
-					"remote", conn.RemoteAddr(),
-				)
-				if req.WantReply {
-					_ = req.Reply(true, nil)
-				}
-			} else {
-				s.logger.Debug("agent forwarding rejected (disabled)",
-					"remote", conn.RemoteAddr(),
-				)
-				if req.WantReply {
-					_ = req.Reply(false, nil)
-				}
-			}
-		default:
-			if req.WantReply {
-				_ = req.Reply(false, nil)
-			}
+		if req.WantReply {
+			_ = req.Reply(false, nil)
 		}
 	}
 }

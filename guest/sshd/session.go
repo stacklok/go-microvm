@@ -119,6 +119,20 @@ func (s *Server) handleSession(ch ssh.Channel, requests <-chan *ssh.Request, con
 				replyRequest(req, false)
 			}
 
+		case "auth-agent-req@openssh.com":
+			if s.cfg.AgentForwarding {
+				s.setAgentForwarding(conn, true)
+				s.logger.Info("agent forwarding enabled",
+					"remote", conn.RemoteAddr(),
+				)
+				replyRequest(req, true)
+			} else {
+				s.logger.Debug("agent forwarding rejected (disabled)",
+					"remote", conn.RemoteAddr(),
+				)
+				replyRequest(req, false)
+			}
+
 		case "exec":
 			var payload struct {
 				Command string
