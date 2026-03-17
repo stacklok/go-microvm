@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // generateTestKeyPair creates an ECDSA P-256 key pair for testing and
@@ -327,10 +328,13 @@ func TestAgentForwardingDisabled(t *testing.T) {
 
 	client := dialSSH(t, addr, signer)
 
-	// Request agent forwarding — should be rejected.
-	ok, _, err := client.SendRequest("auth-agent-req@openssh.com", true, nil)
+	session, err := client.NewSession()
 	require.NoError(t, err)
-	assert.False(t, ok, "agent forwarding should be rejected when disabled")
+	defer func() { _ = session.Close() }()
+
+	// Request agent forwarding via the real API — should be rejected.
+	err = agent.RequestAgentForwarding(session)
+	assert.Error(t, err, "agent forwarding should be rejected when disabled")
 }
 
 func TestAgentForwardingEnabled(t *testing.T) {
@@ -352,10 +356,23 @@ func TestAgentForwardingEnabled(t *testing.T) {
 
 	client := dialSSH(t, addr, signer)
 
-	// Request agent forwarding — should be accepted.
-	ok, _, err := client.SendRequest("auth-agent-req@openssh.com", true, nil)
+	session, err := client.NewSession()
 	require.NoError(t, err)
-	assert.True(t, ok, "agent forwarding should be accepted when enabled")
+	defer func() { _ = session.Close() }()
+
+	// Request agent forwarding via the real API — should be accepted.
+	err = agent.RequestAgentForwarding(session)
+	require.NoError(t, err, "agent forwarding should be accepted when enabled")
+
+	// Verify the flag was set by running a command on a second session.
+	session2, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session2.Close() }()
+
+	output, err := session2.CombinedOutput("echo ${SSH_AUTH_SOCK:-unset}")
+	require.NoError(t, err)
+	result := strings.TrimSpace(string(output))
+	assert.Contains(t, result, "/tmp/ssh-", "agent socket should be set on connection after forwarding request")
 }
 
 func TestAgentSocketCreated(t *testing.T) {
@@ -377,15 +394,14 @@ func TestAgentSocketCreated(t *testing.T) {
 
 	client := dialSSH(t, addr, signer)
 
-	// Request agent forwarding.
-	ok, _, err := client.SendRequest("auth-agent-req@openssh.com", true, nil)
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	// Run a command that checks if SSH_AUTH_SOCK is set.
+	// Request agent forwarding and run a command on the same session,
+	// which is the real client flow: auth-agent-req arrives before exec.
 	session, err := client.NewSession()
 	require.NoError(t, err)
 	defer func() { _ = session.Close() }()
+
+	err = agent.RequestAgentForwarding(session)
+	require.NoError(t, err)
 
 	output, err := session.CombinedOutput("echo $SSH_AUTH_SOCK")
 	require.NoError(t, err)
