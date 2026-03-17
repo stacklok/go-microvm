@@ -411,6 +411,116 @@ func TestAgentSocketCreated(t *testing.T) {
 	assert.Contains(t, sockPath, "/tmp/ssh-", "agent socket should be in /tmp/ssh-*")
 }
 
+func TestAgentForwardingEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	// 1. Create a test key and add it to an in-memory agent.
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	keyring := agent.NewKeyring()
+	require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: ecKey}))
+
+	// 2. Start server with agent forwarding enabled.
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServerWithConfig(t, Config{
+		Port:            0,
+		AuthorizedKeys:  []ssh.PublicKey{pubKey},
+		Env:             []string{"PATH=/usr/bin:/bin"},
+		DefaultUID:      uint32(os.Getuid()),
+		DefaultGID:      uint32(os.Getgid()),
+		DefaultUser:     "testuser",
+		DefaultHome:     os.TempDir(),
+		DefaultShell:    "/bin/sh",
+		DefaultWorkDir:  t.TempDir(),
+		AgentForwarding: true,
+		Logger:          slog.Default(),
+	})
+
+	// 3. Connect SSH client.
+	client := dialSSH(t, addr, signer)
+
+	// 4. Register handler for auth-agent@openssh.com channels BEFORE
+	//    requesting forwarding — otherwise the server's channel open
+	//    will be rejected.
+	agentChans := client.HandleChannelOpen("auth-agent@openssh.com")
+	go func() {
+		for newCh := range agentChans {
+			ch, reqs, err := newCh.Accept()
+			if err != nil {
+				continue
+			}
+			go ssh.DiscardRequests(reqs)
+			go func() {
+				agent.ServeAgent(keyring, ch)
+				_ = ch.Close()
+			}()
+		}
+	}()
+
+	// 5. Open a session, request forwarding, run ssh-add -l.
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	err = agent.RequestAgentForwarding(session)
+	require.NoError(t, err)
+
+	output, err := session.CombinedOutput("ssh-add -l")
+	require.NoError(t, err)
+
+	result := string(output)
+	assert.NotContains(t, result, "The agent has no identities")
+	assert.NotContains(t, result, "Could not open a connection")
+	assert.Contains(t, result, "ECDSA", "expected forwarded ECDSA key in ssh-add output")
+}
+
+func TestAgentForwardingEndToEnd_NoClientHandler(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServerWithConfig(t, Config{
+		Port:            0,
+		AuthorizedKeys:  []ssh.PublicKey{pubKey},
+		Env:             []string{"PATH=/usr/bin:/bin"},
+		DefaultUID:      uint32(os.Getuid()),
+		DefaultGID:      uint32(os.Getgid()),
+		DefaultUser:     "testuser",
+		DefaultHome:     os.TempDir(),
+		DefaultShell:    "/bin/sh",
+		DefaultWorkDir:  t.TempDir(),
+		AgentForwarding: true,
+		Logger:          slog.Default(),
+	})
+
+	client := dialSSH(t, addr, signer)
+
+	// Do NOT register HandleChannelOpen — the proxy channel will be rejected.
+
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	err = agent.RequestAgentForwarding(session)
+	require.NoError(t, err)
+
+	output, err := session.CombinedOutput("ssh-add -l 2>&1")
+	result := strings.TrimSpace(string(output))
+
+	// Without a client-side handler, ssh-add should fail.
+	if err == nil {
+		// Some versions of ssh-add exit 0 but report no agent.
+		assert.True(t,
+			strings.Contains(result, "Could not open a connection") ||
+				strings.Contains(result, "The agent has no identities") ||
+				strings.Contains(result, "Error connecting to agent") ||
+				strings.Contains(result, "error"),
+			"ssh-add should fail without client-side agent handler, got: %s", result,
+		)
+	}
+	// If err != nil, the command exited non-zero — that's the expected case.
+}
+
 func TestNoSocketWithoutForwardingRequest(t *testing.T) {
 	t.Parallel()
 
