@@ -513,6 +513,7 @@ func (s *Server) proxyAgentConnection(conn *ssh.ServerConn, unixConn net.Conn) {
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(channel, unixConn)
+		_ = channel.CloseWrite() // Signal host that guest disconnected from agent socket.
 	}()
 	go func() {
 		defer wg.Done()
