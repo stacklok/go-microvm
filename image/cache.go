@@ -154,7 +154,8 @@ type CacheEntry struct {
 	Path string
 	// Size is the total size in bytes of all files in the rootfs directory.
 	Size int64
-	// ModTime is the last time this entry was accessed (touched by Get).
+	// ModTime is the modification time of the cache directory entry.
+	// Updated by Get on cache hits; otherwise reflects creation time.
 	ModTime time.Time
 	// Refs lists image references (e.g. "ghcr.io/org/image:latest") that
 	// point to this digest via the ref index. Empty for orphaned entries.
@@ -214,6 +215,11 @@ func (c *Cache) List() ([]CacheEntry, error) {
 // Unlike [Evict] (which is time-based), GC is reachability-based: an entry
 // survives if and only if at least one ref points to its digest.
 // Returns the number of entries removed.
+//
+// GC is not safe for concurrent use with [Pull]. If another process is
+// pulling an image while GC runs, the pulled entry may be collected before
+// the ref index is updated. The consequence is a cache miss on the next
+// run, not data corruption.
 func (c *Cache) GC() (int, error) {
 	if c == nil {
 		return 0, nil
@@ -227,7 +233,11 @@ func (c *Cache) GC() (int, error) {
 		return 0, fmt.Errorf("read cache dir: %w", err)
 	}
 
-	live := c.liveDigests()
+	live, err := c.liveDigests()
+	if err != nil {
+		return 0, fmt.Errorf("enumerate live digests: %w", err)
+	}
+
 	removed := 0
 
 	for _, entry := range entries {
@@ -264,12 +274,18 @@ func (c *Cache) Purge() error {
 }
 
 // liveDigests returns the set of digests referenced by at least one ref
-// index entry.
-func (c *Cache) liveDigests() map[string]bool {
+// index entry. Returns a nil map and nil error when the refs directory
+// does not exist (no images have been pulled yet). Returns a non-nil
+// error if the refs directory exists but cannot be read, so callers
+// can abort rather than treating all entries as orphaned.
+func (c *Cache) liveDigests() (map[string]bool, error) {
 	refsDir := filepath.Join(c.baseDir, refDir)
 	entries, err := os.ReadDir(refsDir)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read refs dir: %w", err)
 	}
 
 	live := make(map[string]bool, len(entries))
@@ -286,7 +302,7 @@ func (c *Cache) liveDigests() map[string]bool {
 			live[digest] = true
 		}
 	}
-	return live
+	return live, nil
 }
 
 // buildRefMap returns a map from digest to the list of image references
@@ -308,7 +324,13 @@ func (c *Cache) buildRefMap() map[string][]string {
 			continue
 		}
 		imageRef, digest := parseRefFile(data)
-		if digest != "" {
+		if digest == "" {
+			continue
+		}
+		// Skip empty image refs from legacy-format files. The entry still
+		// counts as referenced for GC (via liveDigests), but we don't add
+		// an empty string to the Refs slice.
+		if imageRef != "" {
 			refMap[digest] = append(refMap[digest], imageRef)
 		}
 	}
@@ -365,10 +387,15 @@ func dirSize(path string) int64 {
 }
 
 // pathFor converts a digest like "sha256:abc123..." into a filesystem path
-// inside the cache directory. The colon is replaced to avoid filesystem issues.
+// inside the cache directory. Only the first colon is replaced so the
+// round-trip with [dirNameToDigest] is symmetric.
 func (c *Cache) pathFor(digest string) string {
-	// Replace "sha256:" prefix with "sha256-" for filesystem safety.
-	safe := strings.ReplaceAll(digest, ":", "-")
+	if strings.ContainsAny(digest, "/\\") || strings.Contains(digest, "..") {
+		// Defense-in-depth: reject digests that could escape the cache dir.
+		// Normal OCI digests are "algorithm:hex" with no path separators.
+		return filepath.Join(c.baseDir, "invalid-digest")
+	}
+	safe := strings.Replace(digest, ":", "-", 1)
 	return filepath.Join(c.baseDir, safe)
 }
 
