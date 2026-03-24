@@ -353,10 +353,10 @@ func TestCache_List_LegacyRefFormat(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 
-	// Legacy format: entry is referenced (not orphaned) but imageRef
-	// is not recoverable, so Refs is empty (no empty strings).
+	// Legacy format: entry is referenced (not orphaned) but the original
+	// image name is not recoverable, so a placeholder is used.
 	assert.Equal(t, "sha256:legacy", entries[0].Digest)
-	assert.Empty(t, entries[0].Refs)
+	assert.Equal(t, []string{"(unknown image)"}, entries[0].Refs)
 }
 
 // --- GC tests ---
@@ -582,6 +582,47 @@ func TestCache_GC_CorruptRefFiles(t *testing.T) {
 	removed, err := c.GC()
 	require.NoError(t, err)
 	assert.Equal(t, 1, removed)
+}
+
+func TestLookupRef_UpgradesLegacyRef(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	digest := "sha256:legacyupgrade"
+	imageRef := "ghcr.io/org/image:latest"
+
+	// Create a rootfs entry with an OCI config.
+	rootfsDir := filepath.Join(cacheDir, "sha256-legacyupgrade")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o700))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(rootfsDir, ".oci-config.json"),
+		[]byte(`{"Entrypoint":["/bin/sh"]}`), 0o600,
+	))
+
+	// Write a legacy-format ref file (digest only, no imageRef).
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	p := c.refPath(imageRef)
+	require.NoError(t, os.WriteFile(p, []byte(digest+"\n"), 0o600))
+
+	// LookupRef should succeed (legacy format is readable).
+	result := c.LookupRef(imageRef)
+	require.NotNil(t, result)
+	assert.Equal(t, rootfsDir, result.Path)
+
+	// After LookupRef, the ref file should be upgraded to extended format.
+	data, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, imageRef+"\t"+digest+"\n", string(data),
+		"LookupRef should upgrade legacy ref to extended format")
+
+	// List should now show the real image name instead of (unknown image).
+	entries, err := c.List()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, []string{imageRef}, entries[0].Refs)
 }
 
 func TestGetRef_BackwardCompatible(t *testing.T) {
