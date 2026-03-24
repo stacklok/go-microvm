@@ -327,11 +327,14 @@ func (c *Cache) buildRefMap() map[string][]string {
 		if digest == "" {
 			continue
 		}
-		// Skip empty image refs from legacy-format files. The entry still
-		// counts as referenced for GC (via liveDigests), but we don't add
-		// an empty string to the Refs slice.
 		if imageRef != "" {
 			refMap[digest] = append(refMap[digest], imageRef)
+		} else if _, exists := refMap[digest]; !exists {
+			// Legacy-format ref (digest only, no image name). Mark the
+			// digest as referenced so it is not reported as orphaned.
+			// The placeholder is replaced once the ref is upgraded to
+			// extended format (e.g. on next LookupRef hit).
+			refMap[digest] = []string{"(unknown image)"}
 		}
 	}
 	return refMap
@@ -423,6 +426,10 @@ func (c *Cache) LookupRef(imageRef string) *RootFS {
 	if !ok {
 		return nil
 	}
+
+	// Upgrade legacy-format ref files (digest only) to extended format
+	// (imageRef\tdigest) so that List/GC can recover the image name.
+	c.putRef(imageRef, digest)
 
 	rootfsPath, ok := c.Get(digest)
 	if !ok {
