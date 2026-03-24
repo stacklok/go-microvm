@@ -195,3 +195,54 @@ func TestLayerCache_Evict_NonExistentDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, removed)
 }
+
+// --- Size tests ---
+
+func TestLayerCache_Size_Empty(t *testing.T) {
+	t.Parallel()
+
+	lc := NewLayerCache(t.TempDir())
+
+	size, err := lc.Size()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+}
+
+func TestLayerCache_Size_Nil(t *testing.T) {
+	t.Parallel()
+
+	var lc *LayerCache
+	size, err := lc.Size()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+}
+
+func TestLayerCache_Size_NonExistentDir(t *testing.T) {
+	t.Parallel()
+
+	lc := NewLayerCache(filepath.Join(t.TempDir(), "does-not-exist"))
+
+	size, err := lc.Size()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+}
+
+func TestLayerCache_Size_WithEntries(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+
+	// Create two layer directories with known file sizes.
+	layer1 := filepath.Join(cacheDir, "sha256-layer1")
+	require.NoError(t, os.MkdirAll(layer1, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(layer1, "data"), make([]byte, 1000), 0o644))
+
+	layer2 := filepath.Join(cacheDir, "sha256-layer2")
+	require.NoError(t, os.MkdirAll(layer2, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(layer2, "data"), make([]byte, 2000), 0o644))
+
+	size, err := lc.Size()
+	require.NoError(t, err)
+	assert.Equal(t, int64(3000), size)
+}

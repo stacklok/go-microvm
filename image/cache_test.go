@@ -4,6 +4,8 @@
 package image
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -247,4 +249,355 @@ func TestCache_Get_TouchesMtime(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.ModTime().After(before) || info.ModTime().Equal(before),
 		"Get should update mtime to prevent eviction")
+}
+
+// --- List tests ---
+
+func TestCache_List_Empty(t *testing.T) {
+	t.Parallel()
+
+	c := NewCache(t.TempDir())
+
+	entries, err := c.List()
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestCache_List_NilCache(t *testing.T) {
+	t.Parallel()
+
+	var c *Cache
+	entries, err := c.List()
+	require.NoError(t, err)
+	assert.Nil(t, entries)
+}
+
+func TestCache_List_WithEntries(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create two rootfs entries with files.
+	for _, name := range []string{"sha256-aaa111", "sha256-bbb222"} {
+		dir := filepath.Join(cacheDir, name)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello"), 0o644))
+	}
+
+	// Create a ref pointing to one of them (extended format).
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	refContent := "ghcr.io/org/image:latest\tsha256:aaa111\n"
+	refHash := sha256.Sum256([]byte("ghcr.io/org/image:latest"))
+	refFile := filepath.Join(refsDir, hex.EncodeToString(refHash[:]))
+	require.NoError(t, os.WriteFile(refFile, []byte(refContent), 0o600))
+
+	entries, err := c.List()
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+
+	// Build a map for order-independent assertions.
+	byDigest := make(map[string]CacheEntry)
+	for _, e := range entries {
+		byDigest[e.Digest] = e
+	}
+
+	withRefs, ok := byDigest["sha256:aaa111"]
+	require.True(t, ok, "expected entry for sha256:aaa111")
+	assert.Equal(t, []string{"ghcr.io/org/image:latest"}, withRefs.Refs)
+	assert.Equal(t, int64(5), withRefs.Size) // "hello" is 5 bytes
+
+	orphan, ok := byDigest["sha256:bbb222"]
+	require.True(t, ok, "expected entry for sha256:bbb222")
+	assert.Empty(t, orphan.Refs)
+}
+
+func TestCache_List_SkipsNonRootfs(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create entries that should be skipped.
+	for _, name := range []string{"refs", "layers", "tmp-rootfs-abc"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, name), 0o700))
+	}
+
+	// Create one real rootfs entry.
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-real"), 0o700))
+
+	entries, err := c.List()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "sha256:real", entries[0].Digest)
+}
+
+func TestCache_List_LegacyRefFormat(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create a rootfs entry.
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-legacy"), 0o700))
+
+	// Create a ref in legacy format (digest only, no imageRef).
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	refHash := sha256.Sum256([]byte("some-image:latest"))
+	refFile := filepath.Join(refsDir, hex.EncodeToString(refHash[:]))
+	require.NoError(t, os.WriteFile(refFile, []byte("sha256:legacy\n"), 0o600))
+
+	entries, err := c.List()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	// Legacy format: entry is referenced (not orphaned) but imageRef
+	// is not recoverable, so Refs is empty (no empty strings).
+	assert.Equal(t, "sha256:legacy", entries[0].Digest)
+	assert.Empty(t, entries[0].Refs)
+}
+
+// --- GC tests ---
+
+func TestCache_GC_NilCache(t *testing.T) {
+	t.Parallel()
+
+	var c *Cache
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+}
+
+func TestCache_GC_RemovesOrphans(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create two rootfs entries.
+	liveDir := filepath.Join(cacheDir, "sha256-live")
+	orphanDir := filepath.Join(cacheDir, "sha256-orphan")
+	require.NoError(t, os.MkdirAll(liveDir, 0o700))
+	require.NoError(t, os.MkdirAll(orphanDir, 0o700))
+
+	// Create a ref pointing only to the live entry.
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	refHash := sha256.Sum256([]byte("my-image:latest"))
+	refFile := filepath.Join(refsDir, hex.EncodeToString(refHash[:]))
+	require.NoError(t, os.WriteFile(refFile, []byte("my-image:latest\tsha256:live\n"), 0o600))
+
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+
+	// Live entry should remain.
+	_, err = os.Stat(liveDir)
+	assert.NoError(t, err)
+
+	// Orphan should be gone.
+	_, err = os.Stat(orphanDir)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestCache_GC_PreservesNonRootfs(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create non-rootfs entries that GC should not touch.
+	refsDir := filepath.Join(cacheDir, "refs")
+	layersDir := filepath.Join(cacheDir, "layers")
+	tmpDir := filepath.Join(cacheDir, "tmp-rootfs-inflight")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	require.NoError(t, os.MkdirAll(layersDir, 0o700))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o700))
+
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+
+	// All should still exist.
+	for _, d := range []string{refsDir, layersDir, tmpDir} {
+		_, err := os.Stat(d)
+		assert.NoError(t, err, "should not remove %s", d)
+	}
+}
+
+func TestCache_GC_NoRefs(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create rootfs entries with no refs at all.
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-a"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-b"), 0o700))
+
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 2, removed)
+}
+
+// --- Purge tests ---
+
+func TestCache_Purge_NilCache(t *testing.T) {
+	t.Parallel()
+
+	var c *Cache
+	err := c.Purge()
+	require.NoError(t, err)
+}
+
+func TestCache_Purge_RemovesEverything(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Populate cache.
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-entry"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "refs"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "layers", "sha256-layer"), 0o700))
+
+	err := c.Purge()
+	require.NoError(t, err)
+
+	_, err = os.Stat(cacheDir)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestCache_Purge_NonExistentDir(t *testing.T) {
+	t.Parallel()
+
+	c := NewCache(filepath.Join(t.TempDir(), "does-not-exist"))
+	err := c.Purge()
+	require.NoError(t, err)
+}
+
+// --- Ref format tests ---
+
+func TestParseRefFile_ExtendedFormat(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("ghcr.io/org/image:latest\tsha256:abc123\n")
+	imageRef, digest := parseRefFile(data)
+	assert.Equal(t, "ghcr.io/org/image:latest", imageRef)
+	assert.Equal(t, "sha256:abc123", digest)
+}
+
+func TestParseRefFile_LegacyFormat(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("sha256:abc123\n")
+	imageRef, digest := parseRefFile(data)
+	assert.Equal(t, "", imageRef)
+	assert.Equal(t, "sha256:abc123", digest)
+}
+
+func TestParseRefFile_Empty(t *testing.T) {
+	t.Parallel()
+
+	imageRef, digest := parseRefFile([]byte(""))
+	assert.Equal(t, "", imageRef)
+	assert.Equal(t, "", digest)
+}
+
+func TestPutRef_ExtendedFormat(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	c.putRef("ghcr.io/org/image:v1", "sha256:deadbeef")
+
+	// Read the file back and verify extended format.
+	p := c.refPath("ghcr.io/org/image:v1")
+	data, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, "ghcr.io/org/image:v1\tsha256:deadbeef\n", string(data))
+
+	// getRef should still work.
+	digest, ok := c.getRef("ghcr.io/org/image:v1")
+	assert.True(t, ok)
+	assert.Equal(t, "sha256:deadbeef", digest)
+}
+
+func TestCache_GC_NonExistentDir(t *testing.T) {
+	t.Parallel()
+
+	c := NewCache(filepath.Join(t.TempDir(), "does-not-exist"))
+
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+}
+
+func TestCache_GC_MultipleRefsToSameDigest(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create one rootfs entry.
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-shared"), 0o700))
+
+	// Create two refs pointing to the same digest.
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	for _, ref := range []string{"image:latest", "image:v1"} {
+		h := sha256.Sum256([]byte(ref))
+		p := filepath.Join(refsDir, hex.EncodeToString(h[:]))
+		require.NoError(t, os.WriteFile(p, []byte(ref+"\tsha256:shared\n"), 0o600))
+	}
+
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+
+	// Entry should survive.
+	_, err = os.Stat(filepath.Join(cacheDir, "sha256-shared"))
+	assert.NoError(t, err)
+}
+
+func TestCache_GC_CorruptRefFiles(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Create a rootfs entry.
+	require.NoError(t, os.MkdirAll(filepath.Join(cacheDir, "sha256-orphan"), 0o700))
+
+	// Create refs dir with corrupt files (empty, whitespace-only).
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(refsDir, "empty"), []byte(""), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(refsDir, "whitespace"), []byte("  \n"), 0o600))
+
+	// Corrupt refs should not protect the orphaned entry.
+	removed, err := c.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+}
+
+func TestGetRef_BackwardCompatible(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	c := NewCache(cacheDir)
+
+	// Write a legacy-format ref file manually.
+	refsDir := filepath.Join(cacheDir, "refs")
+	require.NoError(t, os.MkdirAll(refsDir, 0o700))
+	p := c.refPath("old-image:latest")
+	require.NoError(t, os.WriteFile(p, []byte("sha256:olddigest\n"), 0o600))
+
+	// getRef should parse the legacy format.
+	digest, ok := c.getRef("old-image:latest")
+	assert.True(t, ok)
+	assert.Equal(t, "sha256:olddigest", digest)
 }

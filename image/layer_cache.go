@@ -5,6 +5,7 @@ package image
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -116,6 +117,36 @@ func (lc *LayerCache) Evict(maxAge time.Duration) (int, error) {
 	}
 
 	return removed, nil
+}
+
+// Size returns the total size in bytes of all cached layer entries.
+// Returns 0 if the layer cache directory does not exist.
+func (lc *LayerCache) Size() (int64, error) {
+	if lc == nil {
+		return 0, nil
+	}
+	var total int64
+	err := filepath.WalkDir(lc.baseDir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fs.SkipAll
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return total, fmt.Errorf("walk layer cache: %w", err)
+	}
+	return total, nil
 }
 
 // pathFor converts a DiffID into a filesystem path inside the cache directory.
