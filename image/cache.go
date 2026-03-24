@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +146,224 @@ func (c *Cache) Evict(maxAge time.Duration) (int, error) {
 	return removed, nil
 }
 
+// CacheEntry holds metadata about a single cached rootfs entry.
+type CacheEntry struct {
+	// Digest is the OCI manifest digest (e.g. "sha256:abc123...").
+	Digest string
+	// Path is the absolute filesystem path to the extracted rootfs.
+	Path string
+	// Size is the total size in bytes of all files in the rootfs directory.
+	Size int64
+	// ModTime is the last time this entry was accessed (touched by Get).
+	ModTime time.Time
+	// Refs lists image references (e.g. "ghcr.io/org/image:latest") that
+	// point to this digest via the ref index. Empty for orphaned entries.
+	Refs []string
+}
+
+// List returns metadata for all cached rootfs entries along with the image
+// references that point to each digest. Orphaned entries (no refs) will
+// have an empty Refs slice.
+func (c *Cache) List() ([]CacheEntry, error) {
+	if c == nil {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(c.baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read cache dir: %w", err)
+	}
+
+	// Build reverse map: digest → []imageRef from the ref index.
+	refMap := c.buildRefMap()
+
+	var result []CacheEntry
+	for _, entry := range entries {
+		name := entry.Name()
+
+		// Only consider rootfs entries (sha256-*), skip refs/, layers/, tmp-*.
+		if !isRootfsEntry(name) {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		digest := dirNameToDigest(name)
+		entryPath := filepath.Join(c.baseDir, name)
+		size := dirSize(entryPath)
+
+		result = append(result, CacheEntry{
+			Digest:  digest,
+			Path:    entryPath,
+			Size:    size,
+			ModTime: info.ModTime(),
+			Refs:    refMap[digest],
+		})
+	}
+
+	return result, nil
+}
+
+// GC removes rootfs entries not referenced by any ref index entry.
+// Unlike [Evict] (which is time-based), GC is reachability-based: an entry
+// survives if and only if at least one ref points to its digest.
+// Returns the number of entries removed.
+func (c *Cache) GC() (int, error) {
+	if c == nil {
+		return 0, nil
+	}
+
+	entries, err := os.ReadDir(c.baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read cache dir: %w", err)
+	}
+
+	live := c.liveDigests()
+	removed := 0
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isRootfsEntry(name) {
+			continue
+		}
+
+		digest := dirNameToDigest(name)
+		if live[digest] {
+			continue
+		}
+
+		entryPath := filepath.Join(c.baseDir, name)
+		if err := os.RemoveAll(entryPath); err != nil {
+			continue
+		}
+		removed++
+	}
+
+	return removed, nil
+}
+
+// Purge removes the entire cache directory including all rootfs entries,
+// the ref index, and the layer cache.
+func (c *Cache) Purge() error {
+	if c == nil {
+		return nil
+	}
+	if err := os.RemoveAll(c.baseDir); err != nil {
+		return fmt.Errorf("remove cache dir: %w", err)
+	}
+	return nil
+}
+
+// liveDigests returns the set of digests referenced by at least one ref
+// index entry.
+func (c *Cache) liveDigests() map[string]bool {
+	refsDir := filepath.Join(c.baseDir, refDir)
+	entries, err := os.ReadDir(refsDir)
+	if err != nil {
+		return nil
+	}
+
+	live := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(refsDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		_, digest := parseRefFile(data)
+		if digest != "" {
+			live[digest] = true
+		}
+	}
+	return live
+}
+
+// buildRefMap returns a map from digest to the list of image references
+// that point to it.
+func (c *Cache) buildRefMap() map[string][]string {
+	refsDir := filepath.Join(c.baseDir, refDir)
+	entries, err := os.ReadDir(refsDir)
+	if err != nil {
+		return nil
+	}
+
+	refMap := make(map[string][]string)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(refsDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		imageRef, digest := parseRefFile(data)
+		if digest != "" {
+			refMap[digest] = append(refMap[digest], imageRef)
+		}
+	}
+	return refMap
+}
+
+// parseRefFile parses the content of a ref index file. The file may contain
+// either the legacy format (digest only) or the extended format
+// (imageRef\tdigest). Returns the image reference (empty for legacy format)
+// and the digest.
+func parseRefFile(data []byte) (imageRef, digest string) {
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return "", ""
+	}
+	if idx := strings.IndexByte(content, '\t'); idx >= 0 {
+		return content[:idx], content[idx+1:]
+	}
+	// Legacy format: digest only.
+	return "", content
+}
+
+// isRootfsEntry returns true if the directory name looks like a cached
+// rootfs entry (starts with "sha256-") rather than a special directory.
+func isRootfsEntry(name string) bool {
+	return strings.HasPrefix(name, "sha256-")
+}
+
+// dirNameToDigest converts a filesystem-safe directory name back to a digest.
+// "sha256-abc123" → "sha256:abc123".
+func dirNameToDigest(name string) string {
+	return strings.Replace(name, "-", ":", 1)
+}
+
+// dirSize walks a directory tree and returns the total size of all regular
+// files. Errors are silently ignored; the returned size is best-effort.
+func dirSize(path string) int64 {
+	var total int64
+	_ = filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total
+}
+
 // pathFor converts a digest like "sha256:abc123..." into a filesystem path
 // inside the cache directory. The colon is replaced to avoid filesystem issues.
 func (c *Cache) pathFor(digest string) string {
@@ -201,28 +420,32 @@ func (c *Cache) StoreRef(imageRef, digest string, cfg *OCIConfig) {
 	c.putConfig(digest, cfg)
 }
 
-// getRef returns the cached digest for an image reference.
+// getRef returns the cached digest for an image reference. It handles
+// both the legacy format (digest only) and the extended format
+// (imageRef\tdigest).
 func (c *Cache) getRef(imageRef string) (string, bool) {
 	p := c.refPath(imageRef)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return "", false
 	}
-	digest := strings.TrimSpace(string(data))
+	_, digest := parseRefFile(data)
 	if digest == "" {
 		return "", false
 	}
 	return digest, true
 }
 
-// putRef stores the ref→digest mapping as a small file.
+// putRef stores the ref→digest mapping as a small file. The file uses the
+// extended format "imageRef\tdigest\n" so that List/GC can recover the
+// original image reference from the hashed filename.
 func (c *Cache) putRef(imageRef, digest string) {
 	dir := filepath.Join(c.baseDir, refDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 	p := c.refPath(imageRef)
-	_ = os.WriteFile(p, []byte(digest+"\n"), 0o600)
+	_ = os.WriteFile(p, []byte(imageRef+"\t"+digest+"\n"), 0o600)
 }
 
 // refPath returns the filesystem path for a ref index entry. The image
