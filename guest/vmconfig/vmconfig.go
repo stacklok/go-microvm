@@ -19,6 +19,17 @@ type Config struct {
 	// TmpSizeMiB is the size of the /tmp tmpfs in MiB. Zero means use the
 	// mount package default (256 MiB).
 	TmpSizeMiB uint32 `json:"tmp_size_mib,omitempty"`
+	// VirtioFSMounts describes virtiofs mounts the host configured for the VM.
+	// The guest init uses this to determine mount-time options (e.g. read-only).
+	VirtioFSMounts []VirtioFSMountInfo `json:"virtiofs_mounts,omitempty"`
+}
+
+// VirtioFSMountInfo carries mount metadata from the host to the guest init.
+type VirtioFSMountInfo struct {
+	// Tag is the virtiofs tag identifying this mount.
+	Tag string `json:"tag"`
+	// ReadOnly indicates the mount should be read-only inside the guest.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // Read loads the VM config from /etc/go-microvm.json.

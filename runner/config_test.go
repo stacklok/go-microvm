@@ -15,11 +15,14 @@ func TestConfig_MarshalUnmarshal_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	original := Config{
-		RootPath:   "/var/lib/go-microvm/rootfs",
-		NumVCPUs:   4,
-		RAMMiB:     1024,
-		NetSocket:  "/tmp/net.sock",
-		VirtioFS:   []VirtioFSMount{{Tag: "shared", HostPath: "/home/user/data"}},
+		RootPath:  "/var/lib/go-microvm/rootfs",
+		NumVCPUs:  4,
+		RAMMiB:    1024,
+		NetSocket: "/tmp/net.sock",
+		VirtioFS: []VirtioFSMount{
+			{Tag: "shared", HostPath: "/home/user/data"},
+			{Tag: "readonly-data", HostPath: "/var/data", ReadOnly: true},
+		},
 		ConsoleLog: "/var/log/console.log",
 		LogLevel:   3,
 		// These should NOT appear in JSON.
@@ -42,9 +45,13 @@ func TestConfig_MarshalUnmarshal_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.NetSocket, restored.NetSocket)
 	assert.Equal(t, original.ConsoleLog, restored.ConsoleLog)
 	assert.Equal(t, original.LogLevel, restored.LogLevel)
-	require.Len(t, restored.VirtioFS, 1)
+	require.Len(t, restored.VirtioFS, 2)
 	assert.Equal(t, "shared", restored.VirtioFS[0].Tag)
 	assert.Equal(t, "/home/user/data", restored.VirtioFS[0].HostPath)
+	assert.False(t, restored.VirtioFS[0].ReadOnly)
+	assert.Equal(t, "readonly-data", restored.VirtioFS[1].Tag)
+	assert.Equal(t, "/var/data", restored.VirtioFS[1].HostPath)
+	assert.True(t, restored.VirtioFS[1].ReadOnly)
 
 	// json:"-" fields should be zero in the unmarshaled result.
 	assert.Empty(t, restored.LibDir)
@@ -104,6 +111,8 @@ func TestVirtioFSMount_Serialization(t *testing.T) {
 
 	assert.Contains(t, raw, "tag")
 	assert.Contains(t, raw, "path")
+	// read_only should be omitted when false.
+	assert.NotContains(t, raw, "read_only")
 
 	var restored VirtioFSMount
 	err = json.Unmarshal(data, &restored)
@@ -111,4 +120,32 @@ func TestVirtioFSMount_Serialization(t *testing.T) {
 
 	assert.Equal(t, mount.Tag, restored.Tag)
 	assert.Equal(t, mount.HostPath, restored.HostPath)
+	assert.False(t, restored.ReadOnly)
+}
+
+func TestVirtioFSMount_ReadOnly_Serialization(t *testing.T) {
+	t.Parallel()
+
+	mount := VirtioFSMount{
+		Tag:      "data",
+		HostPath: "/var/data",
+		ReadOnly: true,
+	}
+
+	data, err := json.Marshal(mount)
+	require.NoError(t, err)
+
+	var raw map[string]json.RawMessage
+	err = json.Unmarshal(data, &raw)
+	require.NoError(t, err)
+
+	assert.Contains(t, raw, "read_only")
+
+	var restored VirtioFSMount
+	err = json.Unmarshal(data, &restored)
+	require.NoError(t, err)
+
+	assert.Equal(t, mount.Tag, restored.Tag)
+	assert.Equal(t, mount.HostPath, restored.HostPath)
+	assert.True(t, restored.ReadOnly)
 }

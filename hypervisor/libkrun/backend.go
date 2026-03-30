@@ -187,7 +187,7 @@ func toRunnerPortForwards(ports []hypervisor.PortForward) []runner.PortForward {
 func toRunnerVirtioFS(mounts []hypervisor.FilesystemMount) []runner.VirtioFSMount {
 	out := make([]runner.VirtioFSMount, len(mounts))
 	for i, m := range mounts {
-		out[i] = runner.VirtioFSMount{Tag: m.Tag, HostPath: m.HostPath}
+		out[i] = runner.VirtioFSMount{Tag: m.Tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly}
 	}
 	return out
 }

@@ -20,6 +20,7 @@ type config struct {
 	workspaceTag        string
 	workspaceUID        int
 	workspaceGID        int
+	workspaceReadOnly   bool
 	mountRetries        int
 	sshPort             int
 	sshKeysPath         string
@@ -64,6 +65,12 @@ func WithWorkspace(mountPoint, tag string, uid, gid int) Option {
 		c.workspaceUID = uid
 		c.workspaceGID = gid
 	})
+}
+
+// WithWorkspaceReadOnly makes the workspace virtiofs mount read-only inside the
+// guest. The mount is performed with MS_RDONLY so guest processes cannot write.
+func WithWorkspaceReadOnly(readOnly bool) Option {
+	return optionFunc(func(c *config) { c.workspaceReadOnly = readOnly })
 }
 
 // WithMountRetries sets the maximum number of retries for workspace mount.

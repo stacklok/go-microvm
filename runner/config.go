@@ -57,4 +57,6 @@ type VirtioFSMount struct {
 	Tag string `json:"tag"`
 	// HostPath is the host directory path.
 	HostPath string `json:"path"`
+	// ReadOnly makes the mount read-only inside the guest.
+	ReadOnly bool `json:"read_only,omitempty"`
 }

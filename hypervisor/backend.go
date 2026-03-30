@@ -90,4 +90,5 @@ type PortForward struct {
 type FilesystemMount struct {
 	Tag      string
 	HostPath string
+	ReadOnly bool
 }

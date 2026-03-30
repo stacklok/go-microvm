@@ -125,11 +125,12 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		}
 	}
 
-	// 3b. Inject VM config for the guest init (e.g. /tmp size).
-	// Only written when a non-default value is configured, keeping the
-	// file absent for callers that rely on the built-in 256 MiB default.
-	if cfg.tmpSizeMiB > 0 {
-		vmCfgHook := hooks.InjectVMConfig(vmconfig.Config{TmpSizeMiB: cfg.tmpSizeMiB})
+	// 3b. Inject VM config for the guest init (e.g. /tmp size, mount flags).
+	// Only written when non-default values are configured, keeping the
+	// file absent for callers that rely on built-in defaults.
+	guestVMCfg := buildVMConfig(cfg)
+	if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 {
+		vmCfgHook := hooks.InjectVMConfig(guestVMCfg)
 		if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
 			return nil, fmt.Errorf("inject vm config: %w", err)
 		}
@@ -395,10 +396,24 @@ func toHypervisorPorts(ports []PortForward) []hypervisor.PortForward {
 	return out
 }
 
+func buildVMConfig(cfg *config) vmconfig.Config {
+	var vc vmconfig.Config
+	vc.TmpSizeMiB = cfg.tmpSizeMiB
+	for _, m := range cfg.virtioFS {
+		if m.ReadOnly {
+			vc.VirtioFSMounts = append(vc.VirtioFSMounts, vmconfig.VirtioFSMountInfo{
+				Tag:      m.Tag,
+				ReadOnly: true,
+			})
+		}
+	}
+	return vc
+}
+
 func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 	out := make([]hypervisor.FilesystemMount, len(mounts))
 	for i, m := range mounts {
-		out[i] = hypervisor.FilesystemMount{Tag: m.Tag, HostPath: m.HostPath}
+		out[i] = hypervisor.FilesystemMount{Tag: m.Tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly}
 	}
 	return out
 }

@@ -27,7 +27,7 @@ func TestWorkspaceReturnsErrorForInvalidMount(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("test must run as non-root")
 	}
-	err := Workspace(slog.Default(), t.TempDir()+"/ws", "nonexistent-tag", 1000, 1000, 1)
+	err := Workspace(slog.Default(), t.TempDir()+"/ws", "nonexistent-tag", 1000, 1000, 1, false)
 	assert.Error(t, err)
 }
 
