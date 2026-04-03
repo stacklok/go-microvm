@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -167,7 +168,7 @@ func TestExtractTar_DirectoriesAndFiles(t *testing.T) {
 	buf := createTarBuffer(t, entries)
 	dst := t.TempDir()
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.NoError(t, err)
 
 	// Verify directory was created.
@@ -212,7 +213,7 @@ func TestExtractTar_Symlinks(t *testing.T) {
 	buf := createTarBuffer(t, entries)
 	dst := t.TempDir()
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.NoError(t, err)
 
 	// Verify the symlink exists and points to the right target.
@@ -304,7 +305,7 @@ func TestExtractTar_SkipsPathTraversal(t *testing.T) {
 	require.NoError(t, err)
 
 	dst := t.TempDir()
-	err = extractTar(&buf, dst)
+	err = extractTar(context.Background(), &buf, dst)
 	require.NoError(t, err)
 
 	// The malicious entry should not have been extracted.
@@ -356,7 +357,7 @@ func TestExtractTar_PreservesOwnershipBestEffort(t *testing.T) {
 	buf := createTarBuffer(t, entries)
 	dst := t.TempDir()
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.NoError(t, err)
 
 	// Verify files were extracted regardless of uid/gid.
@@ -544,7 +545,7 @@ func TestExtractHardlink_ValidLink(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.NoError(t, err)
 
 	origInfo, err := os.Lstat(filepath.Join(dst, "original.txt"))
@@ -567,7 +568,7 @@ func TestExtractHardlink_SourceOutsideRootfs(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hardlink")
 	assert.Contains(t, err.Error(), "outside rootfs")
@@ -587,7 +588,7 @@ func TestExtractHardlink_SourceIsSymlink(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err = extractTar(buf, dst)
+	err = extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing hardlink to symlink")
 }
@@ -606,7 +607,7 @@ func TestExtractHardlink_SourceIsDirectory(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err = extractTar(buf, dst)
+	err = extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing hardlink to non-regular file")
 }
@@ -621,7 +622,7 @@ func TestExtractHardlink_SourceNotExtracted(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stat hardlink source")
 }
@@ -644,7 +645,7 @@ func TestExtractHardlink_TargetIsExistingSymlink(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err = extractTar(buf, dst)
+	err = extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing to write through symlink")
 }
@@ -663,7 +664,7 @@ func TestExtractSymlink_AbsoluteEscapeAttempt(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "points outside rootfs")
 }
@@ -678,7 +679,7 @@ func TestExtractSymlink_RelativeEscapeAttempt(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "points outside rootfs")
 }
@@ -696,7 +697,7 @@ func TestExtractSymlink_ReplacesExistingFile(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.NoError(t, err)
 
 	// "overwrite" should now be a symlink to "target.txt".
@@ -721,7 +722,7 @@ func TestExtractSymlink_RefusesToReplaceDirectory(t *testing.T) {
 	}
 	buf := createTarBuffer(t, entries)
 
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing to replace directory with symlink")
 }
@@ -837,15 +838,20 @@ func TestExtractTar_EmptyArchive(t *testing.T) {
 	t.Parallel()
 
 	// Create an empty tar archive (no entries).
+	// Empty layers are legitimate in OCI images (produced by ENV, LABEL, CMD, etc.).
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	err := tw.Close()
 	require.NoError(t, err)
 
 	dst := t.TempDir()
-	err = extractTar(&buf, dst)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty or contains no valid entries")
+	err = extractTar(context.Background(), &buf, dst)
+	require.NoError(t, err)
+
+	// Destination directory should be empty (no files extracted).
+	entries, err := os.ReadDir(dst)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
 
 func TestExtractTar_UnsupportedEntryType(t *testing.T) {
@@ -860,7 +866,7 @@ func TestExtractTar_UnsupportedEntryType(t *testing.T) {
 	buf := createTarBuffer(t, entries)
 
 	dst := t.TempDir()
-	err := extractTar(buf, dst)
+	err := extractTar(context.Background(), buf, dst)
 	require.NoError(t, err)
 
 	// FIFO should not exist.
@@ -919,7 +925,7 @@ func TestExtractImageLayered_BasicExtraction(t *testing.T) {
 	lc := NewLayerCache(cacheDir)
 	dst := t.TempDir()
 
-	err := extractImageLayered(img, dst, lc)
+	err := extractImageLayered(context.Background(), img, dst, lc)
 	require.NoError(t, err)
 
 	// Verify files from both layers are present.
@@ -956,7 +962,7 @@ func TestExtractImageLayered_SharedLayers(t *testing.T) {
 
 	// Extract first image.
 	dst1 := t.TempDir()
-	err := extractImageLayered(img1, dst1, lc)
+	err := extractImageLayered(context.Background(), img1, dst1, lc)
 	require.NoError(t, err)
 
 	// Get the base layer DiffID to check cache state.
@@ -969,7 +975,7 @@ func TestExtractImageLayered_SharedLayers(t *testing.T) {
 
 	// Extract second image — base layer should be a cache hit.
 	dst2 := t.TempDir()
-	err = extractImageLayered(img2, dst2, lc)
+	err = extractImageLayered(context.Background(), img2, dst2, lc)
 	require.NoError(t, err)
 
 	// Verify both images have the shared base content.
@@ -1017,7 +1023,7 @@ func TestExtractImageLayered_Whiteouts(t *testing.T) {
 	lc := NewLayerCache(cacheDir)
 	dst := t.TempDir()
 
-	err := extractImageLayered(img, dst, lc)
+	err := extractImageLayered(context.Background(), img, dst, lc)
 	require.NoError(t, err)
 
 	// keep.txt should still exist.
@@ -1059,7 +1065,7 @@ func TestExtractImageLayered_UpperLayerOverridesFile(t *testing.T) {
 	lc := NewLayerCache(cacheDir)
 	dst := t.TempDir()
 
-	err := extractImageLayered(img, dst, lc)
+	err := extractImageLayered(context.Background(), img, dst, lc)
 	require.NoError(t, err)
 
 	// Upper layer should win.
@@ -1083,7 +1089,7 @@ func TestExtractImageLayered_Symlinks(t *testing.T) {
 	lc := NewLayerCache(cacheDir)
 	dst := t.TempDir()
 
-	err := extractImageLayered(img, dst, lc)
+	err := extractImageLayered(context.Background(), img, dst, lc)
 	require.NoError(t, err)
 
 	target, err := os.Readlink(filepath.Join(dst, "usr", "bin", "link"))
@@ -1127,4 +1133,94 @@ func TestPullWithFetcher_LayeredExtraction(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, len(layerEntries), "should have 2 cached layers")
+}
+
+// ---------------------------------------------------------------------------
+// Empty layer tests (Bug 1: empty OCI layers are valid no-ops)
+// ---------------------------------------------------------------------------
+
+func TestExtractTarSharedLimit_EmptyArchive(t *testing.T) {
+	t.Parallel()
+
+	// Empty tar archive — should succeed (empty layers are valid OCI artifacts).
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := tw.Close()
+	require.NoError(t, err)
+
+	remaining := &atomic.Int64{}
+	remaining.Store(maxExtractSize)
+
+	dst := t.TempDir()
+	err = extractTarSharedLimit(context.Background(), &buf, dst, remaining)
+	require.NoError(t, err)
+
+	entries, err := os.ReadDir(dst)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestExtractImageLayered_EmptyLayers(t *testing.T) {
+	t.Parallel()
+
+	// Create a real layer with content + an empty layer (simulates ENV/LABEL/CMD).
+	realLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "app/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "app/main", typeflag: tar.TypeReg, mode: 0o755, content: "#!/bin/sh\necho hello"},
+	})
+
+	emptyLayer := createLayerFromEntries(t, nil)
+
+	img := createImageFromLayers(t, realLayer, emptyLayer)
+
+	cacheDir := t.TempDir()
+	lc := NewLayerCache(cacheDir)
+	dst := t.TempDir()
+
+	err := extractImageLayered(context.Background(), img, dst, lc)
+	require.NoError(t, err)
+
+	// Verify the real layer's content is present.
+	data, err := os.ReadFile(filepath.Join(dst, "app", "main"))
+	require.NoError(t, err)
+	assert.Equal(t, "#!/bin/sh\necho hello", string(data))
+}
+
+// ---------------------------------------------------------------------------
+// Context cancellation tests (Bug 2: extraction respects context)
+// ---------------------------------------------------------------------------
+
+func TestExtractTar_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	entries := []tarEntry{
+		{name: "file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "data"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	dst := t.TempDir()
+	err := extractTar(ctx, buf, dst)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestExtractTarSharedLimit_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	entries := []tarEntry{
+		{name: "file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "data"},
+	}
+	buf := createTarBuffer(t, entries)
+
+	remaining := &atomic.Int64{}
+	remaining.Store(maxExtractSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	dst := t.TempDir()
+	err := extractTarSharedLimit(ctx, buf, dst, remaining)
+	require.ErrorIs(t, err, context.Canceled)
 }
