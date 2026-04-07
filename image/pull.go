@@ -17,6 +17,11 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -40,6 +45,8 @@ func Pull(ctx context.Context, imageRef string, cache *Cache) (*RootFS, error) {
 // which tries the local Docker/Podman daemon first before falling back to
 // remote registry pull.
 func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher ImageFetcher) (*RootFS, error) {
+	tracer := otel.Tracer("github.com/stacklok/go-microvm")
+
 	if fetcher == nil {
 		fetcher = NewLocalThenRemoteFetcher()
 	}
@@ -54,15 +61,24 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	// because daemon.Image() does a full "docker save" export.
 	if cached := cache.LookupRef(ref.String()); cached != nil {
 		slog.Debug("using ref-indexed cache hit", "ref", ref.String(), "path", cached.Path)
+		_, span := tracer.Start(ctx, "microvm.image.CacheLookup",
+			trace.WithAttributes(attribute.Bool("microvm.image.cache_hit", true)))
+		span.End()
 		return cached, nil
 	}
 
 	slog.Debug("pulling image", "ref", ref.String())
 
+	// Fetch image from daemon or registry.
+	_, fetchSpan := tracer.Start(ctx, "microvm.image.Fetch")
 	img, err := fetcher.Pull(ctx, ref.String())
 	if err != nil {
+		fetchSpan.RecordError(err)
+		fetchSpan.SetStatus(codes.Error, err.Error())
+		fetchSpan.End()
 		return nil, fmt.Errorf("pull image %q: %w", imageRef, err)
 	}
+	fetchSpan.End()
 
 	// Compute the manifest digest for cache keying.
 	digest, err := img.Digest()
@@ -78,6 +94,9 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	if cache != nil {
 		if cachedPath, ok := cache.Get(digestStr); ok {
 			slog.Debug("using cached rootfs", "path", cachedPath)
+			_, span := tracer.Start(ctx, "microvm.image.CacheLookup",
+				trace.WithAttributes(attribute.Bool("microvm.image.cache_hit", true)))
+			span.End()
 			ociCfg, err := extractOCIConfig(img)
 			if err != nil {
 				return nil, fmt.Errorf("extract OCI config: %w", err)
@@ -109,26 +128,40 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	// Extract the filesystem. When a cache is available, use layered
 	// extraction to benefit from per-layer caching. Falls back to flat
 	// extraction if layered extraction fails.
+	_, extractSpan := tracer.Start(ctx, "microvm.image.Extract")
 	if cache != nil {
 		lc := cache.LayerCache()
+		extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", true))
 		if err := extractImageLayered(ctx, img, tmpDir, lc); err != nil {
 			slog.Warn("layered extraction failed, falling back to flat extraction", "err", err)
+			extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", false))
 			// Clean tmpDir contents before retrying with flat extraction.
 			_ = os.RemoveAll(tmpDir)
 			if tmpDir, err = cache.TempDir(); err != nil {
+				extractSpan.RecordError(err)
+				extractSpan.SetStatus(codes.Error, err.Error())
+				extractSpan.End()
 				return nil, fmt.Errorf("create temp dir for rootfs: %w", err)
 			}
 			if err := extractImage(ctx, img, tmpDir); err != nil {
 				_ = os.RemoveAll(tmpDir)
+				extractSpan.RecordError(err)
+				extractSpan.SetStatus(codes.Error, err.Error())
+				extractSpan.End()
 				return nil, fmt.Errorf("extract image layers: %w", err)
 			}
 		}
 	} else {
+		extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", false))
 		if err := extractImage(ctx, img, tmpDir); err != nil {
 			_ = os.RemoveAll(tmpDir)
+			extractSpan.RecordError(err)
+			extractSpan.SetStatus(codes.Error, err.Error())
+			extractSpan.End()
 			return nil, fmt.Errorf("extract image layers: %w", err)
 		}
 	}
+	extractSpan.End()
 
 	// Ensure the rootfs root directory itself is world-accessible and has
 	// the override_stat xattr. The root dir is created by os.MkdirTemp
@@ -144,8 +177,12 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	// modify the rootfs in place without a COW clone.
 	rootfsPath := tmpDir
 	if cache != nil {
+		_, cacheSpan := tracer.Start(ctx, "microvm.image.CacheStore")
 		if err := cache.Put(digestStr, tmpDir); err != nil {
 			_ = os.RemoveAll(tmpDir)
+			cacheSpan.RecordError(err)
+			cacheSpan.SetStatus(codes.Error, err.Error())
+			cacheSpan.End()
 			return nil, fmt.Errorf("cache rootfs: %w", err)
 		}
 		// After Put, the canonical path is in the cache.
@@ -154,6 +191,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		}
 		// Record ref→digest mapping and OCI config for next-run fast path.
 		cache.StoreRef(ref.String(), digestStr, ociCfg)
+		cacheSpan.End()
 	}
 
 	return &RootFS{Path: rootfsPath, Config: ociCfg}, nil

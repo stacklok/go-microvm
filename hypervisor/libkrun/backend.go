@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/stacklok/go-microvm/extract"
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/image"
@@ -111,7 +114,13 @@ func (b *Backend) validate() error {
 
 // Start launches the VM via the go-microvm-runner subprocess.
 func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hypervisor.VMHandle, error) {
+	tracer := otel.Tracer("github.com/stacklok/go-microvm")
+	ctx, span := tracer.Start(ctx, "microvm.backend.Start")
+	defer span.End()
+
 	if err := b.validate(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -119,21 +128,33 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 	libDir := b.libDir
 
 	if b.runtime != nil {
+		_, rtSpan := tracer.Start(ctx, "microvm.backend.ResolveRuntime")
 		runtimeDir, err := b.runtime.Ensure(ctx, b.cacheDir)
 		if err != nil {
+			rtSpan.RecordError(err)
+			rtSpan.SetStatus(codes.Error, err.Error())
+			rtSpan.End()
 			return nil, fmt.Errorf("resolve runtime: %w", err)
 		}
 		candidate := filepath.Join(runtimeDir, extract.RunnerBinaryName)
 		if _, err := os.Stat(candidate); err != nil {
+			rtSpan.RecordError(err)
+			rtSpan.SetStatus(codes.Error, err.Error())
+			rtSpan.End()
 			return nil, fmt.Errorf("resolve runtime: %s not found at %s: %w", extract.RunnerBinaryName, candidate, err)
 		}
 		runnerPath = candidate
 		libDir = runtimeDir
+		rtSpan.End()
 	}
 
 	if b.firmware != nil {
+		_, fwSpan := tracer.Start(ctx, "microvm.backend.ResolveFirmware")
 		fwDir, err := b.firmware.Ensure(ctx, b.cacheDir)
 		if err != nil {
+			fwSpan.RecordError(err)
+			fwSpan.SetStatus(codes.Error, err.Error())
+			fwSpan.End()
 			return nil, fmt.Errorf("resolve firmware: %w", err)
 		}
 		if libDir != "" {
@@ -141,6 +162,7 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 		} else {
 			libDir = fwDir
 		}
+		fwSpan.End()
 	}
 
 	var netSocket string
@@ -170,6 +192,8 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 
 	proc, err := spawner.Spawn(ctx, runCfg)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("spawn runner: %w", err)
 	}
 

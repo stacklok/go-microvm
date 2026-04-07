@@ -14,6 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -212,6 +217,15 @@ func (c *Client) CopyFrom(ctx context.Context, remotePath, localPath string) err
 // or the context is cancelled. This is used to wait for the guest VM's
 // SSH server to come up after boot.
 func (c *Client) WaitForReady(ctx context.Context) error {
+	tracer := otel.Tracer("github.com/stacklok/go-microvm")
+	ctx, span := tracer.Start(ctx, "microvm.SSHWaitReady",
+		trace.WithAttributes(
+			attribute.String("ssh.host", c.host),
+			attribute.Int("ssh.port", int(c.port)),
+			attribute.String("ssh.user", c.user),
+		))
+	defer span.End()
+
 	slog.Info("waiting for SSH to become ready",
 		"host", c.host,
 		"port", c.port,
@@ -221,15 +235,25 @@ func (c *Client) WaitForReady(ctx context.Context) error {
 	ticker := time.NewTicker(sshWaitPollInterval)
 	defer ticker.Stop()
 
+	probeCount := 0
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("context cancelled waiting for SSH: %w", ctx.Err())
+			err := fmt.Errorf("context cancelled waiting for SSH: %w", ctx.Err())
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
 		case <-ticker.C:
+			probeCount++
 			if err := c.probe(ctx); err != nil {
 				slog.Debug("SSH not ready yet", "error", err)
+				span.AddEvent("ssh.probe_failed", trace.WithAttributes(
+					attribute.Int("ssh.probe_count", probeCount),
+					attribute.String("error", err.Error()),
+				))
 				continue
 			}
+			span.SetAttributes(attribute.Int("ssh.probes_total", probeCount))
 			slog.Info("SSH is ready",
 				"host", c.host,
 				"port", c.port,
