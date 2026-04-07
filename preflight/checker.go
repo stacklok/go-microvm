@@ -14,6 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Check represents a single preflight verification.
@@ -71,9 +76,20 @@ func (c *checker) Register(check Check) {
 // are collected and returned as a combined error. Non-required check failures
 // are logged as warnings but do not cause RunAll to return an error.
 func (c *checker) RunAll(ctx context.Context) error {
+	tracer := otel.Tracer("github.com/stacklok/go-microvm")
+	ctx, span := tracer.Start(ctx, "microvm.preflight.RunAll",
+		trace.WithAttributes(attribute.Int("preflight.check_count", len(c.checks))))
+	defer span.End()
+
 	var errs []error
 
 	for _, check := range c.checks {
+		_, checkSpan := tracer.Start(ctx, "microvm.preflight.Check",
+			trace.WithAttributes(
+				attribute.String("preflight.check.name", check.Name),
+				attribute.Bool("preflight.check.required", check.Required),
+			))
+
 		slog.Debug("running preflight check",
 			"name", check.Name,
 			"description", check.Description,
@@ -81,7 +97,9 @@ func (c *checker) RunAll(ctx context.Context) error {
 		)
 
 		if err := check.Run(ctx); err != nil {
+			checkSpan.RecordError(err)
 			if check.Required {
+				checkSpan.SetStatus(codes.Error, err.Error())
 				slog.Error("preflight check failed",
 					"name", check.Name,
 					"error", err,
@@ -96,10 +114,14 @@ func (c *checker) RunAll(ctx context.Context) error {
 		} else {
 			slog.Debug("preflight check passed", "name", check.Name)
 		}
+		checkSpan.End()
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("preflight checks failed: %w", errors.Join(errs...))
+		combinedErr := fmt.Errorf("preflight checks failed: %w", errors.Join(errs...))
+		span.RecordError(combinedErr)
+		span.SetStatus(codes.Error, combinedErr.Error())
+		return combinedErr
 	}
 
 	return nil

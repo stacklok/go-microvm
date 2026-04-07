@@ -27,6 +27,11 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hooks"
 	"github.com/stacklok/go-microvm/hypervisor"
@@ -42,10 +47,24 @@ import (
 // point for the happy path. For more control, use [Create] followed by
 // explicit lifecycle management.
 func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
+	tracer := otel.Tracer("github.com/stacklok/go-microvm")
+	ctx, rootSpan := tracer.Start(ctx, "microvm.Run",
+		trace.WithAttributes(
+			attribute.String("microvm.image", imageRef),
+		))
+	defer rootSpan.End()
+
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt.apply(cfg)
 	}
+
+	rootSpan.SetAttributes(
+		attribute.String("microvm.name", cfg.name),
+		attribute.Int("microvm.cpus", int(cfg.cpus)),
+		attribute.Int("microvm.memory_mib", int(cfg.memory)),
+	)
+
 	if cfg.cleanDataDir {
 		if err := cleanDataDir(cfg); err != nil {
 			return nil, err
@@ -87,23 +106,40 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 
 	// 1. Preflight checks.
-	slog.Debug("running preflight checks")
-	if err := cfg.preflight.RunAll(ctx); err != nil {
-		return nil, fmt.Errorf("preflight: %w", err)
+	{
+		ctx, span := tracer.Start(ctx, "microvm.Preflight")
+		slog.Debug("running preflight checks")
+		if err := cfg.preflight.RunAll(ctx); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, fmt.Errorf("preflight: %w", err)
+		}
+		span.End()
 	}
 
 	// 2. Obtain rootfs: use pre-built path or pull OCI image.
 	var rootfs *image.RootFS
-	if cfg.rootfsPath != "" {
-		slog.Debug("using pre-built rootfs", "path", cfg.rootfsPath)
-		rootfs = &image.RootFS{Path: cfg.rootfsPath, Config: nil}
-	} else {
-		slog.Debug("pulling image", "ref", imageRef)
-		var err error
-		rootfs, err = image.PullWithFetcher(ctx, imageRef, cfg.imageCache, cfg.imageFetcher)
-		if err != nil {
-			return nil, fmt.Errorf("pull image: %w", err)
+	{
+		ctx, span := tracer.Start(ctx, "microvm.ImagePull",
+			trace.WithAttributes(attribute.String("microvm.image_ref", imageRef)))
+		if cfg.rootfsPath != "" {
+			slog.Debug("using pre-built rootfs", "path", cfg.rootfsPath)
+			span.SetAttributes(attribute.Bool("microvm.image.prebuilt", true))
+			rootfs = &image.RootFS{Path: cfg.rootfsPath, Config: nil}
+		} else {
+			slog.Debug("pulling image", "ref", imageRef)
+			var err error
+			rootfs, err = image.PullWithFetcher(ctx, imageRef, cfg.imageCache, cfg.imageFetcher)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
+				return nil, fmt.Errorf("pull image: %w", err)
+			}
+			span.SetAttributes(attribute.Bool("microvm.image.from_cache", rootfs.FromCache))
 		}
+		span.End()
 	}
 
 	// 2b. COW-clone cached rootfs so hooks and PrepareRootFS never
@@ -111,29 +147,45 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	// writes .krun_config.json into the rootfs, so we must always
 	// clone — not just when hooks are present.
 	if rootfs.FromCache {
+		_, span := tracer.Start(ctx, "microvm.RootfsClone")
 		workDir := filepath.Join(cfg.dataDir, "rootfs-work")
 		if err := rootfspkg.CloneDir(rootfs.Path, workDir); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
 			return nil, fmt.Errorf("clone rootfs: %w", err)
 		}
 		rootfs = &image.RootFS{Path: workDir, Config: rootfs.Config}
+		span.End()
 	}
 
 	// 3. Run rootfs hooks (no-op on happy path).
-	for _, hook := range cfg.rootfsHooks {
-		if err := hook(rootfs.Path, rootfs.Config); err != nil {
-			return nil, fmt.Errorf("rootfs hook: %w", err)
+	{
+		_, span := tracer.Start(ctx, "microvm.RootfsHooks",
+			trace.WithAttributes(attribute.Int("microvm.hook_count", len(cfg.rootfsHooks))))
+		for _, hook := range cfg.rootfsHooks {
+			if err := hook(rootfs.Path, rootfs.Config); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
+				return nil, fmt.Errorf("rootfs hook: %w", err)
+			}
 		}
-	}
 
-	// 3b. Inject VM config for the guest init (e.g. /tmp size, mount flags).
-	// Only written when non-default values are configured, keeping the
-	// file absent for callers that rely on built-in defaults.
-	guestVMCfg := buildVMConfig(cfg)
-	if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 {
-		vmCfgHook := hooks.InjectVMConfig(guestVMCfg)
-		if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
-			return nil, fmt.Errorf("inject vm config: %w", err)
+		// 3b. Inject VM config for the guest init (e.g. /tmp size, mount flags).
+		// Only written when non-default values are configured, keeping the
+		// file absent for callers that rely on built-in defaults.
+		guestVMCfg := buildVMConfig(cfg)
+		if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 {
+			vmCfgHook := hooks.InjectVMConfig(guestVMCfg)
+			if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
+				return nil, fmt.Errorf("inject vm config: %w", err)
+			}
 		}
+		span.End()
 	}
 
 	// 4. Prepare rootfs via backend.
@@ -142,12 +194,22 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		backend = libkrun.NewBackend()
 	}
 	initCfg := buildInitConfig(rootfs.Config, cfg)
-	preparedPath, err := backend.PrepareRootFS(ctx, rootfs.Path, initCfg)
-	if err != nil {
-		return nil, fmt.Errorf("prepare rootfs: %w", err)
-	}
-	if !isWithin(rootfs.Path, preparedPath) && preparedPath != rootfs.Path {
-		return nil, fmt.Errorf("backend returned rootfs path outside original: %s", preparedPath)
+	var preparedPath string
+	{
+		_, span := tracer.Start(ctx, "microvm.BackendPrepare")
+		var err error
+		preparedPath, err = backend.PrepareRootFS(ctx, rootfs.Path, initCfg)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, fmt.Errorf("prepare rootfs: %w", err)
+		}
+		if !isWithin(rootfs.Path, preparedPath) && preparedPath != rootfs.Path {
+			span.End()
+			return nil, fmt.Errorf("backend returned rootfs path outside original: %s", preparedPath)
+		}
+		span.End()
 	}
 
 	// 5. Start networking.
@@ -160,15 +222,21 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	// external provider and pass its socket path to the runner instead.
 	var netSocket string
 	if cfg.netProvider != nil {
+		_, span := tracer.Start(ctx, "microvm.NetworkStart")
 		slog.Debug("starting custom network provider")
 		netCfg := cfg.buildNetConfig()
 		if err := cfg.netProvider.Start(ctx, netCfg); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
 			return nil, fmt.Errorf("networking: %w", err)
 		}
 		netSocket = cfg.netProvider.SocketPath()
+		span.End()
 	}
 
 	// 6. Start VM via backend.
+	_, vmSpawnSpan := tracer.Start(ctx, "microvm.VMSpawn")
 	slog.Debug("starting VM")
 	var netEndpoint hypervisor.NetEndpoint
 	if netSocket != "" {
@@ -192,8 +260,12 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		if cfg.netProvider != nil {
 			cfg.netProvider.Stop()
 		}
+		vmSpawnSpan.RecordError(err)
+		vmSpawnSpan.SetStatus(codes.Error, err.Error())
+		vmSpawnSpan.End()
 		return nil, fmt.Errorf("spawn vm: %w", err)
 	}
+	vmSpawnSpan.End()
 
 	vm := &VM{
 		name:       cfg.name,
@@ -229,13 +301,20 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 
 	// 7. Post-boot hooks (no-op on happy path).
-	for _, hook := range cfg.postBootHooks {
-		if err := hook(ctx, vm); err != nil {
-			if stopErr := vm.Stop(ctx); stopErr != nil {
-				slog.Warn("failed to stop VM after post-boot hook failure", "error", stopErr)
+	{
+		_, span := tracer.Start(ctx, "microvm.PostBoot")
+		for _, hook := range cfg.postBootHooks {
+			if err := hook(ctx, vm); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
+				if stopErr := vm.Stop(ctx); stopErr != nil {
+					slog.Warn("failed to stop VM after post-boot hook failure", "error", stopErr)
+				}
+				return nil, fmt.Errorf("post-boot hook: %w", err)
 			}
-			return nil, fmt.Errorf("post-boot hook: %w", err)
 		}
+		span.End()
 	}
 
 	slog.Info("VM running", "name", cfg.name, "id", handle.ID())
