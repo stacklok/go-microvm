@@ -24,7 +24,7 @@ import (
 
 const (
 	// sshWaitPollInterval is the interval between SSH readiness polls.
-	sshWaitPollInterval = 2 * time.Second
+	sshWaitPollInterval = 200 * time.Millisecond
 
 	// defaultSSHTimeout is the default timeout for SSH connection attempts.
 	defaultSSHTimeout = 10 * time.Second
@@ -232,10 +232,21 @@ func (c *Client) WaitForReady(ctx context.Context) error {
 		"user", c.user,
 	)
 
+	// Probe immediately before starting the ticker to avoid wasting
+	// up to one full poll interval when SSH is already ready.
+	probeCount := 1
+	if err := c.probe(ctx); err == nil {
+		span.SetAttributes(attribute.Int("ssh.probes_total", probeCount))
+		slog.Info("SSH is ready",
+			"host", c.host,
+			"port", c.port,
+		)
+		return nil
+	}
+
 	ticker := time.NewTicker(sshWaitPollInterval)
 	defer ticker.Stop()
 
-	probeCount := 0
 	for {
 		select {
 		case <-ctx.Done():
