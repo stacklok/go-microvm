@@ -17,8 +17,8 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
 	github.com/vishvananda/netlink v1.3.1
-	go.opentelemetry.io/otel v1.40.0
-	go.opentelemetry.io/otel/trace v1.40.0
+	go.opentelemetry.io/otel v1.43.0
+	go.opentelemetry.io/otel/trace v1.43.0
 	golang.org/x/crypto v0.49.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.42.0
@@ -57,7 +57,7 @@ require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
-	go.opentelemetry.io/otel/metric v1.40.0 // indirect
+	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.40.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect
 	golang.org/x/mod v0.34.0 // indirect
