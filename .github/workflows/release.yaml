@@ -161,7 +161,7 @@ jobs:
           name: go-microvm-firmware-linux-${{ matrix.arch }}
 
       - name: Install oras
-        uses: oras-project/setup-oras@v1
+        uses: oras-project/setup-oras@v2
 
       - name: Login to ghcr.io
         run: |
@@ -199,7 +199,7 @@ jobs:
           name: go-microvm-firmware-darwin-${{ matrix.arch }}
 
       - name: Install oras
-        uses: oras-project/setup-oras@v1
+        uses: oras-project/setup-oras@v2
 
       - name: Login to ghcr.io
         run: |
