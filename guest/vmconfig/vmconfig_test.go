@@ -32,6 +32,14 @@ func TestReadFrom(t *testing.T) {
 			want:    Config{TmpSizeMiB: 512},
 		},
 		{
+			name:    "virtiofs mounts with read-only",
+			content: strPtr(`{"virtiofs_mounts":[{"tag":"workspace","read_only":true},{"tag":"data"}]}`),
+			want: Config{VirtioFSMounts: []VirtioFSMountInfo{
+				{Tag: "workspace", ReadOnly: true},
+				{Tag: "data"},
+			}},
+		},
+		{
 			name:    "empty JSON object",
 			content: strPtr(`{}`),
 			want:    Config{},

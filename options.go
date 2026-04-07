@@ -42,6 +42,11 @@ type PortForward struct {
 type VirtioFSMount struct {
 	Tag      string
 	HostPath string
+	// ReadOnly makes the mount read-only inside the guest. Enforcement is
+	// guest-side via MS_RDONLY mount flags; libkrun does not currently
+	// support host-side read-only virtiofs. A compromised guest kernel
+	// could bypass this restriction.
+	ReadOnly bool
 }
 
 // EgressPolicy restricts outbound VM traffic to specific DNS hostnames.

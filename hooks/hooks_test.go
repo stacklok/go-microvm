@@ -59,6 +59,14 @@ func TestInjectVMConfig(t *testing.T) {
 			name: "zero-value config",
 			cfg:  vmconfig.Config{},
 		},
+		{
+			name: "config with read-only mounts",
+			cfg: vmconfig.Config{
+				VirtioFSMounts: []vmconfig.VirtioFSMountInfo{
+					{Tag: "workspace", ReadOnly: true},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

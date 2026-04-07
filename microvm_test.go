@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/internal/testutil"
@@ -92,7 +93,7 @@ func TestToHypervisorMounts(t *testing.T) {
 
 	mounts := []VirtioFSMount{
 		{Tag: "workspace", HostPath: "/home/user/src"},
-		{Tag: "data", HostPath: "/var/data"},
+		{Tag: "data", HostPath: "/var/data", ReadOnly: true},
 	}
 
 	result := toHypervisorMounts(mounts)
@@ -100,8 +101,10 @@ func TestToHypervisorMounts(t *testing.T) {
 	require.Len(t, result, 2)
 	assert.Equal(t, "workspace", result[0].Tag)
 	assert.Equal(t, "/home/user/src", result[0].HostPath)
+	assert.False(t, result[0].ReadOnly)
 	assert.Equal(t, "data", result[1].Tag)
 	assert.Equal(t, "/var/data", result[1].HostPath)
+	assert.True(t, result[1].ReadOnly)
 }
 
 func TestToHypervisorMounts_Empty(t *testing.T) {
@@ -109,6 +112,40 @@ func TestToHypervisorMounts_Empty(t *testing.T) {
 
 	result := toHypervisorMounts(nil)
 	assert.Empty(t, result)
+}
+
+func TestBuildVMConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty config produces zero value", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		vc := buildVMConfig(cfg)
+		assert.Zero(t, vc.TmpSizeMiB)
+		assert.Empty(t, vc.VirtioFSMounts)
+	})
+
+	t.Run("only read-only mounts are included", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.virtioFS = []VirtioFSMount{
+			{Tag: "workspace", HostPath: "/src"},
+			{Tag: "data", HostPath: "/data", ReadOnly: true},
+			{Tag: "config", HostPath: "/cfg", ReadOnly: true},
+		}
+		vc := buildVMConfig(cfg)
+		require.Len(t, vc.VirtioFSMounts, 2)
+		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "data", ReadOnly: true}, vc.VirtioFSMounts[0])
+		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "config", ReadOnly: true}, vc.VirtioFSMounts[1])
+	})
+
+	t.Run("tmpSizeMiB is propagated", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.tmpSizeMiB = 512
+		vc := buildVMConfig(cfg)
+		assert.Equal(t, uint32(512), vc.TmpSizeMiB)
+	})
 }
 
 // --- Mock types for Run() tests ---

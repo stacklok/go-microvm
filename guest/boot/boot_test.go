@@ -26,6 +26,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, "workspace", cfg.workspaceTag)
 	assert.Equal(t, 1000, cfg.workspaceUID)
 	assert.Equal(t, 1000, cfg.workspaceGID)
+	assert.False(t, cfg.workspaceReadOnly)
 	assert.Equal(t, 5, cfg.mountRetries)
 	assert.Equal(t, 22, cfg.sshPort)
 	assert.Equal(t, "/home/sandbox/.ssh/authorized_keys", cfg.sshKeysPath)
@@ -36,6 +37,18 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, uint32(1000), cfg.userUID)
 	assert.Equal(t, uint32(1000), cfg.userGID)
 	assert.True(t, cfg.lockdownRoot)
+}
+
+func TestWithWorkspaceReadOnly(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	assert.False(t, cfg.workspaceReadOnly)
+
+	WithWorkspaceReadOnly(true).apply(cfg)
+	assert.True(t, cfg.workspaceReadOnly)
+
+	WithWorkspaceReadOnly(false).apply(cfg)
+	assert.False(t, cfg.workspaceReadOnly)
 }
 
 func TestWithWorkspace(t *testing.T) {

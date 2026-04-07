@@ -64,6 +64,7 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 		cfg.workspaceUID,
 		cfg.workspaceGID,
 		cfg.mountRetries,
+		cfg.workspaceReadOnly,
 	); err != nil {
 		logger.Warn("workspace mount failed, continuing without workspace", "error", err)
 	}

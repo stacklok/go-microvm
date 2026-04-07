@@ -117,6 +117,7 @@ func TestBackend_Start_Success(t *testing.T) {
 		},
 		FilesystemMounts: []hypervisor.FilesystemMount{
 			{Tag: "workspace", HostPath: "/tmp/src"},
+			{Tag: "data", HostPath: "/tmp/data", ReadOnly: true},
 		},
 		NetEndpoint: hypervisor.NetEndpoint{
 			Type: hypervisor.NetEndpointUnixSocket,

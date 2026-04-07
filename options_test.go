@@ -145,6 +145,21 @@ func TestWithVirtioFS(t *testing.T) {
 	require.Len(t, cfg.virtioFS, 1)
 	assert.Equal(t, "workspace", cfg.virtioFS[0].Tag)
 	assert.Equal(t, "/home/user/src", cfg.virtioFS[0].HostPath)
+	assert.False(t, cfg.virtioFS[0].ReadOnly)
+}
+
+func TestWithVirtioFS_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	WithVirtioFS(
+		VirtioFSMount{Tag: "data", HostPath: "/var/data", ReadOnly: true},
+	).apply(cfg)
+
+	require.Len(t, cfg.virtioFS, 1)
+	assert.Equal(t, "data", cfg.virtioFS[0].Tag)
+	assert.Equal(t, "/var/data", cfg.virtioFS[0].HostPath)
+	assert.True(t, cfg.virtioFS[0].ReadOnly)
 }
 
 func TestWithVirtioFS_Appends(t *testing.T) {

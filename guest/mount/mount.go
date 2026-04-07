@@ -88,18 +88,32 @@ func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
 
 // Workspace mounts a virtiofs share at the given mount point, retrying up to
 // maxRetries times to allow the host to expose the filesystem. On success the
-// mount point is chowned to uid:gid.
-func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries int) error {
+// mount point is chowned to uid:gid. When readOnly is true the mount is
+// performed with MS_RDONLY so the guest cannot write to it.
+func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries int, readOnly bool) error {
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
 		return fmt.Errorf("creating workspace mount point %s: %w", mountPoint, err)
 	}
 
+	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
+	if readOnly {
+		flags |= syscall.MS_RDONLY
+	}
+
 	var lastErr error
 	for i := range maxRetries {
-		lastErr = syscall.Mount(tag, mountPoint, "virtiofs", syscall.MS_NOSUID|syscall.MS_NODEV, "")
+		lastErr = syscall.Mount(tag, mountPoint, "virtiofs", flags, "")
 		if lastErr == nil {
-			if err := os.Chown(mountPoint, uid, gid); err != nil {
-				return fmt.Errorf("chown workspace %s: %w", mountPoint, err)
+			// Skip chown on read-only mounts: chown returns EROFS on a
+			// filesystem mounted with MS_RDONLY. Ownership is cosmetic
+			// anyway since the mount prevents writes regardless.
+			if !readOnly {
+				if err := os.Chown(mountPoint, uid, gid); err != nil {
+					// Clean up the mount so we don't leave a mounted
+					// filesystem that the caller thinks failed.
+					_ = syscall.Unmount(mountPoint, 0)
+					return fmt.Errorf("chown workspace %s: %w", mountPoint, err)
+				}
 			}
 			return nil
 		}
