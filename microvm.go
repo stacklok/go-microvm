@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
 	rootfspkg "github.com/stacklok/go-microvm/rootfs"
@@ -234,6 +235,32 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		netSocket = cfg.netProvider.SocketPath()
 		span.End()
 	}
+
+	// 5b. Validate and set override_stat xattrs on virtiofs mount entries so
+	// the guest sees correct ownership (macOS + Linux; no-op on other platforms).
+	for _, m := range cfg.virtioFS {
+		if m.OverrideUID < 0 || m.OverrideGID < 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must be non-negative", m.Tag)
+		}
+		if m.OverrideUID == 0 && m.OverrideGID > 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideGID set without OverrideUID", m.Tag)
+		}
+	}
+	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
+	for _, m := range cfg.virtioFS {
+		if m.OverrideUID > 0 && !m.ReadOnly {
+			gid := m.OverrideGID
+			if gid <= 0 {
+				gid = m.OverrideUID
+			}
+			if err := xattr.SetOverrideStatTree(m.HostPath, m.OverrideUID, gid); err != nil {
+				xattrSpan.RecordError(err)
+				slog.Warn("failed to set override_stat on virtiofs mount",
+					"tag", m.Tag, "path", m.HostPath, "error", err)
+			}
+		}
+	}
+	xattrSpan.End()
 
 	// 6. Start VM via backend.
 	_, vmSpawnSpan := tracer.Start(ctx, "microvm.VMSpawn")

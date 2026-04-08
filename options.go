@@ -47,6 +47,18 @@ type VirtioFSMount struct {
 	// support host-side read-only virtiofs. A compromised guest kernel
 	// could bypass this restriction.
 	ReadOnly bool
+	// OverrideUID, when > 0, causes go-microvm to set the
+	// user.containers.override_stat xattr on every file and directory under
+	// HostPath before the VM starts. This makes libkrun's virtiofs FUSE
+	// server report the given UID/GID to the guest instead of the real
+	// host values. Symlinks are skipped for safety.
+	// A zero value means "no override." Since 0 is the zero value for int,
+	// overriding to UID 0 (root) is not supported through this field.
+	// Ignored for ReadOnly mounts.
+	OverrideUID int
+	// OverrideGID sets the group ID for the override_stat xattr.
+	// When 0 and OverrideUID > 0, defaults to OverrideUID.
+	OverrideGID int
 }
 
 // EgressPolicy restricts outbound VM traffic to specific DNS hostnames.
