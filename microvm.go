@@ -77,9 +77,6 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 
 	// Egress policy validation.
 	if cfg.egressPolicy != nil {
-		if len(cfg.egressPolicy.AllowedHosts) == 0 {
-			return nil, fmt.Errorf("egress policy: AllowedHosts must not be empty")
-		}
 		for i, h := range cfg.egressPolicy.AllowedHosts {
 			if h.Name == "" {
 				return nil, fmt.Errorf("egress policy: AllowedHosts[%d].Name must not be empty", i)
