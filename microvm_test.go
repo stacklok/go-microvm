@@ -627,6 +627,24 @@ func TestBuildNetConfig_WithEgressPolicy(t *testing.T) {
 	assert.Equal(t, uint8(0), netCfg.EgressPolicy.AllowedHosts[1].Protocol)
 }
 
+func TestBuildNetConfig_WithEgressPolicy_DenyAll(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.egressPolicy = &EgressPolicy{
+		AllowedHosts: []EgressHost{},
+	}
+	// Run() sets this when egressPolicy is non-nil; simulate that here
+	// since buildNetConfig doesn't do validation.
+	cfg.firewallDefaultAction = firewall.Deny
+
+	netCfg := cfg.buildNetConfig()
+
+	require.NotNil(t, netCfg.EgressPolicy)
+	assert.Empty(t, netCfg.EgressPolicy.AllowedHosts)
+	assert.Equal(t, firewall.Deny, netCfg.FirewallDefaultAction)
+}
+
 func TestBuildNetConfig_Empty(t *testing.T) {
 	t.Parallel()
 
@@ -642,7 +660,7 @@ func TestBuildNetConfig_Empty(t *testing.T) {
 
 // --- Egress validation tests ---
 
-func TestRun_EgressPolicy_EmptyHosts(t *testing.T) {
+func TestRun_EgressPolicy_EmptyHosts_DenyAll(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -651,8 +669,10 @@ func TestRun_EgressPolicy_EmptyHosts(t *testing.T) {
 		WithDataDir(dataDir),
 		WithEgressPolicy(EgressPolicy{AllowedHosts: nil}),
 	)
+	// Should NOT fail on empty AllowedHosts validation — empty means deny-all.
+	// It will fail later (e.g. image pull), but not at egress policy validation.
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "AllowedHosts must not be empty")
+	assert.NotContains(t, err.Error(), "AllowedHosts must not be empty")
 }
 
 func TestRun_EgressPolicy_EmptyName(t *testing.T) {
