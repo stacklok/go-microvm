@@ -93,6 +93,24 @@ func TestInjectVMConfig(t *testing.T) {
 	}
 }
 
+func TestInjectVMConfig_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	// Guard the delegation chain: InjectVMConfig -> InjectFile.
+	// If InjectFile's symlink safety regresses, this test catches it.
+	rootfs := t.TempDir()
+	outside := t.TempDir()
+	stageSymlink(t, rootfs, "etc", outside)
+
+	hook := InjectVMConfig(vmconfig.Config{TmpSizeMiB: 512})
+	err := hook(rootfs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, statErr := os.Stat(filepath.Join(outside, "go-microvm.json"))
+	assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+}
+
 func TestInjectFile_WritesContent(t *testing.T) {
 	t.Parallel()
 
