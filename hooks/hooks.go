@@ -131,17 +131,22 @@ func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 
 // InjectFile returns a RootFSHook that writes content to the specified guest
 // path inside the rootfs with the given permissions. Parent directories are
-// created as needed.
+// created as needed. Symlink components — whether in parent directories or at
+// the leaf — are refused so that a rootfs planted with hostile symlinks cannot
+// redirect the write outside the rootfs.
 func InjectFile(guestPath string, content []byte, perm os.FileMode) func(string, *image.OCIConfig) error {
 	return func(rootfsPath string, _ *image.OCIConfig) error {
 		dst, err := pathutil.Contains(rootfsPath, guestPath)
 		if err != nil {
 			return fmt.Errorf("validate path %s: %w", guestPath, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := image.MkdirAllNoSymlink(rootfsPath, filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("create parent dirs for %s: %w", guestPath, err)
 		}
-		if err := os.WriteFile(dst, content, perm); err != nil {
+		if err := image.ValidateNoSymlinkLeaf(dst); err != nil {
+			return fmt.Errorf("validate %s: %w", guestPath, err)
+		}
+		if err := writeFileNoFollow(dst, content, perm); err != nil {
 			return fmt.Errorf("write %s: %w", guestPath, err)
 		}
 		return nil
