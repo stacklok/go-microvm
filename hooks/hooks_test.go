@@ -390,6 +390,45 @@ func TestInjectEnvFile_RejectsPathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "path traversal")
 }
 
+func TestInjectEnvFile_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parent directory is a symlink", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "etc", outside)
+
+		hook := InjectEnvFile("/etc/env", map[string]string{"FOO": "bar"})
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		_, statErr := os.Stat(filepath.Join(outside, "env"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("leaf is a symlink to a host file", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755))
+
+		victim := filepath.Join(t.TempDir(), "victim")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+		require.NoError(t, os.Symlink(victim, filepath.Join(rootfs, "etc", "env")))
+
+		hook := InjectEnvFile("/etc/env", map[string]string{"FOO": "evil"})
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got), "victim must not be overwritten")
+	})
+}
+
 // failingChown returns a ChownFunc that returns an error when the path
 // ends with the given suffix, and succeeds otherwise.
 func failingChown(pathSuffix string) ChownFunc {

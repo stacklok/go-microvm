@@ -192,10 +192,13 @@ func InjectEnvFile(guestPath string, envMap map[string]string) func(string, *ima
 		if err != nil {
 			return fmt.Errorf("validate path %s: %w", guestPath, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := image.MkdirAllNoSymlink(rootfsPath, filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("create parent dirs for %s: %w", guestPath, err)
 		}
-		if err := os.WriteFile(dst, []byte(buf.String()), 0o600); err != nil {
+		if err := image.ValidateNoSymlinkLeaf(dst); err != nil {
+			return fmt.Errorf("validate %s: %w", guestPath, err)
+		}
+		if err := writeFileNoFollow(dst, []byte(buf.String()), 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", guestPath, err)
 		}
 		return nil
