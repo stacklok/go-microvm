@@ -427,6 +427,70 @@ func TestInjectAuthorizedKeys_RejectsPathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "path traversal")
 }
 
+func TestInjectAuthorizedKeys_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	chown, _ := recordingChown()
+	pubKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST test@example.com"
+
+	t.Run("home component is an absolute symlink out of rootfs", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "home", outside)
+
+		hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		// Nothing must have been written under the symlink target.
+		_, statErr := os.Stat(filepath.Join(outside, "sandbox", ".ssh", "authorized_keys"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("dot-ssh component is a relative escaping symlink", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
+		// .ssh points two levels up, escaping the rootfs lexically after resolution.
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "home/sandbox/.ssh", outside)
+
+		hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		_, statErr := os.Stat(filepath.Join(outside, "authorized_keys"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("authorized_keys leaf is a symlink to a host file", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		sshDir := filepath.Join(rootfs, "home", "sandbox", ".ssh")
+		require.NoError(t, os.MkdirAll(sshDir, 0o700))
+
+		// An attacker-planted symlink at the leaf points to an arbitrary host file.
+		victim := filepath.Join(t.TempDir(), "victim")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+		require.NoError(t, os.Symlink(victim, filepath.Join(sshDir, "authorized_keys")))
+
+		hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+
+		// The host-side file must be untouched.
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got), "victim must not be overwritten")
+	})
+}
+
 func TestInjectEnvFile_RejectsInvalidKeyNames(t *testing.T) {
 	t.Parallel()
 

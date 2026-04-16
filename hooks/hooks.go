@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/image"
@@ -86,7 +87,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err != nil {
 			return fmt.Errorf("validate .ssh path: %w", err)
 		}
-		if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		if err := image.MkdirAllNoSymlink(rootfsPath, sshDir, 0o700); err != nil {
 			return fmt.Errorf("create .ssh dir: %w", err)
 		}
 		if err := cfg.chown(sshDir, cfg.uid, cfg.gid); err != nil {
@@ -98,7 +99,10 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err != nil {
 			return fmt.Errorf("validate authorized_keys path: %w", err)
 		}
-		if err := os.WriteFile(akPath, []byte(pubKey+"\n"), 0o600); err != nil {
+		if err := image.ValidateNoSymlinkLeaf(akPath); err != nil {
+			return fmt.Errorf("validate authorized_keys: %w", err)
+		}
+		if err := writeFileNoFollow(akPath, []byte(pubKey+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write authorized_keys: %w", err)
 		}
 		if err := cfg.chown(akPath, cfg.uid, cfg.gid); err != nil {
@@ -107,6 +111,22 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 
 		return nil
 	}
+}
+
+// writeFileNoFollow writes data to path with O_NOFOLLOW on the final open,
+// refusing to write through a symlink leaf even if one races into place
+// between the caller's validation and this open. Creates the file if absent,
+// truncates if present. Parent directories must already exist.
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // InjectFile returns a RootFSHook that writes content to the specified guest
