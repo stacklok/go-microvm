@@ -453,6 +453,35 @@ func TestInjectEnvFile_RejectsInvalidKeyNames(t *testing.T) {
 	}
 }
 
+// stageSymlink places a symlink at rootfs/linkPath pointing to target.
+// Parent directories of linkPath inside rootfs are created as 0o755.
+// Use this to build rootfs fixtures that exercise symlink-following behavior
+// in hook code — e.g. a malicious layer shipping `home/sandbox/.ssh` as a
+// symlink to somewhere outside the rootfs.
+func stageSymlink(t *testing.T, rootfs, linkPath, target string) {
+	t.Helper()
+	abs := filepath.Join(rootfs, linkPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+	require.NoError(t, os.Symlink(target, abs))
+}
+
+func TestStageSymlink(t *testing.T) {
+	t.Parallel()
+
+	rootfs := t.TempDir()
+	outside := t.TempDir()
+
+	stageSymlink(t, rootfs, "home/sandbox/.ssh", outside)
+
+	info, err := os.Lstat(filepath.Join(rootfs, "home", "sandbox", ".ssh"))
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, ".ssh should be a symlink")
+
+	dest, err := os.Readlink(filepath.Join(rootfs, "home", "sandbox", ".ssh"))
+	require.NoError(t, err)
+	assert.Equal(t, outside, dest)
+}
+
 func TestShellEscape(t *testing.T) {
 	t.Parallel()
 
