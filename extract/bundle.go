@@ -6,13 +6,33 @@ package extract
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/gofrs/flock"
 )
+
+// manifestName is the per-extract manifest file. It records the bundle
+// hash plus a per-file SHA-256 of every extracted artifact so Ensure can
+// re-verify the cache contents on subsequent calls and re-extract if
+// any file has been tampered with or replaced.
+const manifestName = ".manifest.json"
+
+// manifest is the on-disk format written alongside extracted files.
+type manifest struct {
+	// Version is the bundle version string.
+	Version string `json:"version"`
+	// Hash is the aggregate bundle hash (same value used in the cache
+	// directory name). Kept for quick mismatch detection before walking
+	// individual files.
+	Hash string `json:"hash"`
+	// Files maps the bundle-relative file name to its SHA-256 hex digest.
+	Files map[string]string `json:"files"`
+}
 
 // File describes a single file to extract.
 type File struct {
@@ -90,12 +110,19 @@ func (b *Bundle) Ensure(cacheDir string) (string, error) {
 		}
 	}()
 
-	// Extract all files.
+	// Extract all files and collect per-file hashes for the manifest.
+	m := manifest{
+		Version: b.version,
+		Hash:    hash,
+		Files:   make(map[string]string, len(b.files)),
+	}
 	for _, f := range b.files {
 		if extractErr := b.extractFile(tmpDir, f); extractErr != nil {
 			err = extractErr
 			return "", fmt.Errorf("extract %s: %w", f.Name, extractErr)
 		}
+		fileHash := sha256.Sum256(f.Content)
+		m.Files[f.Name] = hex.EncodeToString(fileHash[:])
 	}
 
 	// Create symlinks.
@@ -106,11 +133,27 @@ func (b *Bundle) Ensure(cacheDir string) (string, error) {
 		}
 	}
 
-	// Write version file.
-	versionPath := filepath.Join(tmpDir, ".version")
-	if writeErr := os.WriteFile(versionPath, []byte(hash), 0o644); writeErr != nil {
+	// Write manifest atomically last so a partial extraction never looks
+	// valid to isValid.
+	manifestData, mErr := json.Marshal(m)
+	if mErr != nil {
+		err = mErr
+		return "", fmt.Errorf("marshal manifest: %w", mErr)
+	}
+	manifestPath := filepath.Join(tmpDir, manifestName)
+	if writeErr := os.WriteFile(manifestPath, manifestData, 0o600); writeErr != nil {
 		err = writeErr
-		return "", fmt.Errorf("write version file: %w", writeErr)
+		return "", fmt.Errorf("write manifest: %w", writeErr)
+	}
+
+	// If a previous invalid extraction exists at targetDir (e.g. tampered
+	// content detected by isValid), remove it before rename. The lock
+	// held above serializes this against other callers.
+	if _, statErr := os.Lstat(targetDir); statErr == nil {
+		if rmErr := os.RemoveAll(targetDir); rmErr != nil {
+			err = rmErr
+			return "", fmt.Errorf("remove stale target: %w", rmErr)
+		}
 	}
 
 	// Atomic rename to target.
@@ -134,14 +177,43 @@ func (b *Bundle) computeHash() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// isValid checks whether targetDir exists and contains a .version file
-// matching the expected hash.
+// isValid checks whether targetDir is a complete, unaltered extraction
+// for the expected bundle hash. It requires a manifest with a matching
+// bundle hash and every listed file's SHA-256 matching its current on-
+// disk content. Any mismatch causes a re-extract.
 func (b *Bundle) isValid(targetDir, hash string) bool {
-	data, err := os.ReadFile(filepath.Join(targetDir, ".version"))
+	data, err := os.ReadFile(filepath.Join(targetDir, manifestName))
 	if err != nil {
 		return false
 	}
-	return string(data) == hash
+	var m manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	if m.Hash != hash {
+		return false
+	}
+	for name, want := range m.Files {
+		got, err := hashFileOnDisk(filepath.Join(targetDir, name))
+		if err != nil || got != want {
+			return false
+		}
+	}
+	return true
+}
+
+// hashFileOnDisk returns the SHA-256 hex digest of the file at path.
+func hashFileOnDisk(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // extractFile writes a single file atomically via a temp file and rename.
