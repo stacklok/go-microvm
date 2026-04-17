@@ -28,8 +28,9 @@ func TestIsExpectedProcess_Self(t *testing.T) {
 	}
 }
 
-func TestIsExpectedProcess_SelfBaseName(t *testing.T) {
-	// Should match by base name even if full paths differ.
+func TestIsExpectedProcess_BaseNameFallbackForRelative(t *testing.T) {
+	// A relative/bare binary name still matches by base name — that is the
+	// documented fallback. Absolute mismatches must no longer pass.
 	pid := os.Getpid()
 
 	selfExe, err := os.Executable()
@@ -37,8 +38,21 @@ func TestIsExpectedProcess_SelfBaseName(t *testing.T) {
 		t.Fatalf("failed to get self executable: %v", err)
 	}
 	baseName := selfExe[len(selfExe)-len("runner.test"):] // last component
-	if !isExpectedProcess(pid, "/some/other/path/"+baseName) {
-		t.Errorf("isExpectedProcess with different dir but same base name should return true")
+	if !isExpectedProcess(pid, baseName) {
+		t.Errorf("isExpectedProcess with bare base name should match self")
+	}
+}
+
+func TestIsExpectedProcess_AbsolutePathMismatchFails(t *testing.T) {
+	pid := os.Getpid()
+
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("failed to get self executable: %v", err)
+	}
+	baseName := selfExe[len(selfExe)-len("runner.test"):]
+	if isExpectedProcess(pid, "/some/other/path/"+baseName) {
+		t.Errorf("absolute path with different dir must not match even when base name matches")
 	}
 }
 
