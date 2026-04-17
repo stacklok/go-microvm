@@ -312,6 +312,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		ls.State.Name = cfg.name
 		if pid, pidErr := pidFromID(handle.ID()); pidErr == nil {
 			ls.State.PID = pid
+			ls.State.PIDStartTime = time.Now().UTC()
 		} else {
 			slog.Warn("could not persist VM PID", "id", handle.ID(), "error", pidErr)
 		}
