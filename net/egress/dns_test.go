@@ -146,11 +146,112 @@ func TestParseDNSResponse(t *testing.T) {
 
 	qname, ips, ttl, err := ParseDNSResponse(payload)
 	require.NoError(t, err)
-	assert.Equal(t, "example.com.", qname)
+	assert.Equal(t, "example.com", qname)
 	assert.Len(t, ips, 2)
 	assert.Equal(t, "93.184.216.34", ips[0].String())
 	assert.Equal(t, "93.184.216.35", ips[1].String())
 	assert.Equal(t, uint32(60), ttl) // minimum TTL
+}
+
+func TestParseDNSResponse_DropsOutOfBailiwickAnswers(t *testing.T) {
+	t.Parallel()
+
+	// Question for example.com; attacker-controlled response slips an A
+	// record with a different owner name (typical out-of-bailiwick injection
+	// attempt to smuggle an internal IP into dynamic rules).
+	msg := &dns.Msg{
+		MsgHdr: dns.MsgHdr{Id: 0x1234, Response: true},
+		Question: []dns.Question{
+			{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+		},
+		Answer: []dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("93.184.216.34"),
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{Name: "internal.local.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("169.254.169.254"),
+			},
+		},
+	}
+	payload, err := msg.Pack()
+	require.NoError(t, err)
+
+	qname, ips, _, err := ParseDNSResponse(payload)
+	require.NoError(t, err)
+	assert.Equal(t, "example.com", qname)
+	require.Len(t, ips, 1)
+	assert.Equal(t, "93.184.216.34", ips[0].String())
+}
+
+func TestParseDNSResponse_FollowsCNAMEChain(t *testing.T) {
+	t.Parallel()
+
+	// Legitimate CNAME chain: example.com -> cdn.example.net -> 1.2.3.4.
+	// The A record's owner matches the CNAME target, which is reachable
+	// from the question via the chain, so the IP is accepted.
+	msg := &dns.Msg{
+		MsgHdr: dns.MsgHdr{Id: 0x2345, Response: true},
+		Question: []dns.Question{
+			{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+		},
+		Answer: []dns.RR{
+			&dns.CNAME{
+				Hdr:    dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: "cdn.example.net.",
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{Name: "cdn.example.net.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("1.2.3.4"),
+			},
+		},
+	}
+	payload, err := msg.Pack()
+	require.NoError(t, err)
+
+	qname, ips, _, err := ParseDNSResponse(payload)
+	require.NoError(t, err)
+	assert.Equal(t, "example.com", qname)
+	require.Len(t, ips, 1)
+	assert.Equal(t, "1.2.3.4", ips[0].String())
+}
+
+func TestParseDNSResponse_DropsUnreachableCNAMEA(t *testing.T) {
+	t.Parallel()
+
+	// An A record whose owner is NOT reachable via any CNAME chain from
+	// the question must be dropped even if another A record from the same
+	// name-chain is valid.
+	msg := &dns.Msg{
+		MsgHdr: dns.MsgHdr{Id: 0x3456, Response: true},
+		Question: []dns.Question{
+			{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+		},
+		Answer: []dns.RR{
+			&dns.CNAME{
+				Hdr:    dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: "cdn.example.net.",
+			},
+			// A record for an unrelated name slipped into the Answer section.
+			&dns.A{
+				Hdr: dns.RR_Header{Name: "attacker.example.net.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("10.0.0.1"),
+			},
+			// Legitimate A record at the CNAME target.
+			&dns.A{
+				Hdr: dns.RR_Header{Name: "cdn.example.net.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("1.2.3.4"),
+			},
+		},
+	}
+	payload, err := msg.Pack()
+	require.NoError(t, err)
+
+	_, ips, _, err := ParseDNSResponse(payload)
+	require.NoError(t, err)
+	require.Len(t, ips, 1)
+	assert.Equal(t, "1.2.3.4", ips[0].String())
 }
 
 func TestParseDNSResponse_NoARecords(t *testing.T) {
