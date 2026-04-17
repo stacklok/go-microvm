@@ -21,10 +21,19 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/internal/testutil"
+	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/preflight"
 	"github.com/stacklok/go-microvm/state"
 )
+
+// sentinelProvider is a minimal net.Provider used by tests to assert that
+// a caller-supplied provider survives auto-wiring without being replaced.
+type sentinelProvider struct{}
+
+func (*sentinelProvider) Start(_ context.Context, _ propnet.Config) error { return nil }
+func (*sentinelProvider) SocketPath() string                              { return "" }
+func (*sentinelProvider) Stop()                                           {}
 
 // --- Pure function tests ---
 
@@ -659,6 +668,53 @@ func TestBuildNetConfig_Empty(t *testing.T) {
 }
 
 // --- Egress validation tests ---
+
+func TestWireDefaultProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no firewall config leaves provider nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		wireDefaultProvider(cfg)
+		assert.Nil(t, cfg.netProvider)
+	})
+
+	t.Run("egress policy auto-wires provider", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.egressPolicy = &EgressPolicy{}
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider)
+	})
+
+	t.Run("firewall rules alone auto-wire provider", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.firewallRules = []firewall.Rule{{Direction: firewall.Egress, Action: firewall.Allow}}
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider,
+			"firewall-only config must auto-wire a provider; otherwise rules go unenforced")
+	})
+
+	t.Run("deny default alone auto-wires provider", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.firewallDefaultAction = firewall.Deny
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider,
+			"deny-default config must auto-wire a provider to actually deny")
+	})
+
+	t.Run("explicit provider is not overwritten", func(t *testing.T) {
+		t.Parallel()
+		existing := &sentinelProvider{}
+		cfg := defaultConfig()
+		cfg.netProvider = existing
+		cfg.firewallDefaultAction = firewall.Deny
+		wireDefaultProvider(cfg)
+		assert.Same(t, existing, cfg.netProvider)
+	})
+}
 
 func TestRun_EgressPolicy_EmptyHosts_DenyAll(t *testing.T) {
 	t.Parallel()

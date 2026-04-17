@@ -98,10 +98,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 			slog.Warn("egress policy overrides firewall default action to Deny")
 		}
 		cfg.firewallDefaultAction = firewall.Deny
-		if cfg.netProvider == nil {
-			cfg.netProvider = hosted.NewProvider()
-		}
 	}
+
+	wireDefaultProvider(cfg)
 
 	// 1. Preflight checks.
 	{
@@ -354,6 +353,21 @@ const (
 	// runner termination.
 	staleTermPoll = 250 * time.Millisecond
 )
+
+// wireDefaultProvider auto-creates a hosted network provider when any
+// firewall configuration (egress policy, static rules, or a non-Allow
+// default action) is set but no provider was supplied explicitly. The
+// default runner-side networking path does not enforce firewall rules,
+// so without this the caller's deny-default would silently degrade to
+// allow-all. No-op when a provider is already set.
+func wireDefaultProvider(cfg *config) {
+	firewallConfigured := cfg.egressPolicy != nil ||
+		len(cfg.firewallRules) > 0 ||
+		cfg.firewallDefaultAction != firewall.Allow
+	if firewallConfigured && cfg.netProvider == nil {
+		cfg.netProvider = hosted.NewProvider()
+	}
+}
 
 func cleanDataDir(cfg *config) error {
 	if cfg.dataDir == "" {
