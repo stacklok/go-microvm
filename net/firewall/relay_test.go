@@ -98,6 +98,41 @@ func TestRelay_EndToEnd(t *testing.T) {
 	<-errCh
 }
 
+func TestRelay_RejectsOversizedLengthPrefix(t *testing.T) {
+	t.Parallel()
+
+	filter := NewFilter(nil, Allow)
+	relay := NewRelay(filter)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, _ := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Write a 4-byte big-endian length prefix claiming a 2 MiB frame —
+	// well above maxFrameSize. Do not send any payload.
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], 2*1024*1024)
+	_, err := vmApp.Write(lenBuf[:])
+	require.NoError(t, err)
+
+	// The relay must terminate with a protocol-violation error rather
+	// than attempt a multi-MiB allocation and hang on ReadFull.
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds maximum")
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not terminate on oversized length prefix")
+	}
+}
+
 func TestRelay_DroppedFrame(t *testing.T) {
 	t.Parallel()
 
@@ -178,6 +213,52 @@ func TestRelay_ARPPassthroughWithDenyAll(t *testing.T) {
 	m := relay.Metrics()
 	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
 	assert.Equal(t, uint64(0), m.FramesDropped.Load())
+
+	cancel()
+	<-errCh
+}
+
+func TestRelay_DropsNonIPv4UnderDenyDefault(t *testing.T) {
+	t.Parallel()
+
+	// Deny-default with no DNS hook. IPv6 (and any other non-IPv4, non-ARP
+	// EtherType) would previously pass through as "hdr == nil" without
+	// being checked against the filter. Callers who set FirewallDefault
+	// Deny expect a closed egress; honor that for v6 frames.
+	filter := NewFilter(nil, Deny)
+	relay := NewRelay(filter)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Build a minimal IPv6-tagged frame (EtherType 0x86DD).
+	v6Frame := make([]byte, 60)
+	binary.BigEndian.PutUint16(v6Frame[12:14], 0x86DD)
+
+	// Send the v6 frame first; it must be dropped.
+	_, err := vmApp.Write(buildPrefixedFrame(v6Frame))
+	require.NoError(t, err)
+
+	// Follow with an ARP frame; it must still pass (existing guarantee).
+	arpFrame := make([]byte, 42)
+	binary.BigEndian.PutUint16(arpFrame[12:14], 0x0806)
+	_, err = vmApp.Write(buildPrefixedFrame(arpFrame))
+	require.NoError(t, err)
+
+	got := readPrefixedFrame(t, netApp)
+	assert.Equal(t, arpFrame, got, "ARP should still pass under deny-default")
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(1), m.FramesDropped.Load(), "v6 frame must have been dropped")
 
 	cancel()
 	<-errCh

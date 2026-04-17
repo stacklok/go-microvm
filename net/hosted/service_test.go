@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,39 @@ import (
 	"github.com/stacklok/go-microvm/internal/testutil"
 	propnet "github.com/stacklok/go-microvm/net"
 )
+
+func TestNewHTTPServer_AppliesDefaults(t *testing.T) {
+	t.Parallel()
+
+	srv := newHTTPServer(Service{
+		Port:    4483,
+		Handler: http.NotFoundHandler(),
+	})
+
+	assert.Equal(t, defaultReadHeaderTimeout, srv.ReadHeaderTimeout)
+	assert.Equal(t, defaultReadTimeout, srv.ReadTimeout)
+	assert.Equal(t, defaultWriteTimeout, srv.WriteTimeout)
+	assert.Equal(t, defaultIdleTimeout, srv.IdleTimeout)
+}
+
+func TestNewHTTPServer_RespectsOverrides(t *testing.T) {
+	t.Parallel()
+
+	override := 3 * time.Second
+	srv := newHTTPServer(Service{
+		Port:              4483,
+		Handler:           http.NotFoundHandler(),
+		ReadHeaderTimeout: override,
+		ReadTimeout:       override,
+		WriteTimeout:      override,
+		IdleTimeout:       override,
+	})
+
+	assert.Equal(t, override, srv.ReadHeaderTimeout)
+	assert.Equal(t, override, srv.ReadTimeout)
+	assert.Equal(t, override, srv.WriteTimeout)
+	assert.Equal(t, override, srv.IdleTimeout)
+}
 
 func TestAddServiceBeforeStart(t *testing.T) {
 	t.Parallel()

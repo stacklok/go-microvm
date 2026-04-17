@@ -14,6 +14,19 @@ import (
 	"github.com/stacklok/go-microvm/net/topology"
 )
 
+// Default HTTP server timeouts for hosted services. These protect the
+// host process from a misbehaving or hostile guest that opens
+// connections but stalls the request — classic Slowloris / slow-body
+// patterns — exhausting goroutines and file descriptors in the caller's
+// process. Callers can override any of these per-Service if they ship a
+// streaming handler that legitimately takes longer than the default.
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultReadTimeout       = 30 * time.Second
+	defaultWriteTimeout      = 30 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
+)
+
 // Service describes an HTTP service to expose inside the virtual network.
 //
 // Services always bind to the gateway IP ([topology.GatewayIP], 192.168.127.1)
@@ -27,6 +40,43 @@ type Service struct {
 
 	// Handler is the HTTP handler that serves requests.
 	Handler http.Handler
+
+	// ReadHeaderTimeout bounds the time the server will wait to finish
+	// reading request headers. Zero uses defaultReadHeaderTimeout.
+	ReadHeaderTimeout time.Duration
+
+	// ReadTimeout bounds the total time reading a request including
+	// the body. Zero uses defaultReadTimeout.
+	ReadTimeout time.Duration
+
+	// WriteTimeout bounds the total time writing the response. Zero
+	// uses defaultWriteTimeout.
+	WriteTimeout time.Duration
+
+	// IdleTimeout bounds the time a keep-alive connection may remain
+	// idle between requests. Zero uses defaultIdleTimeout.
+	IdleTimeout time.Duration
+}
+
+// timeoutOrDefault returns user if set, else the fallback default.
+func timeoutOrDefault(user, fallback time.Duration) time.Duration {
+	if user > 0 {
+		return user
+	}
+	return fallback
+}
+
+// newHTTPServer constructs an *http.Server for the given Service with
+// Slowloris-bounding timeouts applied. Zero-valued timeout fields on
+// svc fall back to defaults.
+func newHTTPServer(svc Service) *http.Server {
+	return &http.Server{
+		Handler:           svc.Handler,
+		ReadHeaderTimeout: timeoutOrDefault(svc.ReadHeaderTimeout, defaultReadHeaderTimeout),
+		ReadTimeout:       timeoutOrDefault(svc.ReadTimeout, defaultReadTimeout),
+		WriteTimeout:      timeoutOrDefault(svc.WriteTimeout, defaultWriteTimeout),
+		IdleTimeout:       timeoutOrDefault(svc.IdleTimeout, defaultIdleTimeout),
+	}
 }
 
 // runningService tracks a started service for graceful shutdown.
@@ -63,9 +113,7 @@ func (p *Provider) startServices() error {
 			return fmt.Errorf("listen on %s for service %d: %w", addr, i, err)
 		}
 
-		srv := &http.Server{
-			Handler: svc.Handler,
-		}
+		srv := newHTTPServer(svc)
 
 		p.runningServices = append(p.runningServices, runningService{
 			server:   srv,
