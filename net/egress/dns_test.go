@@ -12,6 +12,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNormalizeDNSName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in, want string
+	}{
+		{"example.com", "example.com"},
+		{"example.com.", "example.com"},
+		{"Example.COM.", "example.com"},
+		{"API.GitHub.com", "api.github.com"},
+		{"", ""},
+		{".", ""},
+		// Only a single trailing dot is stripped; double-trailing is a
+		// malformed name and should not be coerced.
+		{"foo..", "foo."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, normalizeDNSName(tt.in))
+		})
+	}
+}
+
 func TestParseDNSQuery(t *testing.T) {
 	t.Parallel()
 

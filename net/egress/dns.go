@@ -6,9 +6,20 @@ package egress
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/miekg/dns"
 )
+
+// normalizeDNSName returns s lower-cased with a single trailing dot stripped,
+// so that names from DNS wire format (often FQDN with trailing dot) compare
+// consistently against caller-supplied policy names (typically without a
+// trailing dot). DNS names are case-insensitive by RFC 1035.
+func normalizeDNSName(s string) string {
+	s = strings.ToLower(s)
+	s = strings.TrimSuffix(s, ".")
+	return s
+}
 
 // ParseDNSQuery extracts the transaction ID, question name, and query type
 // from a DNS query payload (UDP payload, not including Ethernet/IP/UDP headers).
