@@ -4,6 +4,8 @@
 package image
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,6 +81,8 @@ func TestSafeWalk(t *testing.T) {
 		_, err := SafeWalk(root, "nonexistent/child")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "missing parent")
+		assert.True(t, errors.Is(err, fs.ErrNotExist),
+			"missing-parent error should unwrap to fs.ErrNotExist")
 	})
 
 	t.Run("non-directory parent is refused", func(t *testing.T) {

@@ -103,7 +103,29 @@ func TestApplyWhiteout(t *testing.T) {
 
 		err := applyWhiteout(root, "../../etc/.wh.passwd")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes rootfs")
+		assert.Contains(t, err.Error(), "path traversal")
+	})
+
+	t.Run("refuses to walk through a symlink parent", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+
+		// An attacker-planted layer substitutes etc with a symlink to a
+		// host-owned directory. Before SafeWalk, a subsequent whiteout on
+		// etc/.wh.passwd would RemoveAll through the symlink.
+		outside := t.TempDir()
+		victim := filepath.Join(outside, "passwd")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+		require.NoError(t, os.Symlink(outside, filepath.Join(root, "etc")))
+
+		err := applyWhiteout(root, "etc/.wh.passwd")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		// The host-side file must be untouched.
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got))
 	})
 }
 

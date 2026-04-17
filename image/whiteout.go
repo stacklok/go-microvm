@@ -4,7 +4,9 @@
 package image
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -29,16 +31,25 @@ func isOpaqueWhiteout(name string) bool {
 
 // applyWhiteout removes the file or directory targeted by a whiteout entry.
 // The name parameter is a relative path within the rootfs (e.g., "usr/lib/.wh.oldlib").
+//
+// Parent directory components are validated via SafeWalk, so a symlink
+// planted as an intermediate component cannot redirect the RemoveAll onto
+// the host filesystem. RemoveAll itself does not follow a symlink leaf, so
+// whiteout-on-symlink (a legitimate OCI pattern) still works correctly.
 func applyWhiteout(rootDir, name string) error {
 	dirPart := filepath.Dir(name)
 	base := filepath.Base(name)
 	targetName := strings.TrimPrefix(base, whiteoutPrefix)
+	relPath := filepath.Join(dirPart, targetName)
 
-	fullPath := filepath.Clean(filepath.Join(rootDir, dirPart, targetName))
-
-	// Validate the resolved path stays within rootDir.
-	if rel, err := filepath.Rel(rootDir, fullPath); err != nil || strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("whiteout target escapes rootfs: %s", name)
+	fullPath, err := SafeWalk(rootDir, relPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// A parent directory does not exist — the whiteout target
+			// cannot exist either, so this is a no-op.
+			return nil
+		}
+		return fmt.Errorf("applying whiteout for %s: %w", name, err)
 	}
 
 	slog.Debug("applying whiteout", "target", fullPath)

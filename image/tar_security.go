@@ -69,7 +69,7 @@ func SafeWalk(root, rel string) (string, error) {
 		info, err := os.Lstat(cur)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return "", fmt.Errorf("missing parent directory: %s", cur)
+				return "", fmt.Errorf("missing parent directory %s: %w", cur, err)
 			}
 			return "", fmt.Errorf("stat %s: %w", cur, err)
 		}
