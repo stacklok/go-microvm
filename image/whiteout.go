@@ -62,19 +62,36 @@ func applyWhiteout(rootDir, name string) error {
 
 // applyOpaqueWhiteout removes all entries inside a directory, keeping the directory itself.
 // The dirPath parameter is relative to rootDir (e.g., "usr/lib").
+//
+// Parent directory components are validated via SafeWalk, and the leaf is
+// refused if it is a symlink — os.ReadDir follows symlinks, so a leaf
+// symlink pointing outside the rootfs would otherwise enumerate and remove
+// host files.
 func applyOpaqueWhiteout(rootDir, dirPath string) error {
-	fullDir := filepath.Clean(filepath.Join(rootDir, dirPath))
+	fullDir, err := SafeWalk(rootDir, dirPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("opaque whiteout for %s: %w", dirPath, err)
+	}
 
-	// Validate the resolved path stays within rootDir.
-	if rel, err := filepath.Rel(rootDir, fullDir); err != nil || strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("opaque whiteout target escapes rootfs: %s", dirPath)
+	info, err := os.Lstat(fullDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat opaque whiteout target %s: %w", dirPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to follow symlink for opaque whiteout: %s", dirPath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("opaque whiteout target is not a directory: %s", dirPath)
 	}
 
 	entries, err := os.ReadDir(fullDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return fmt.Errorf("reading directory for opaque whiteout %s: %w", dirPath, err)
 	}
 

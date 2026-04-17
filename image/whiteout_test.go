@@ -170,6 +170,42 @@ func TestApplyOpaqueWhiteout(t *testing.T) {
 
 		err := applyOpaqueWhiteout(root, "../../etc")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes rootfs")
+		assert.Contains(t, err.Error(), "path traversal")
+	})
+
+	t.Run("refuses to walk through a symlink parent", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+
+		outside := t.TempDir()
+		require.NoError(t, os.Symlink(outside, filepath.Join(root, "usr")))
+
+		err := applyOpaqueWhiteout(root, "usr/lib")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+	})
+
+	t.Run("refuses to follow a symlink leaf", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+
+		// The parent is a real dir but the target itself is a symlink
+		// pointing outside the rootfs. os.ReadDir would follow and
+		// enumerate host files without this guard.
+		outside := t.TempDir()
+		victim := filepath.Join(outside, "victim")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+
+		usrDir := filepath.Join(root, "usr")
+		require.NoError(t, os.MkdirAll(usrDir, 0o755))
+		require.NoError(t, os.Symlink(outside, filepath.Join(usrDir, "lib")))
+
+		err := applyOpaqueWhiteout(root, "usr/lib")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got))
 	})
 }
