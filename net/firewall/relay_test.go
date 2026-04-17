@@ -218,6 +218,52 @@ func TestRelay_ARPPassthroughWithDenyAll(t *testing.T) {
 	<-errCh
 }
 
+func TestRelay_DropsNonIPv4UnderDenyDefault(t *testing.T) {
+	t.Parallel()
+
+	// Deny-default with no DNS hook. IPv6 (and any other non-IPv4, non-ARP
+	// EtherType) would previously pass through as "hdr == nil" without
+	// being checked against the filter. Callers who set FirewallDefault
+	// Deny expect a closed egress; honor that for v6 frames.
+	filter := NewFilter(nil, Deny)
+	relay := NewRelay(filter)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, netApp := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Build a minimal IPv6-tagged frame (EtherType 0x86DD).
+	v6Frame := make([]byte, 60)
+	binary.BigEndian.PutUint16(v6Frame[12:14], 0x86DD)
+
+	// Send the v6 frame first; it must be dropped.
+	_, err := vmApp.Write(buildPrefixedFrame(v6Frame))
+	require.NoError(t, err)
+
+	// Follow with an ARP frame; it must still pass (existing guarantee).
+	arpFrame := make([]byte, 42)
+	binary.BigEndian.PutUint16(arpFrame[12:14], 0x0806)
+	_, err = vmApp.Write(buildPrefixedFrame(arpFrame))
+	require.NoError(t, err)
+
+	got := readPrefixedFrame(t, netApp)
+	assert.Equal(t, arpFrame, got, "ARP should still pass under deny-default")
+
+	m := relay.Metrics()
+	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
+	assert.Equal(t, uint64(1), m.FramesDropped.Load(), "v6 frame must have been dropped")
+
+	cancel()
+	<-errCh
+}
+
 func TestRelay_Metrics(t *testing.T) {
 	t.Parallel()
 

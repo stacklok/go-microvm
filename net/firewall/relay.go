@@ -184,11 +184,12 @@ func (r *Relay) forward(ctx context.Context, src, dst net.Conn, dir Direction) e
 			}
 		}
 
-		// When a DNS hook is active, drop non-IPv4 frames that are not
-		// ARP (EtherType 0x0806). This prevents IPv6 from bypassing the
-		// egress policy. Without a DNS hook, non-IPv4 frames pass through
-		// as before (needed for basic network bootstrapping).
-		if hdr == nil && r.dnsHook != nil {
+		// Non-IPv4 frames return hdr == nil from ParseHeaders. Under a
+		// DNS hook or a deny-default filter, drop them (except ARP) so
+		// that IPv6 and exotic EtherTypes cannot bypass the egress policy.
+		// With neither, non-IPv4 frames pass through as before (needed
+		// for basic network bootstrapping on allow-default setups).
+		if hdr == nil && (r.dnsHook != nil || r.filter.defaultAction == Deny) {
 			if len(frameBuf) >= 14 {
 				etherType := binary.BigEndian.Uint16(frameBuf[12:14])
 				if etherType != 0x0806 { // not ARP
