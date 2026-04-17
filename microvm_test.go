@@ -862,6 +862,7 @@ func TestTerminateStaleRunner_AliveProcess_GracefulExit(t *testing.T) {
 		// (after SIGTERM + first poll).
 		return aliveCount <= 1
 	}
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 
@@ -899,6 +900,7 @@ func TestTerminateStaleRunner_AliveProcess_RequiresKill(t *testing.T) {
 	}
 	// Process never exits on its own.
 	cfg.processAlive = func(_ int) bool { return true }
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 
@@ -941,6 +943,7 @@ func TestTerminateStaleRunner_SendsToProcessGroup(t *testing.T) {
 		aliveCount++
 		return aliveCount <= 1
 	}
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 
@@ -948,6 +951,38 @@ func TestTerminateStaleRunner_SendsToProcessGroup(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, receivedPIDs, 1)
 	assert.Equal(t, -55555, receivedPIDs[0], "killProcess should receive negative PID for process group")
+}
+
+func TestTerminateStaleRunner_RecycledPID_Skipped(t *testing.T) {
+	t.Parallel()
+
+	// The state file points at a live PID, but processIsExpected says the
+	// binary at that PID is not the runner (as if the kernel had recycled
+	// the PID onto an unrelated process since state was written). The
+	// function must refuse to signal it.
+	dataDir := t.TempDir()
+
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 77777
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var killCalled bool
+	cfg.killProcess = func(_ int, _ syscall.Signal) error {
+		killCalled = true
+		return nil
+	}
+	cfg.processAlive = func(_ int) bool { return true }
+	cfg.processIsExpected = func(_ int) bool { return false }
+
+	terminateStaleRunner(cfg)
+	assert.False(t, killCalled, "must not signal a recycled PID belonging to an unrelated binary")
 }
 
 func TestTerminateStaleRunner_PID1_Skipped(t *testing.T) {
@@ -973,6 +1008,7 @@ func TestTerminateStaleRunner_PID1_Skipped(t *testing.T) {
 		return nil
 	}
 	cfg.processAlive = func(_ int) bool { return true }
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 	assert.False(t, killCalled, "should not attempt to kill PID 1")

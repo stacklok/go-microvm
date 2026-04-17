@@ -410,6 +410,13 @@ func terminateStaleRunner(cfg *config) {
 		slog.Debug("stale runner already dead", "pid", st.PID)
 		return
 	}
+	if !cfg.processIsExpected(st.PID) {
+		// PID has been recycled onto an unrelated binary since we wrote
+		// the state file. Signalling it would kill the wrong process
+		// group (or fail silently if we lack permission). Bail out.
+		slog.Warn("stale PID does not match expected runner binary, skipping termination", "pid", st.PID)
+		return
+	}
 
 	// Use negative PID to signal the entire process group (PGID == PID
 	// because the runner starts with Setsid: true). This ensures any
