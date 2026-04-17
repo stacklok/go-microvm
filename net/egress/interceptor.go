@@ -16,6 +16,13 @@ const (
 	// if the DNS response has a shorter TTL. This prevents excessive
 	// rule churn from very short TTLs.
 	defaultMinTTL = 60 * time.Second
+
+	// defaultMaxTTL is the maximum TTL applied to dynamic rules, even
+	// if the DNS response advertises a longer TTL. This bounds how long
+	// a resolved IP remains allowed — useful if an upstream server
+	// returns very long TTLs, and as belt-and-suspenders against a
+	// compromised zone returning long-lived rogue answers.
+	defaultMaxTTL = 5 * time.Minute
 )
 
 // DNSInterceptor intercepts DNS traffic at the relay level to enforce
@@ -25,21 +32,47 @@ type DNSInterceptor struct {
 	policy       *Policy
 	dynamicRules *firewall.DynamicRules
 	minTTL       time.Duration
+	maxTTL       time.Duration
 	gatewayIP    [4]byte
+}
+
+// DNSInterceptorOption customizes a DNSInterceptor.
+type DNSInterceptorOption func(*DNSInterceptor)
+
+// WithMinTTL sets the minimum TTL applied to dynamic rules. A zero or
+// negative value leaves the default in place.
+func WithMinTTL(d time.Duration) DNSInterceptorOption {
+	return func(i *DNSInterceptor) {
+		if d > 0 {
+			i.minTTL = d
+		}
+	}
+}
+
+// WithMaxTTL sets the maximum TTL applied to dynamic rules. A zero or
+// negative value disables the cap (any TTL is accepted).
+func WithMaxTTL(d time.Duration) DNSInterceptorOption {
+	return func(i *DNSInterceptor) { i.maxTTL = d }
 }
 
 // NewDNSInterceptor creates an interceptor with the given policy, dynamic
 // rule set, and gateway IP. Only DNS responses from the gateway are
 // snooped to prevent spoofed responses from creating dynamic rules.
-// Dynamic rules created from DNS responses will have at least minTTL
-// duration (use 0 for the default of 60 seconds).
-func NewDNSInterceptor(policy *Policy, dr *firewall.DynamicRules, gatewayIP [4]byte) *DNSInterceptor {
-	return &DNSInterceptor{
+//
+// By default, dynamic rules are clamped to minTTL=60s and maxTTL=5m;
+// override via WithMinTTL / WithMaxTTL.
+func NewDNSInterceptor(policy *Policy, dr *firewall.DynamicRules, gatewayIP [4]byte, opts ...DNSInterceptorOption) *DNSInterceptor {
+	i := &DNSInterceptor{
 		policy:       policy,
 		dynamicRules: dr,
 		minTTL:       defaultMinTTL,
+		maxTTL:       defaultMaxTTL,
 		gatewayIP:    gatewayIP,
 	}
+	for _, o := range opts {
+		o(i)
+	}
+	return i
 }
 
 // HandleEgress processes an outbound DNS query frame. If the queried
@@ -117,6 +150,9 @@ func (d *DNSInterceptor) HandleIngress(frame []byte, hdr *firewall.PacketHeader)
 	ttl := time.Duration(ttlSec) * time.Second
 	if ttl < d.minTTL {
 		ttl = d.minTTL
+	}
+	if d.maxTTL > 0 && ttl > d.maxTTL {
+		ttl = d.maxTTL
 	}
 
 	ports, proto := d.policy.HostPorts(qname)

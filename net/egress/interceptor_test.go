@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+	"time"
 
 	mdns "github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
@@ -302,6 +303,37 @@ func TestDNSInterceptor_ResponseFromNonGateway_Ignored(t *testing.T) {
 
 	assert.Equal(t, 0, dr.Len(),
 		"DNS responses from non-gateway sources must not create dynamic rules")
+}
+
+func TestDNSInterceptor_ClampsTTLAtMaximum(t *testing.T) {
+	t.Parallel()
+
+	policy := NewPolicy([]HostSpec{{Name: "example.com"}})
+	dr := firewall.NewDynamicRules()
+	interceptor := NewDNSInterceptor(policy, dr, testDstIP,
+		WithMinTTL(1*time.Microsecond),
+		WithMaxTTL(5*time.Millisecond),
+	)
+
+	// Response advertises TTL = 1 hour; should be clamped to 5 ms.
+	ips := []net.IP{net.ParseIP("1.2.3.4")}
+	frame := buildDNSResponseFrame(testDstMAC, testSrcMAC, testDstIP, testSrcIP, 12345, "example.com", ips, 3600)
+	hdr := firewall.ParseHeaders(frame)
+
+	interceptor.HandleIngress(frame, hdr)
+
+	probe := &firewall.PacketHeader{
+		DstIP:    [4]byte{1, 2, 3, 4},
+		Protocol: 6,
+		DstPort:  443,
+	}
+	_, ok := dr.Match(firewall.Egress, probe)
+	require.True(t, ok, "rule should be live immediately after ingress")
+
+	// Give the clamp time to elapse; the rule must no longer match.
+	time.Sleep(25 * time.Millisecond)
+	_, ok = dr.Match(firewall.Egress, probe)
+	assert.False(t, ok, "rule should have expired past maxTTL clamp")
 }
 
 func TestDNSInterceptor_ExplicitProtocol_SingleRule(t *testing.T) {

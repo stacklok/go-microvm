@@ -6,9 +6,20 @@ package egress
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/miekg/dns"
 )
+
+// normalizeDNSName returns s lower-cased with a single trailing dot stripped,
+// so that names from DNS wire format (often FQDN with trailing dot) compare
+// consistently against caller-supplied policy names (typically without a
+// trailing dot). DNS names are case-insensitive by RFC 1035.
+func normalizeDNSName(s string) string {
+	s = strings.ToLower(s)
+	s = strings.TrimSuffix(s, ".")
+	return s
+}
 
 // ParseDNSQuery extracts the transaction ID, question name, and query type
 // from a DNS query payload (UDP payload, not including Ethernet/IP/UDP headers).
@@ -52,13 +63,48 @@ func BuildNXDOMAIN(txnID uint16, qname string, qtype uint16) ([]byte, error) {
 
 // ParseDNSResponse extracts the question name, A-record IPs, and minimum
 // TTL from a DNS response payload.
+//
+// Only A records whose owner name is reachable from the question via the
+// response's own CNAME chain are returned. An answer with an unrelated
+// owner name — for example, an injected out-of-bailiwick record — is
+// discarded. Without this filter, a compromised allowed zone could
+// smuggle arbitrary IPs into dynamic egress rules by returning them in
+// the Answer section under any name.
+//
+// The returned qname is normalized (lower-cased, trailing dot stripped).
 func ParseDNSResponse(payload []byte) (qname string, ips []net.IP, ttl uint32, err error) {
 	var msg dns.Msg
 	if err := msg.Unpack(payload); err != nil {
 		return "", nil, 0, fmt.Errorf("unpack DNS response: %w", err)
 	}
 	if len(msg.Question) > 0 {
-		qname = msg.Question[0].Name
+		qname = normalizeDNSName(msg.Question[0].Name)
+	}
+
+	// Build the set of owner names reachable from qname via CNAMEs in this
+	// response. Multi-pass until no new names are added; bounded by the
+	// Answer count so CNAME loops cannot cause infinite iteration.
+	validNames := map[string]struct{}{qname: {}}
+	for i := 0; i < len(msg.Answer); i++ {
+		progress := false
+		for _, rr := range msg.Answer {
+			cn, ok := rr.(*dns.CNAME)
+			if !ok {
+				continue
+			}
+			owner := normalizeDNSName(cn.Hdr.Name)
+			if _, have := validNames[owner]; !have {
+				continue
+			}
+			target := normalizeDNSName(cn.Target)
+			if _, already := validNames[target]; !already {
+				validNames[target] = struct{}{}
+				progress = true
+			}
+		}
+		if !progress {
+			break
+		}
 	}
 
 	var minTTL uint32
@@ -66,6 +112,9 @@ func ParseDNSResponse(payload []byte) (qname string, ips []net.IP, ttl uint32, e
 	for _, rr := range msg.Answer {
 		a, ok := rr.(*dns.A)
 		if !ok {
+			continue
+		}
+		if _, ok := validNames[normalizeDNSName(a.Hdr.Name)]; !ok {
 			continue
 		}
 		ips = append(ips, a.A)
