@@ -21,10 +21,19 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/internal/testutil"
+	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/preflight"
 	"github.com/stacklok/go-microvm/state"
 )
+
+// sentinelProvider is a minimal net.Provider used by tests to assert that
+// a caller-supplied provider survives auto-wiring without being replaced.
+type sentinelProvider struct{}
+
+func (*sentinelProvider) Start(_ context.Context, _ propnet.Config) error { return nil }
+func (*sentinelProvider) SocketPath() string                              { return "" }
+func (*sentinelProvider) Stop()                                           {}
 
 // --- Pure function tests ---
 
@@ -660,6 +669,53 @@ func TestBuildNetConfig_Empty(t *testing.T) {
 
 // --- Egress validation tests ---
 
+func TestWireDefaultProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no firewall config leaves provider nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		wireDefaultProvider(cfg)
+		assert.Nil(t, cfg.netProvider)
+	})
+
+	t.Run("egress policy auto-wires provider", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.egressPolicy = &EgressPolicy{}
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider)
+	})
+
+	t.Run("firewall rules alone auto-wire provider", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.firewallRules = []firewall.Rule{{Direction: firewall.Egress, Action: firewall.Allow}}
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider,
+			"firewall-only config must auto-wire a provider; otherwise rules go unenforced")
+	})
+
+	t.Run("deny default alone auto-wires provider", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.firewallDefaultAction = firewall.Deny
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider,
+			"deny-default config must auto-wire a provider to actually deny")
+	})
+
+	t.Run("explicit provider is not overwritten", func(t *testing.T) {
+		t.Parallel()
+		existing := &sentinelProvider{}
+		cfg := defaultConfig()
+		cfg.netProvider = existing
+		cfg.firewallDefaultAction = firewall.Deny
+		wireDefaultProvider(cfg)
+		assert.Same(t, existing, cfg.netProvider)
+	})
+}
+
 func TestRun_EgressPolicy_EmptyHosts_DenyAll(t *testing.T) {
 	t.Parallel()
 
@@ -862,6 +918,7 @@ func TestTerminateStaleRunner_AliveProcess_GracefulExit(t *testing.T) {
 		// (after SIGTERM + first poll).
 		return aliveCount <= 1
 	}
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 
@@ -899,6 +956,7 @@ func TestTerminateStaleRunner_AliveProcess_RequiresKill(t *testing.T) {
 	}
 	// Process never exits on its own.
 	cfg.processAlive = func(_ int) bool { return true }
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 
@@ -941,6 +999,7 @@ func TestTerminateStaleRunner_SendsToProcessGroup(t *testing.T) {
 		aliveCount++
 		return aliveCount <= 1
 	}
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 
@@ -948,6 +1007,38 @@ func TestTerminateStaleRunner_SendsToProcessGroup(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, receivedPIDs, 1)
 	assert.Equal(t, -55555, receivedPIDs[0], "killProcess should receive negative PID for process group")
+}
+
+func TestTerminateStaleRunner_RecycledPID_Skipped(t *testing.T) {
+	t.Parallel()
+
+	// The state file points at a live PID, but processIsExpected says the
+	// binary at that PID is not the runner (as if the kernel had recycled
+	// the PID onto an unrelated process since state was written). The
+	// function must refuse to signal it.
+	dataDir := t.TempDir()
+
+	mgr := state.NewManager(dataDir)
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+	ls.State.Active = true
+	ls.State.PID = 77777
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	cfg := defaultConfig()
+	cfg.dataDir = dataDir
+
+	var killCalled bool
+	cfg.killProcess = func(_ int, _ syscall.Signal) error {
+		killCalled = true
+		return nil
+	}
+	cfg.processAlive = func(_ int) bool { return true }
+	cfg.processIsExpected = func(_ int) bool { return false }
+
+	terminateStaleRunner(cfg)
+	assert.False(t, killCalled, "must not signal a recycled PID belonging to an unrelated binary")
 }
 
 func TestTerminateStaleRunner_PID1_Skipped(t *testing.T) {
@@ -973,6 +1064,7 @@ func TestTerminateStaleRunner_PID1_Skipped(t *testing.T) {
 		return nil
 	}
 	cfg.processAlive = func(_ int) bool { return true }
+	cfg.processIsExpected = func(_ int) bool { return true }
 
 	terminateStaleRunner(cfg)
 	assert.False(t, killCalled, "should not attempt to kill PID 1")

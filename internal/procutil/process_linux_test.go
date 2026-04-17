@@ -23,7 +23,9 @@ func TestIsExpectedProcess_Self(t *testing.T) {
 	}
 }
 
-func TestIsExpectedProcess_SelfBaseName(t *testing.T) {
+func TestIsExpectedProcess_SelfBaseNameFallback(t *testing.T) {
+	// When expectedBinary is NOT absolute (just a bare name), the fallback
+	// base-name comparison applies.
 	pid := os.Getpid()
 
 	selfExe, err := os.Executable()
@@ -31,8 +33,24 @@ func TestIsExpectedProcess_SelfBaseName(t *testing.T) {
 		t.Fatalf("failed to get self executable: %v", err)
 	}
 	baseName := filepath.Base(selfExe)
-	if !IsExpectedProcess(pid, "/some/other/path/"+baseName) {
-		t.Errorf("IsExpectedProcess with different dir but same base name should return true")
+	if !IsExpectedProcess(pid, baseName) {
+		t.Errorf("IsExpectedProcess with bare base name should match self")
+	}
+}
+
+func TestIsExpectedProcess_AbsolutePathMismatch(t *testing.T) {
+	// When expectedBinary IS absolute, a different directory with the same
+	// base name must NOT match. This is the strengthened guarantee against
+	// unrelated binaries with colliding base names.
+	pid := os.Getpid()
+
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("failed to get self executable: %v", err)
+	}
+	baseName := filepath.Base(selfExe)
+	if IsExpectedProcess(pid, "/some/other/path/"+baseName) {
+		t.Errorf("absolute path mismatch must not match even with same base name")
 	}
 }
 

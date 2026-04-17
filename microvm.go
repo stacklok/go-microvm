@@ -98,10 +98,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 			slog.Warn("egress policy overrides firewall default action to Deny")
 		}
 		cfg.firewallDefaultAction = firewall.Deny
-		if cfg.netProvider == nil {
-			cfg.netProvider = hosted.NewProvider()
-		}
 	}
+
+	wireDefaultProvider(cfg)
 
 	// 1. Preflight checks.
 	{
@@ -312,6 +311,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		ls.State.Name = cfg.name
 		if pid, pidErr := pidFromID(handle.ID()); pidErr == nil {
 			ls.State.PID = pid
+			ls.State.PIDStartTime = time.Now().UTC()
 		} else {
 			slog.Warn("could not persist VM PID", "id", handle.ID(), "error", pidErr)
 		}
@@ -353,6 +353,21 @@ const (
 	// runner termination.
 	staleTermPoll = 250 * time.Millisecond
 )
+
+// wireDefaultProvider auto-creates a hosted network provider when any
+// firewall configuration (egress policy, static rules, or a non-Allow
+// default action) is set but no provider was supplied explicitly. The
+// default runner-side networking path does not enforce firewall rules,
+// so without this the caller's deny-default would silently degrade to
+// allow-all. No-op when a provider is already set.
+func wireDefaultProvider(cfg *config) {
+	firewallConfigured := cfg.egressPolicy != nil ||
+		len(cfg.firewallRules) > 0 ||
+		cfg.firewallDefaultAction != firewall.Allow
+	if firewallConfigured && cfg.netProvider == nil {
+		cfg.netProvider = hosted.NewProvider()
+	}
+}
 
 func cleanDataDir(cfg *config) error {
 	if cfg.dataDir == "" {
@@ -407,6 +422,13 @@ func terminateStaleRunner(cfg *config) {
 	}
 	if !cfg.processAlive(st.PID) {
 		slog.Debug("stale runner already dead", "pid", st.PID)
+		return
+	}
+	if !cfg.processIsExpected(st.PID) {
+		// PID has been recycled onto an unrelated binary since we wrote
+		// the state file. Signalling it would kill the wrong process
+		// group (or fail silently if we lack permission). Bail out.
+		slog.Warn("stale PID does not match expected runner binary, skipping termination", "pid", st.PID)
 		return
 	}
 

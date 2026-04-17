@@ -61,6 +61,13 @@ type State struct {
 	// PID is the process ID of the VM runner, or 0 if not running.
 	PID int `json:"pid,omitempty"`
 
+	// PIDStartTime records wall-clock time when PID was recorded. Used
+	// to disambiguate a recycled PID from the original runner in contexts
+	// where /proc/PID/exe comparison is unavailable (e.g. macOS) or as
+	// belt-and-suspenders alongside the exe-path check on Linux.
+	// Zero time on state files written before this field was introduced.
+	PIDStartTime time.Time `json:"pid_start_time,omitempty"`
+
 	// CreatedAt is the time the VM state was first created.
 	CreatedAt time.Time `json:"created_at"`
 }

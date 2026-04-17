@@ -58,6 +58,51 @@ func TestManager_SaveLoad_RoundTrip(t *testing.T) {
 	assert.Equal(t, stateVersion, loaded.Version)
 }
 
+func TestManager_PIDStartTime_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	ls, err := mgr.LoadAndLock(context.Background())
+	require.NoError(t, err)
+
+	want := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
+	ls.State.PID = 42
+	ls.State.PIDStartTime = want
+
+	require.NoError(t, ls.Save())
+	ls.Release()
+
+	loaded, err := mgr.Load()
+	require.NoError(t, err)
+	assert.Equal(t, 42, loaded.PID)
+	assert.True(t, loaded.PIDStartTime.Equal(want),
+		"PIDStartTime round-trip lost fidelity: got %v, want %v",
+		loaded.PIDStartTime, want)
+}
+
+func TestManager_Load_MissingPIDStartTime_IsZero(t *testing.T) {
+	t.Parallel()
+
+	// Legacy state files written before the PIDStartTime field was
+	// introduced must still load cleanly; the field should come back as
+	// the zero time.
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir)
+
+	legacy := []byte(`{"version":1,"name":"legacy","pid":100,"created_at":"2025-01-01T00:00:00Z"}`)
+	require.NoError(t, os.MkdirAll(dataDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, stateFileName), legacy, 0o600))
+
+	loaded, err := mgr.Load()
+	require.NoError(t, err)
+	assert.Equal(t, 100, loaded.PID)
+	assert.True(t, loaded.PIDStartTime.IsZero(),
+		"missing PIDStartTime should unmarshal to zero time; got %v",
+		loaded.PIDStartTime)
+}
+
 func TestManager_LoadAndLock_SaveUnderLock(t *testing.T) {
 	t.Parallel()
 
