@@ -14,6 +14,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBundle_Ensure_CacheDirIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	// The cache holds an executable binary that will later be spawned. A
+	// world- or group-writable cache permits local code injection; the
+	// directory must be 0o700.
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	b := NewBundle("v-private", []File{
+		{Name: "f", Content: []byte("x"), Mode: 0o644},
+	})
+
+	_, err := b.Ensure(cacheDir)
+	require.NoError(t, err)
+
+	info, err := os.Stat(cacheDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(),
+		"cache dir must be 0o700; got %o", info.Mode().Perm())
+}
+
 func TestBundle_Ensure_ExtractsFiles(t *testing.T) {
 	t.Parallel()
 
@@ -132,9 +152,9 @@ func TestBundle_Ensure_EmptyBundle(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 
-	versionData, err := os.ReadFile(filepath.Join(dir, ".version"))
+	manifestData, err := os.ReadFile(filepath.Join(dir, manifestName))
 	require.NoError(t, err)
-	assert.NotEmpty(t, versionData)
+	assert.NotEmpty(t, manifestData)
 }
 
 func TestBundle_Ensure_ConcurrentAccess(t *testing.T) {
@@ -261,15 +281,15 @@ func TestBundle_ComputeHash_EmptyBundle(t *testing.T) {
 func TestBundle_IsValid_MatchingHash(t *testing.T) {
 	t.Parallel()
 
+	// End-to-end through Ensure: the manifest it wrote must satisfy
+	// isValid on the same inputs.
 	b := NewBundle("v1", []File{
 		{Name: "x.txt", Content: []byte("data"), Mode: 0o644},
 	})
-	hash := b.computeHash()
+	dir, err := b.Ensure(t.TempDir())
+	require.NoError(t, err)
 
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".version"), []byte(hash), 0o644))
-
-	assert.True(t, b.isValid(dir, hash))
+	assert.True(t, b.isValid(dir, b.computeHash()))
 }
 
 func TestBundle_IsValid_WrongHash(t *testing.T) {
@@ -278,23 +298,49 @@ func TestBundle_IsValid_WrongHash(t *testing.T) {
 	b := NewBundle("v1", []File{
 		{Name: "x.txt", Content: []byte("data"), Mode: 0o644},
 	})
-	hash := b.computeHash()
+	dir, err := b.Ensure(t.TempDir())
+	require.NoError(t, err)
 
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".version"), []byte("wronghash"), 0o644))
-
-	assert.False(t, b.isValid(dir, hash))
+	assert.False(t, b.isValid(dir, "wronghash"))
 }
 
-func TestBundle_IsValid_MissingVersionFile(t *testing.T) {
+func TestBundle_IsValid_MissingManifest(t *testing.T) {
 	t.Parallel()
 
 	b := NewBundle("v1", nil)
 	hash := b.computeHash()
 
 	dir := t.TempDir()
-	// dir exists but has no .version file.
+	// dir exists but has no manifest file.
 	assert.False(t, b.isValid(dir, hash))
+}
+
+func TestBundle_IsValid_TamperedFileTriggersReextract(t *testing.T) {
+	t.Parallel()
+
+	// If a cached file has been modified after extraction, isValid must
+	// return false so Ensure re-extracts rather than spawning a tampered
+	// binary.
+	cacheDir := t.TempDir()
+	b := NewBundle("v-tamper", []File{
+		{Name: "binary", Content: []byte("original-content"), Mode: 0o755},
+	})
+	dir, err := b.Ensure(cacheDir)
+	require.NoError(t, err)
+
+	// Overwrite the cached file with different content.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "binary"), []byte("tampered"), 0o755))
+
+	assert.False(t, b.isValid(dir, b.computeHash()),
+		"tampered cached file must not be treated as valid")
+
+	// A subsequent Ensure should re-extract the original content.
+	dir2, err := b.Ensure(cacheDir)
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(dir2, "binary"))
+	require.NoError(t, err)
+	assert.Equal(t, "original-content", string(got),
+		"Ensure must re-extract the original content after tamper detection")
 }
 
 func TestBundle_IsValid_NonexistentDir(t *testing.T) {
