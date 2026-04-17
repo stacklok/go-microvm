@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/image"
@@ -86,7 +87,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err != nil {
 			return fmt.Errorf("validate .ssh path: %w", err)
 		}
-		if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		if err := image.MkdirAllNoSymlink(rootfsPath, sshDir, 0o700); err != nil {
 			return fmt.Errorf("create .ssh dir: %w", err)
 		}
 		if err := cfg.chown(sshDir, cfg.uid, cfg.gid); err != nil {
@@ -98,7 +99,10 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err != nil {
 			return fmt.Errorf("validate authorized_keys path: %w", err)
 		}
-		if err := os.WriteFile(akPath, []byte(pubKey+"\n"), 0o600); err != nil {
+		if err := image.ValidateNoSymlinkLeaf(akPath); err != nil {
+			return fmt.Errorf("validate authorized_keys: %w", err)
+		}
+		if err := writeFileNoFollow(akPath, []byte(pubKey+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write authorized_keys: %w", err)
 		}
 		if err := cfg.chown(akPath, cfg.uid, cfg.gid); err != nil {
@@ -109,19 +113,40 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 	}
 }
 
+// writeFileNoFollow writes data to path with O_NOFOLLOW on the final open,
+// refusing to write through a symlink leaf even if one races into place
+// between the caller's validation and this open. Creates the file if absent,
+// truncates if present. Parent directories must already exist.
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // InjectFile returns a RootFSHook that writes content to the specified guest
 // path inside the rootfs with the given permissions. Parent directories are
-// created as needed.
+// created as needed. Symlink components — whether in parent directories or at
+// the leaf — are refused so that a rootfs planted with hostile symlinks cannot
+// redirect the write outside the rootfs.
 func InjectFile(guestPath string, content []byte, perm os.FileMode) func(string, *image.OCIConfig) error {
 	return func(rootfsPath string, _ *image.OCIConfig) error {
 		dst, err := pathutil.Contains(rootfsPath, guestPath)
 		if err != nil {
 			return fmt.Errorf("validate path %s: %w", guestPath, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := image.MkdirAllNoSymlink(rootfsPath, filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("create parent dirs for %s: %w", guestPath, err)
 		}
-		if err := os.WriteFile(dst, content, perm); err != nil {
+		if err := image.ValidateNoSymlinkLeaf(dst); err != nil {
+			return fmt.Errorf("validate %s: %w", guestPath, err)
+		}
+		if err := writeFileNoFollow(dst, content, perm); err != nil {
 			return fmt.Errorf("write %s: %w", guestPath, err)
 		}
 		return nil
@@ -167,10 +192,13 @@ func InjectEnvFile(guestPath string, envMap map[string]string) func(string, *ima
 		if err != nil {
 			return fmt.Errorf("validate path %s: %w", guestPath, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := image.MkdirAllNoSymlink(rootfsPath, filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("create parent dirs for %s: %w", guestPath, err)
 		}
-		if err := os.WriteFile(dst, []byte(buf.String()), 0o600); err != nil {
+		if err := image.ValidateNoSymlinkLeaf(dst); err != nil {
+			return fmt.Errorf("validate %s: %w", guestPath, err)
+		}
+		if err := writeFileNoFollow(dst, []byte(buf.String()), 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", guestPath, err)
 		}
 		return nil
@@ -183,20 +211,21 @@ func shellEscape(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// BestEffortLchown attempts os.Lchown and silently ignores permission errors,
-// returning nil. On macOS non-root users cannot chown to a different UID;
-// the guest init will fix ownership at boot time. Non-permission errors are
-// logged at warn level and also swallowed. Callers that need strict chown
-// should call os.Lchown directly instead.
+// BestEffortLchown attempts os.Lchown and swallows permission errors (EPERM
+// and EACCES). On non-root Linux and on macOS the hook process cannot lchown
+// to a different UID; in those cases the override_stat xattr carries the
+// intended ownership to the guest, and the guest init fixes up ownership at
+// boot. Errors other than permission denied (e.g. ENOENT, EROFS, EIO) are
+// returned to the caller rather than silently dropped.
 // Lchown is used instead of Chown to avoid following symlinks in the rootfs.
 func BestEffortLchown(path string, uid, gid int) error {
 	if err := os.Lchown(path, uid, gid); err != nil {
 		if !os.IsPermission(err) {
-			slog.Warn("lchown failed", "path", path, "uid", uid, "gid", gid, "err", err)
+			return fmt.Errorf("lchown %s: %w", path, err)
 		}
+		slog.Debug("lchown permission denied; relying on xattr + guest fixup",
+			"path", path, "uid", uid, "gid", gid)
 	}
-	// On macOS, set the override_stat xattr so libkrun's virtiofs reports
-	// correct ownership to the guest (non-root cannot Lchown to a different UID).
 	xattr.SetOverrideStatFromPath(path, uid, gid)
 	return nil
 }

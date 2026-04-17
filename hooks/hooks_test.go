@@ -93,6 +93,24 @@ func TestInjectVMConfig(t *testing.T) {
 	}
 }
 
+func TestInjectVMConfig_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	// Guard the delegation chain: InjectVMConfig -> InjectFile.
+	// If InjectFile's symlink safety regresses, this test catches it.
+	rootfs := t.TempDir()
+	outside := t.TempDir()
+	stageSymlink(t, rootfs, "etc", outside)
+
+	hook := InjectVMConfig(vmconfig.Config{TmpSizeMiB: 512})
+	err := hook(rootfs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, statErr := os.Stat(filepath.Join(outside, "go-microvm.json"))
+	assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+}
+
 func TestInjectFile_WritesContent(t *testing.T) {
 	t.Parallel()
 
@@ -325,6 +343,61 @@ func TestInjectBinary_RejectsPathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "path traversal")
 }
 
+func TestInjectFile_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parent directory is a symlink", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "etc", outside)
+
+		hook := InjectFile("/etc/myconfig.txt", []byte("hello"), 0o644)
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		_, statErr := os.Stat(filepath.Join(outside, "myconfig.txt"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("leaf is a symlink to a host file", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755))
+
+		victim := filepath.Join(t.TempDir(), "victim")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+		require.NoError(t, os.Symlink(victim, filepath.Join(rootfs, "etc", "myconfig.txt")))
+
+		hook := InjectFile("/etc/myconfig.txt", []byte("evil"), 0o644)
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got), "victim must not be overwritten")
+	})
+}
+
+func TestInjectBinary_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	rootfs := t.TempDir()
+	outside := t.TempDir()
+	stageSymlink(t, rootfs, "usr", outside)
+
+	hook := InjectBinary("/usr/bin/mytool", []byte("#!/bin/sh\necho hi"))
+	err := hook(rootfs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, statErr := os.Stat(filepath.Join(outside, "bin", "mytool"))
+	assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+}
+
 func TestInjectEnvFile_RejectsPathTraversal(t *testing.T) {
 	t.Parallel()
 
@@ -333,6 +406,45 @@ func TestInjectEnvFile_RejectsPathTraversal(t *testing.T) {
 	err := hook(rootfs, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestInjectEnvFile_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parent directory is a symlink", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "etc", outside)
+
+		hook := InjectEnvFile("/etc/env", map[string]string{"FOO": "bar"})
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		_, statErr := os.Stat(filepath.Join(outside, "env"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("leaf is a symlink to a host file", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755))
+
+		victim := filepath.Join(t.TempDir(), "victim")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+		require.NoError(t, os.Symlink(victim, filepath.Join(rootfs, "etc", "env")))
+
+		hook := InjectEnvFile("/etc/env", map[string]string{"FOO": "evil"})
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got), "victim must not be overwritten")
+	})
 }
 
 // failingChown returns a ChownFunc that returns an error when the path
@@ -427,6 +539,70 @@ func TestInjectAuthorizedKeys_RejectsPathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "path traversal")
 }
 
+func TestInjectAuthorizedKeys_RejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
+
+	chown, _ := recordingChown()
+	pubKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST test@example.com"
+
+	t.Run("home component is an absolute symlink out of rootfs", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "home", outside)
+
+		hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		// Nothing must have been written under the symlink target.
+		_, statErr := os.Stat(filepath.Join(outside, "sandbox", ".ssh", "authorized_keys"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("dot-ssh component is a relative escaping symlink", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfs, "home", "sandbox"), 0o755))
+		// .ssh points two levels up, escaping the rootfs lexically after resolution.
+		outside := t.TempDir()
+		stageSymlink(t, rootfs, "home/sandbox/.ssh", outside)
+
+		hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+
+		_, statErr := os.Stat(filepath.Join(outside, "authorized_keys"))
+		assert.True(t, os.IsNotExist(statErr), "must not write under symlink target")
+	})
+
+	t.Run("authorized_keys leaf is a symlink to a host file", func(t *testing.T) {
+		t.Parallel()
+
+		rootfs := t.TempDir()
+		sshDir := filepath.Join(rootfs, "home", "sandbox", ".ssh")
+		require.NoError(t, os.MkdirAll(sshDir, 0o700))
+
+		// An attacker-planted symlink at the leaf points to an arbitrary host file.
+		victim := filepath.Join(t.TempDir(), "victim")
+		require.NoError(t, os.WriteFile(victim, []byte("original"), 0o600))
+		require.NoError(t, os.Symlink(victim, filepath.Join(sshDir, "authorized_keys")))
+
+		hook := InjectAuthorizedKeys(pubKey, WithChown(chown))
+		err := hook(rootfs, nil)
+		require.Error(t, err)
+
+		// The host-side file must be untouched.
+		got, readErr := os.ReadFile(victim)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got), "victim must not be overwritten")
+	})
+}
+
 func TestInjectEnvFile_RejectsInvalidKeyNames(t *testing.T) {
 	t.Parallel()
 
@@ -451,6 +627,63 @@ func TestInjectEnvFile_RejectsInvalidKeyNames(t *testing.T) {
 			assert.Contains(t, err.Error(), "invalid environment variable name")
 		})
 	}
+}
+
+// stageSymlink places a symlink at rootfs/linkPath pointing to target.
+// Parent directories of linkPath inside rootfs are created as 0o755.
+// Use this to build rootfs fixtures that exercise symlink-following behavior
+// in hook code — e.g. a malicious layer shipping `home/sandbox/.ssh` as a
+// symlink to somewhere outside the rootfs.
+func stageSymlink(t *testing.T, rootfs, linkPath, target string) {
+	t.Helper()
+	abs := filepath.Join(rootfs, linkPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+	require.NoError(t, os.Symlink(target, abs))
+}
+
+func TestStageSymlink(t *testing.T) {
+	t.Parallel()
+
+	rootfs := t.TempDir()
+	outside := t.TempDir()
+
+	stageSymlink(t, rootfs, "home/sandbox/.ssh", outside)
+
+	info, err := os.Lstat(filepath.Join(rootfs, "home", "sandbox", ".ssh"))
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, ".ssh should be a symlink")
+
+	dest, err := os.Readlink(filepath.Join(rootfs, "home", "sandbox", ".ssh"))
+	require.NoError(t, err)
+	assert.Equal(t, outside, dest)
+}
+
+func TestBestEffortLchown_PropagatesNonPermissionErrors(t *testing.T) {
+	t.Parallel()
+
+	// ENOENT from a non-existent path is not a permission error; the function
+	// must return it rather than silently swallowing.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	err := BestEffortLchown(missing, 1000, 1000)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lchown")
+}
+
+func TestBestEffortLchown_SwallowsPermissionErrors(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("requires non-root: root can chown to any UID, so no EPERM")
+	}
+
+	// Create a file we own; chowning to a UID we don't own should fail with
+	// EPERM on Linux and macOS as a non-root user. BestEffortLchown must
+	// swallow that specific error.
+	target := filepath.Join(t.TempDir(), "target")
+	require.NoError(t, os.WriteFile(target, []byte("x"), 0o600))
+
+	err := BestEffortLchown(target, 1, 1)
+	require.NoError(t, err, "permission error must be swallowed, got: %v", err)
 }
 
 func TestShellEscape(t *testing.T) {
