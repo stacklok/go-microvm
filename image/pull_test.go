@@ -228,6 +228,46 @@ func TestExtractTar_Symlinks(t *testing.T) {
 	assert.Equal(t, "real binary", string(data))
 }
 
+func TestExtractTar_RejectsExcessiveEntryCount(t *testing.T) {
+	// Not parallel: mutates the package-level maxExtractEntries.
+	orig := maxExtractEntries
+	t.Cleanup(func() { maxExtractEntries = orig })
+	maxExtractEntries = 3
+
+	entries := []tarEntry{
+		{name: "a", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+		{name: "b", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+		{name: "c", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+		{name: "d", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+	}
+	buf := createTarBuffer(t, entries)
+
+	err := extractTar(context.Background(), buf, t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maximum entry count")
+}
+
+func TestExtractTarSharedLimit_RejectsExcessiveEntryCount(t *testing.T) {
+	// Not parallel: mutates the package-level maxExtractEntries.
+	orig := maxExtractEntries
+	t.Cleanup(func() { maxExtractEntries = orig })
+	maxExtractEntries = 3
+
+	entries := []tarEntry{
+		{name: "a", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+		{name: "b", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+		{name: "c", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+		{name: "d", typeflag: tar.TypeReg, mode: 0o644, content: ""},
+	}
+	buf := createTarBuffer(t, entries)
+
+	var remaining atomic.Int64
+	remaining.Store(maxExtractSize)
+	err := extractTarSharedLimit(context.Background(), buf, t.TempDir(), &remaining)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maximum entry count")
+}
+
 func TestExtractTar_RejectsOversizedPayload(t *testing.T) {
 	t.Parallel()
 

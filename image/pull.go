@@ -33,6 +33,16 @@ import (
 // 30 GB should be generous enough for any legitimate container image.
 const maxExtractSize int64 = 30 << 30 // 30 GiB
 
+// maxExtractEntries caps the number of tar entries accepted during
+// extraction. Bounds inode exhaustion / tar-bomb variants where millions
+// of small files fit easily under maxExtractSize but exhaust host inodes
+// and the dentry cache. One million entries is far above the largest
+// legitimate container images seen in practice (a few hundred thousand).
+//
+// Declared as var so tests can override it; no production caller should
+// mutate it.
+var maxExtractEntries = 1_000_000
+
 // Pull fetches an OCI image, flattens its layers, and extracts to a directory.
 // If a Cache is provided, results are cached by image digest. The returned
 // RootFS contains the extraction path and parsed OCI config.
@@ -509,6 +519,9 @@ func extractTar(ctx context.Context, r io.Reader, dst string) error {
 		}
 
 		entryCount++
+		if entryCount > maxExtractEntries {
+			return fmt.Errorf("tar archive exceeds maximum entry count of %d", maxExtractEntries)
+		}
 
 		target, err := sanitizeTarPath(dst, hdr.Name)
 		if err != nil {
@@ -558,6 +571,9 @@ func extractTarSharedLimit(ctx context.Context, r io.Reader, dst string, remaini
 		}
 
 		entryCount++
+		if entryCount > maxExtractEntries {
+			return fmt.Errorf("tar archive exceeds maximum entry count of %d", maxExtractEntries)
+		}
 
 		target, err := sanitizeTarPath(dst, hdr.Name)
 		if err != nil {
