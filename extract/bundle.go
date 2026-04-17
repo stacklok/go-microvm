@@ -60,7 +60,11 @@ func (b *Bundle) Ensure(cacheDir string) (string, error) {
 
 	// Acquire cross-process file lock.
 	lockPath := filepath.Join(cacheDir, ".extract.lock")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	// 0o700 keeps the extracted runner binaries and libraries readable only
+	// by the invoking user. The cache holds an executable binary that will
+	// later be spawned — a world-writable or even group-writable cache dir
+	// is a local-code-execution vector.
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
 	fl := flock.New(lockPath)

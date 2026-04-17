@@ -14,6 +14,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBundle_Ensure_CacheDirIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	// The cache holds an executable binary that will later be spawned. A
+	// world- or group-writable cache permits local code injection; the
+	// directory must be 0o700.
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	b := NewBundle("v-private", []File{
+		{Name: "f", Content: []byte("x"), Mode: 0o644},
+	})
+
+	_, err := b.Ensure(cacheDir)
+	require.NoError(t, err)
+
+	info, err := os.Stat(cacheDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(),
+		"cache dir must be 0o700; got %o", info.Mode().Perm())
+}
+
 func TestBundle_Ensure_ExtractsFiles(t *testing.T) {
 	t.Parallel()
 
