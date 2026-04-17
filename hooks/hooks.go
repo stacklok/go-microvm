@@ -211,20 +211,21 @@ func shellEscape(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// BestEffortLchown attempts os.Lchown and silently ignores permission errors,
-// returning nil. On macOS non-root users cannot chown to a different UID;
-// the guest init will fix ownership at boot time. Non-permission errors are
-// logged at warn level and also swallowed. Callers that need strict chown
-// should call os.Lchown directly instead.
+// BestEffortLchown attempts os.Lchown and swallows permission errors (EPERM
+// and EACCES). On non-root Linux and on macOS the hook process cannot lchown
+// to a different UID; in those cases the override_stat xattr carries the
+// intended ownership to the guest, and the guest init fixes up ownership at
+// boot. Errors other than permission denied (e.g. ENOENT, EROFS, EIO) are
+// returned to the caller rather than silently dropped.
 // Lchown is used instead of Chown to avoid following symlinks in the rootfs.
 func BestEffortLchown(path string, uid, gid int) error {
 	if err := os.Lchown(path, uid, gid); err != nil {
 		if !os.IsPermission(err) {
-			slog.Warn("lchown failed", "path", path, "uid", uid, "gid", gid, "err", err)
+			return fmt.Errorf("lchown %s: %w", path, err)
 		}
+		slog.Debug("lchown permission denied; relying on xattr + guest fixup",
+			"path", path, "uid", uid, "gid", gid)
 	}
-	// On macOS, set the override_stat xattr so libkrun's virtiofs reports
-	// correct ownership to the guest (non-root cannot Lchown to a different UID).
 	xattr.SetOverrideStatFromPath(path, uid, gid)
 	return nil
 }

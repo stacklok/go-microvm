@@ -658,6 +658,34 @@ func TestStageSymlink(t *testing.T) {
 	assert.Equal(t, outside, dest)
 }
 
+func TestBestEffortLchown_PropagatesNonPermissionErrors(t *testing.T) {
+	t.Parallel()
+
+	// ENOENT from a non-existent path is not a permission error; the function
+	// must return it rather than silently swallowing.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	err := BestEffortLchown(missing, 1000, 1000)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lchown")
+}
+
+func TestBestEffortLchown_SwallowsPermissionErrors(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("requires non-root: root can chown to any UID, so no EPERM")
+	}
+
+	// Create a file we own; chowning to a UID we don't own should fail with
+	// EPERM on Linux and macOS as a non-root user. BestEffortLchown must
+	// swallow that specific error.
+	target := filepath.Join(t.TempDir(), "target")
+	require.NoError(t, os.WriteFile(target, []byte("x"), 0o600))
+
+	err := BestEffortLchown(target, 1, 1)
+	require.NoError(t, err, "permission error must be swallowed, got: %v", err)
+}
+
 func TestShellEscape(t *testing.T) {
 	t.Parallel()
 
