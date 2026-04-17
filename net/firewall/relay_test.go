@@ -98,6 +98,41 @@ func TestRelay_EndToEnd(t *testing.T) {
 	<-errCh
 }
 
+func TestRelay_RejectsOversizedLengthPrefix(t *testing.T) {
+	t.Parallel()
+
+	filter := NewFilter(nil, Allow)
+	relay := NewRelay(filter)
+
+	vmApp, vmRelay := net.Pipe()
+	netRelay, _ := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- relay.Run(ctx, vmRelay, netRelay)
+	}()
+
+	// Write a 4-byte big-endian length prefix claiming a 2 MiB frame —
+	// well above maxFrameSize. Do not send any payload.
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], 2*1024*1024)
+	_, err := vmApp.Write(lenBuf[:])
+	require.NoError(t, err)
+
+	// The relay must terminate with a protocol-violation error rather
+	// than attempt a multi-MiB allocation and hang on ReadFull.
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds maximum")
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not terminate on oversized length prefix")
+	}
+}
+
 func TestRelay_DroppedFrame(t *testing.T) {
 	t.Parallel()
 

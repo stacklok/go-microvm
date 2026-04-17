@@ -17,6 +17,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// maxFrameSize bounds the length prefix the relay will accept from either
+// peer. Legitimate traffic at the topology MTU sits well under 64 KiB —
+// this cap catches corrupt or malicious length prefixes that would
+// otherwise trigger multi-GiB allocations in the subsequent make/ReadFull.
+const maxFrameSize = 65535
+
 // InterceptAction tells the relay what to do with a DNS frame.
 type InterceptAction uint8
 
@@ -131,6 +137,11 @@ func (r *Relay) forward(ctx context.Context, src, dst net.Conn, dir Direction) e
 		frameLen := binary.BigEndian.Uint32(lenBuf[:])
 		if frameLen == 0 {
 			continue
+		}
+		if frameLen > maxFrameSize {
+			return r.wrapError(ctx, fmt.Errorf(
+				"frame length %d exceeds maximum %d: peer protocol violation",
+				frameLen, maxFrameSize))
 		}
 
 		// Grow the frame buffer if needed, reuse otherwise.
