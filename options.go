@@ -56,10 +56,11 @@ type VsockPort struct {
 type VirtioFSMount struct {
 	Tag      string
 	HostPath string
-	// ReadOnly makes the mount read-only inside the guest. Enforcement is
-	// guest-side via MS_RDONLY mount flags; libkrun does not currently
-	// support host-side read-only virtiofs. A compromised guest kernel
-	// could bypass this restriction.
+	// ReadOnly makes the mount read-only at two independent layers: libkrun
+	// exposes the host directory through a read-only virtio-fs device, and the
+	// guest mounts it with MS_RDONLY. This requires the pinned libkrun runtime's
+	// krun_add_virtiofs3 API; the runner fails before VM start if it is unavailable
+	// or rejects the configuration.
 	ReadOnly bool
 	// OverrideUID, when > 0, causes go-microvm to set the
 	// user.containers.override_stat xattr on every file and directory under
