@@ -39,7 +39,7 @@ go-microvm solves this with two processes:
 |   4. Run rootfs hooks            | config|   4. SetVMConfig(vCPUs, RAM)      |
 |   5. Write .krun_config.json     |       |   5. SetRoot(rootfsPath)          |
 |   6. Start networking (if custom)|       |   6. Setup networking             |
-|   7. Spawn go-microvm-runner       |       |   7. AddVirtioFS (for each mount) |
+|   7. Spawn go-microvm-runner       |       |   7. Add virtio-fs mounts          |
 |   8. Run post-boot hooks         |       |   8. SetConsoleOutput(logPath)    |
 |   9. Return *VM handle           |       |   9. krun_start_enter()           |
 |                                  |       |      (NEVER RETURNS ON SUCCESS)   |
@@ -115,7 +115,8 @@ C API:
    - If `NetSockPath` is set (custom provider), connect via `AddNetUnixStream()`
    - If `PortForwards` is set (default path), create an in-process
      VirtualNetwork with a socketpair and pass the VM-side fd to libkrun
-7. Add virtio-fs mounts via `AddVirtioFS()` (for each mount)
+7. Add virtio-fs mounts via legacy `AddVirtioFS()` for read-write mounts or
+   `AddVirtioFS3(..., readOnly=true)` for host-enforced read-only mounts
 8. Set console output via `SetConsoleOutput()` (if log path provided)
 9. Call `krun_start_enter()` which takes over the process
 

@@ -227,9 +227,10 @@ func main() {
             return sshClient.WaitForReady(ctx)
         }),
 
-        // Mount a host directory into the guest via virtio-fs.
+        // Mount a host directory into the guest via virtio-fs. ReadOnly
+        // requests both host-side libkrun enforcement and a guest MS_RDONLY mount.
         microvm.WithVirtioFS(microvm.VirtioFSMount{
-            Tag: "shared", HostPath: "/srv/data",
+            Tag: "shared", HostPath: "/srv/data", ReadOnly: true,
         }),
 
         // Use a custom data directory for state, caches, and logs.

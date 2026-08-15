@@ -82,7 +82,8 @@ type VirtioFSMount struct {
 	Tag string `json:"tag"`
 	// Path is the host directory path.
 	Path string `json:"path"`
-	// ReadOnly makes the mount read-only inside the guest.
+	// ReadOnly makes the mount read-only both at the host virtio-fs device
+	// boundary and through the guest's MS_RDONLY mount flag.
 	ReadOnly bool `json:"read_only,omitempty"`
 }
 
@@ -212,14 +213,10 @@ func runVM(config *Config) error {
 		}
 	}
 
-	// Configure virtio-fs mounts.
-	// Note: libkrun's krun_add_virtiofs does not support a read-only flag.
-	// ReadOnly enforcement happens guest-side via MS_RDONLY mount flags.
+	// Configure virtio-fs mounts. Read-write mounts retain the legacy API;
+	// read-only mounts require krun_add_virtiofs3 for host-side enforcement.
 	for _, mount := range config.VirtioFSMounts {
-		if mount.ReadOnly {
-			fmt.Fprintf(os.Stderr, "Warning: virtiofs mount %q is read-only but libkrun has no host-side enforcement; relying on guest-side MS_RDONLY\n", mount.Tag)
-		}
-		if err := ctx.AddVirtioFS(mount.Tag, mount.Path); err != nil {
+		if err := addVirtioFSMount(ctx, mount); err != nil {
 			_ = ctx.Free()
 			return fmt.Errorf("add virtiofs mount %s: %w", mount.Tag, err)
 		}

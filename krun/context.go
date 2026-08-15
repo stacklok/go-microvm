@@ -171,7 +171,7 @@ func (c *Context) AddDisk2(blockID, diskPath string, format DiskFormat, readOnly
 	return nil
 }
 
-// AddVirtioFS adds a virtio-fs device pointing to a host directory.
+// AddVirtioFS adds a read-write virtio-fs device pointing to a host directory.
 func (c *Context) AddVirtioFS(tag, path string) error {
 	cTag := C.CString(tag)
 	defer C.free(unsafe.Pointer(cTag))
@@ -182,6 +182,22 @@ func (c *Context) AddVirtioFS(tag, path string) error {
 	ret := C.krun_add_virtiofs(c.id, cTag, cPath)
 	if ret < 0 {
 		return fmt.Errorf("krun_add_virtiofs failed: %d", ret)
+	}
+	return nil
+}
+
+// AddVirtioFS3 adds a virtio-fs device with an explicit DAX window size and
+// host-enforced read-only setting.
+func (c *Context) AddVirtioFS3(tag, path string, shmSize uint64, readOnly bool) error {
+	cTag := C.CString(tag)
+	defer C.free(unsafe.Pointer(cTag))
+
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	ret := C.krun_add_virtiofs3(c.id, cTag, cPath, C.uint64_t(shmSize), C.bool(readOnly))
+	if ret < 0 {
+		return fmt.Errorf("krun_add_virtiofs3 failed: %d", ret)
 	}
 	return nil
 }

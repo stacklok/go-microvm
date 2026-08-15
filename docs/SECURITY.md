@@ -430,6 +430,19 @@ sending signals:
 This prevents sending signals to unrelated processes if the PID has
 been reused.
 
+## Read-only virtio-fs mounts
+
+`VirtioFSMount.ReadOnly` is enforced independently on both sides of the VM
+boundary. The runner uses libkrun's `krun_add_virtiofs3(..., read_only=true)` so
+the host virtio-fs device rejects writes, while guest initialization also mounts
+the filesystem with `MS_RDONLY`. The guest mount flag is defense in depth, not
+the security boundary.
+
+Read-write mounts continue to use the legacy `krun_add_virtiofs` API. Read-only
+mounts require the pinned libkrun v1.19.4 API and never fall back to guest-only
+enforcement: a missing symbol prevents the runner from loading, and an API error
+aborts configuration before `krun_start_enter()` starts the VM.
+
 ## Host Capabilities (Linux)
 
 When running as a non-root user on Linux, go-microvm requires `CAP_CHOWN` on the
