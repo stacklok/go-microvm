@@ -139,13 +139,14 @@ func TestWithVirtioFS(t *testing.T) {
 
 	cfg := defaultConfig()
 	WithVirtioFS(
-		VirtioFSMount{Tag: "workspace", HostPath: "/home/user/src"},
+		VirtioFSMount{Tag: "workspace", HostPath: "/home/user/src", StrictOwnershipPreparation: true},
 	).apply(cfg)
 
 	require.Len(t, cfg.virtioFS, 1)
 	assert.Equal(t, "workspace", cfg.virtioFS[0].Tag)
 	assert.Equal(t, "/home/user/src", cfg.virtioFS[0].HostPath)
 	assert.False(t, cfg.virtioFS[0].ReadOnly)
+	assert.True(t, cfg.virtioFS[0].StrictOwnershipPreparation)
 }
 
 func TestWithVirtioFS_ReadOnly(t *testing.T) {

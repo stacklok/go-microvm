@@ -76,13 +76,14 @@ in `microvm.Run()`:
    config (Entrypoint, Cmd, Env, WorkingDir), applying `WithInitOverride` if
    set. Writes the JSON file to `/.krun_config.json` in the rootfs.
 
-5. **Prepare virtio-fs ownership** -- For writable mounts opting into
-   `OverrideUID`, strictly prepares `override_stat` metadata through the public
-   `virtiofs.PrepareOwnership` implementation. New or changed metadata needs
-   OS xattr-write permission, so an unannotated `0400` backing file can fail
-   preparation for an unprivileged caller. Validation and preparation complete
-   before any custom network provider starts. Read-only mounts are not prepared
-   automatically.
+5. **Prepare virtio-fs ownership** -- For every mount opting into
+   `OverrideUID`, including read-only exports, prepares `override_stat` metadata
+   with descriptor-relative, symlink-confined traversal. Startup is best-effort
+   by default: recoverable entry failures are bounded in one incomplete-mount
+   warning while safe descendants, siblings, and subsequent mounts continue.
+   `StrictOwnershipPreparation` instead fails before networking. The public
+   `virtiofs.PrepareOwnership` API remains strictly fail-fast. All mount
+   configuration is validated before any metadata is stamped.
 
 6. **Start networking** -- Networking follows one of two paths:
    - **Default (no `WithNetProvider`)**: Port forwards are passed to the

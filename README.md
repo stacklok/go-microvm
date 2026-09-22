@@ -166,13 +166,16 @@ layer extraction, rootfs caching, networking setup, subprocess spawn, and
 post-boot hooks. It returns a `*VM` handle that you use to query status, stop,
 or remove the VM.
 
-Virtio-fs ownership overrides preserve host ownership and mode. Writable mounts
-with `OverrideUID` are prepared strictly before startup; read-only mounts can be
-prepared explicitly when the host OS permits the required xattr operation.
-Preparation reports path-specific errors, confines traversal beneath the selected
-root, and supports targeted updates after startup. An unprivileged caller cannot
-normally annotate an unannotated `0400` file; the permission error is actionable
-and does not weaken the backing file. See
+Virtio-fs ownership overrides preserve host ownership and mode. Mounts with
+`OverrideUID` are prepared before startup, including read-only exports. Startup
+uses bounded best-effort reporting by default: recoverable entry failures produce
+one warning for the incomplete mount while safe descendants, siblings, later
+mounts, and VM startup continue. Set `StrictOwnershipPreparation: true` on a
+mount to fail startup before networking. The public
+`virtiofs.PrepareOwnership` API is always strict and supports targeted updates
+after startup. Both policies use the same descriptor-relative, symlink-confined
+filesystem operations. New or changed xattrs still require host permission; no
+path implicitly changes mode or ownership. See
 [macOS support](docs/MACOS.md#virtio-fs-shared-directory-ownership) and
 [release notes](docs/RELEASE_NOTES.md).
 

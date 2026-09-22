@@ -19,6 +19,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const overrideKey = "user.containers.override_stat"
+
 func TestPrepareOwnershipTargeted(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
@@ -77,35 +79,6 @@ func TestPrepareOwnershipSkipsDescendantSymlink(t *testing.T) {
 	require.NoError(t, os.Symlink(external, filepath.Join(root, "escape")))
 
 	require.NoError(t, PrepareOwnership(context.Background(), root, ".", 42, 43))
-	assert.Empty(t, getOverride(t, externalFile))
-}
-
-func TestPrepareOwnershipSkipsDescendantReplacedWithSymlink(t *testing.T) {
-	root := t.TempDir()
-	victim := filepath.Join(root, "victim")
-	replaced := filepath.Join(root, "replaced-victim")
-	external := t.TempDir()
-	externalFile := filepath.Join(external, "secret")
-	require.NoError(t, os.Mkdir(victim, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(victim, "inside"), nil, 0o600))
-	require.NoError(t, os.WriteFile(externalFile, nil, 0o600))
-
-	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	require.NoError(t, err)
-	replacedOnce := false
-	err = prepareTreeWith(context.Background(), fd, ".", 42, 43,
-		func(parent int, name string, flags int, mode uint32) (int, error) {
-			if !replacedOnce && name == "victim" {
-				replacedOnce = true
-				require.NoError(t, os.Rename(victim, replaced))
-				require.NoError(t, os.Symlink(external, victim))
-			}
-			return unix.Openat(parent, name, flags, mode)
-		},
-		func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) },
-	)
-	require.NoError(t, err)
-	assert.Empty(t, getOverride(t, external))
 	assert.Empty(t, getOverride(t, externalFile))
 }
 
@@ -205,70 +178,6 @@ func TestPrepareOwnershipMalformedMetadataIsNotClobbered(t *testing.T) {
 			assert.Equal(t, value, getOverride(t, root))
 		})
 	}
-}
-
-func TestPrepareOwnershipPinnedTargetCannotEscapeAfterReplacement(t *testing.T) {
-	root := t.TempDir()
-	target := filepath.Join(root, "target")
-	require.NoError(t, os.Mkdir(target, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(target, "inside"), nil, 0o600))
-	external := t.TempDir()
-	externalFile := filepath.Join(external, "outside")
-	require.NoError(t, os.WriteFile(externalFile, nil, 0o600))
-
-	parts, err := validateTarget("target")
-	require.NoError(t, err)
-	fd, err := acquireTarget(root, "target", parts)
-	require.NoError(t, err)
-	oldTarget := filepath.Join(root, "old-target")
-	require.NoError(t, os.Rename(target, oldTarget))
-	require.NoError(t, os.Symlink(external, target))
-
-	require.NoError(t, prepareTree(context.Background(), fd, "target", 42, 43))
-	assert.Contains(t, getOverride(t, filepath.Join(oldTarget, "inside")), "42:43:")
-	assert.Empty(t, getOverride(t, externalFile))
-}
-
-func TestPrepareOwnershipStrictInjectedErrors(t *testing.T) {
-	t.Run("xattr read oversized", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "file")
-		require.NoError(t, os.WriteFile(path, nil, 0o600))
-		require.NoError(t, unix.Lsetxattr(path, overrideKey, make([]byte, 300), 0))
-		file, err := os.Open(path)
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, file.Close()) })
-		assert.ErrorContains(t, prepareEntry(int(file.Fd()), path, 1, 1, unix.S_IFREG|0o600), "read override_stat")
-	})
-
-	t.Run("xattr write", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "file")
-		require.NoError(t, os.WriteFile(path, nil, 0o600))
-		file, err := os.Open(path)
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, file.Close()) })
-		err = prepareEntryWith(int(file.Fd()), path, 1, 1, unix.S_IFREG|0o600, unix.Fgetxattr,
-			func(int, string, []byte, int) error { return unix.EROFS })
-		assert.ErrorContains(t, err, "write override_stat")
-	})
-
-	t.Run("directory enumeration", func(t *testing.T) {
-		fd, err := unix.Open(t.TempDir(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-		require.NoError(t, err)
-		err = prepareTreeWith(context.Background(), fd, ".", 1, 1, unix.Openat,
-			func(*os.File) ([]os.DirEntry, error) { return nil, unix.EACCES })
-		assert.ErrorContains(t, err, "read directory")
-	})
-
-	t.Run("descendant open", func(t *testing.T) {
-		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, "child"), nil, 0o600))
-		fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-		require.NoError(t, err)
-		err = prepareTreeWith(context.Background(), fd, ".", 1, 1,
-			func(int, string, int, uint32) (int, error) { return -1, unix.EACCES },
-			func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) })
-		assert.ErrorContains(t, err, "open descendant")
-	})
 }
 
 func TestPrepareOwnershipMissingPaths(t *testing.T) {

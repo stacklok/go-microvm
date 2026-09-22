@@ -37,11 +37,11 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
 	rootfspkg "github.com/stacklok/go-microvm/rootfs"
 	"github.com/stacklok/go-microvm/state"
-	"github.com/stacklok/go-microvm/virtiofs"
 )
 
 // Run pulls an OCI image and boots it as a microVM. It is the primary entry
@@ -210,8 +210,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 
 	// 5. Validate and prepare ownership overrides before starting networking.
-	// Read-only backing directories are deliberately not modified at startup;
-	// callers can prepare them explicitly with virtiofs.PrepareOwnership.
+	// Validation is completed for every mount before any host metadata is changed.
 	for _, m := range cfg.virtioFS {
 		if m.OverrideUID < 0 || m.OverrideGID < 0 {
 			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must be non-negative", m.Tag)
@@ -226,17 +225,25 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 
 	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
 	for _, m := range cfg.virtioFS {
-		if m.OverrideUID > 0 && !m.ReadOnly {
-			gid := m.OverrideGID
-			if gid == 0 {
-				gid = m.OverrideUID
-			}
-			if err := virtiofs.PrepareOwnership(ctx, m.HostPath, ".", uint32(m.OverrideUID), uint32(gid)); err != nil {
-				xattrSpan.RecordError(err)
-				xattrSpan.SetStatus(codes.Error, err.Error())
-				xattrSpan.End()
-				return nil, fmt.Errorf("prepare virtiofs mount %q ownership: %w", m.Tag, err)
-			}
+		if m.OverrideUID == 0 {
+			continue
+		}
+		gid := m.OverrideGID
+		if gid == 0 {
+			gid = m.OverrideUID
+		}
+		report, err := xattr.PrepareOwnership(ctx, m.HostPath, ".", uint32(m.OverrideUID), uint32(gid), m.StrictOwnershipPreparation)
+		if err != nil {
+			xattrSpan.RecordError(err)
+			xattrSpan.SetStatus(codes.Error, err.Error())
+			xattrSpan.End()
+			return nil, fmt.Errorf("prepare virtiofs mount %q ownership: %w", m.Tag, err)
+		}
+		if !report.Complete() {
+			xattrSpan.RecordError(report)
+			xattrSpan.SetStatus(codes.Error, "ownership preparation incomplete")
+			slog.Warn("virtiofs ownership preparation incomplete",
+				"tag", m.Tag, "path", m.HostPath, "errors", report.Error())
 		}
 	}
 	xattrSpan.End()

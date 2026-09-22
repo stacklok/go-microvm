@@ -62,25 +62,28 @@ type VirtioFSMount struct {
 	// krun_add_virtiofs3 API; the runner fails before VM start if it is unavailable
 	// or rejects the configuration.
 	ReadOnly bool
-	// OverrideUID, when > 0 on a writable mount, strictly prepares every
-	// regular file and directory under HostPath with libkrun's
-	// user.containers.override_stat xattr before networking or VM startup. The
-	// guest sees OverrideUID/OverrideGID while host ownership and mode remain
-	// unchanged. Symlinks below HostPath are skipped; unsupported file types,
-	// inaccessible entries, malformed xattrs, and xattr failures abort startup.
-	// New or changed xattrs require the OS permission to write xattrs; an
-	// unannotated 0400 backing file can therefore fail preparation with EACCES.
-	// A new xattr derives its guest mode from the host inode, and an existing
-	// xattr preserves its guest mode bits.
+	// OverrideUID, when > 0, prepares every regular file and directory under
+	// HostPath with libkrun's user.containers.override_stat xattr before
+	// networking or VM startup. This applies to both writable and read-only
+	// exports; ReadOnly flags are not changed. The guest sees OverrideUID and
+	// OverrideGID while host ownership and mode remain unchanged. Symlinks below
+	// HostPath are skipped. By default, recoverable per-entry failures are logged
+	// as one incomplete-mount warning and preparation continues through safe,
+	// accessible descendants, sibling entries, and subsequent mounts.
 	//
 	// A zero value means "no startup override." Since 0 is the zero value for
-	// int, overriding to UID 0 is not supported through this field. Read-only
-	// mounts are not modified automatically; prepare their backing directory
-	// explicitly with virtiofs.PrepareOwnership before calling Run.
+	// int, overriding to UID 0 is not supported through this field. A new xattr
+	// derives its guest mode from the host inode; an existing xattr preserves its
+	// guest mode bits.
 	OverrideUID int
 	// OverrideGID sets the group ID for the override_stat xattr.
 	// When 0 and OverrideUID > 0, defaults to OverrideUID.
 	OverrideGID int
+	// StrictOwnershipPreparation makes any ownership preparation failure abort
+	// startup before networking and VM start. It applies only when OverrideUID is
+	// greater than zero; otherwise it is a no-op. Both policies use the same
+	// descriptor-relative, no-symlink traversal and filesystem permission rules.
+	StrictOwnershipPreparation bool
 }
 
 // EgressPolicy restricts outbound VM traffic to specific DNS hostnames.

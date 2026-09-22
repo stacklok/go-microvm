@@ -88,45 +88,62 @@ The xattr is set automatically during OCI layer extraction and rootfs cloning
 
 ### virtio-fs shared directory ownership
 
-A writable `microvm.VirtioFSMount` with `OverrideUID > 0` is strictly prepared
-before networking starts. `OverrideGID` defaults to the UID. Startup fails on
-inaccessible entries, malformed metadata, unsupported special files, or xattr
-errors instead of continuing with partly incorrect guest ownership. This is a
-deliberate compatibility change from the previous best-effort behavior. There is
-no best-effort toggle for opted-in writable mounts.
+A `microvm.VirtioFSMount` with `OverrideUID > 0` is prepared before
+networking starts, whether its export is writable or read-only. `OverrideGID`
+defaults to the UID. Startup is best-effort by default: inaccessible entries,
+malformed metadata, unsupported special files, and xattr errors are retained in
+a bounded report and emitted as one warning for the incomplete mount. Traversal
+continues through safe accessible descendants, siblings, and subsequent mounts.
+Set `StrictOwnershipPreparation: true` to fail startup on the first such error.
+Root/target acquisition failures and cancellation always abort startup.
 
 ```go
-microvm.WithVirtioFS(microvm.VirtioFSMount{
-    Tag:         "shared",
-    HostPath:    "/srv/vm-share",
-    OverrideUID: 65532,
-    OverrideGID: 65532,
-})
+microvm.WithVirtioFS(
+    // Backward-compatible default: report incomplete preparation and continue.
+    microvm.VirtioFSMount{
+        Tag: "shared", HostPath: "/srv/vm-share", OverrideUID: 65532,
+    },
+    // Mecatl data must be complete before networking or VM startup.
+    microvm.VirtioFSMount{
+        Tag: "mecatl", HostPath: "/srv/mecatl", OverrideUID: 65532,
+        StrictOwnershipPreparation: true,
+    },
+)
 ```
 
-Read-only mounts are not prepared automatically, and explicit preparation does
-not change their export flags. Prepare the backing tree first when the host OS
-permits its xattr operation, then request a read-only export:
+`ReadOnly` remains enforced independently by libkrun and the guest mount. It does
+not skip ownership preparation or alter the backing inode's host mode:
 
 ```go
-if err := virtiofs.PrepareOwnership(ctx, "/srv/vm-share", ".", 65532, 65532); err != nil {
-    return err
-}
 vm, err := microvm.Run(ctx, image,
     microvm.WithVirtioFS(microvm.VirtioFSMount{
         Tag: "shared", HostPath: "/srv/vm-share", ReadOnly: true,
+        OverrideUID: 65532,
     }),
 )
 ```
 
-The same API can prepare one replaced file or subtree while a VM is running,
-without rescanning siblings:
+The same strict public API can prepare a newly created worktree within an
+already exported stable root before it is registered for consumer-level guest
+use, or one replaced file/subtree after a merge, without rescanning siblings or
+restarting the VM:
 
 ```go
+// The caller holds its normal guest/worktree synchronization here.
+if err := virtiofs.PrepareOwnership(ctx, "/srv/vm-share", "worktrees/job-42", 65532, 65532); err != nil {
+    return err
+}
+registerWorktreeWithGuest("worktrees/job-42")
+
+// After a synchronized host create or replacement:
 if err := virtiofs.PrepareOwnership(ctx, "/srv/vm-share", "results/job-42", 65532, 65532); err != nil {
     return err
 }
 ```
+
+This changes host metadata only; no dynamic mount-add API or VM restart is
+implied. The running guest or virtio-fs implementation may cache attributes, so
+there is no immediate cache-invalidation or visibility guarantee.
 
 The root must be a real directory, and the selected target must be `.` or a
 relative path. Trusted ancestor symlinks such as macOS `/var` are allowed, but
@@ -139,7 +156,24 @@ running guest.
 Host ownership and mode are unchanged. New metadata derives the guest mode from
 the host inode. Existing metadata retains its permission, set-ID, and sticky
 bits (including guest `chmod` changes), while preparation corrects the file type
-and applies the requested uid/gid. Matching metadata is not rewritten.
+and applies the requested uid/gid. Matching metadata is not rewritten. For a
+sealed snapshot, guest `0600` deliberately preserves guest-owner readability
+while host `0400` narrows the backing inode; prepare while it is `0600`, then
+explicitly narrow it:
+
+```go
+if err := virtiofs.PrepareOwnership(ctx, root, "snapshot", 65532, 65532); err != nil {
+    return err
+}
+if err := os.Chmod(filepath.Join(root, "snapshot"), 0o400); err != nil {
+    return err
+}
+```
+
+A later matching preparation only reads the metadata, so it does not need to
+rewrite the xattr. This is an explicit caller operation; preparation never calls
+`chmod`, `chown`, or widens permissions. Host mode `0400` is not itself a
+workaround for guest writes—use a read-only export for enforcement.
 
 Creating or changing metadata requires the host OS permission to write xattrs.
 An ordinary unprivileged user therefore cannot normally annotate an unannotated

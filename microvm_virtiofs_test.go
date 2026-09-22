@@ -55,26 +55,21 @@ func TestRunOwnershipFailurePreventsNetworkAndBackendStart(t *testing.T) {
 	_, err := Run(context.Background(), "unused",
 		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
 		WithRootFSPath(rootfs), WithBackend(backend), WithNetProvider(provider),
-		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, OverrideUID: 65532}),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, OverrideUID: 65532, StrictOwnershipPreparation: true}),
 	)
 	require.ErrorContains(t, err, "prepare virtiofs mount \"share\" ownership")
 	assert.Zero(t, provider.startCalls)
 	assert.Zero(t, backend.startCalls)
 }
 
-func TestExplicitlyPreparedReadOnlyMountRemainsReadOnly(t *testing.T) {
+func TestRunPreparesReadOnlyMountAndPreservesReadOnlyFlags(t *testing.T) {
 	dataDir := t.TempDir()
 	rootfs := filepath.Join(dataDir, "rootfs")
 	share := filepath.Join(dataDir, "share")
 	require.NoError(t, os.Mkdir(rootfs, 0o755))
 	require.NoError(t, os.Mkdir(share, 0o700))
 	data := filepath.Join(share, "data")
-	// This is a wiring-only preannotated snapshot: setup stamps guest 0400
-	// while the file is writable, then makes the host backing inode 0400.
-	require.NoError(t, os.WriteFile(data, []byte("readonly"), 0o600))
-	require.NoError(t, unix.Lsetxattr(data, "user.containers.override_stat", []byte("65532:65532:0100400"), 0))
-	require.NoError(t, virtiofs.PrepareOwnership(context.Background(), share, ".", 65532, 65532))
-	require.NoError(t, os.Chmod(data, 0o400))
+	require.NoError(t, os.WriteFile(data, []byte("readonly"), 0o640))
 	beforeDir, err := os.Stat(share)
 	require.NoError(t, err)
 	beforeData, err := os.Stat(data)
@@ -96,8 +91,8 @@ func TestExplicitlyPreparedReadOnlyMountRemainsReadOnly(t *testing.T) {
 	afterData, err := os.Stat(data)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o700), afterDir.Mode().Perm())
-	assert.Equal(t, os.FileMode(0o400), afterData.Mode().Perm())
-	assert.Equal(t, "65532:65532:0100400", readOverrideForRunTest(t, data))
+	assert.Equal(t, os.FileMode(0o640), afterData.Mode().Perm())
+	assert.Equal(t, "65532:65532:0100640", readOverrideForRunTest(t, data))
 	assert.Equal(t, beforeDir.Sys().(*syscall.Stat_t).Uid, afterDir.Sys().(*syscall.Stat_t).Uid)
 	assert.Equal(t, beforeDir.Sys().(*syscall.Stat_t).Gid, afterDir.Sys().(*syscall.Stat_t).Gid)
 	assert.Equal(t, beforeData.Sys().(*syscall.Stat_t).Uid, afterData.Sys().(*syscall.Stat_t).Uid)
@@ -110,33 +105,97 @@ func TestExplicitlyPreparedReadOnlyMountRemainsReadOnly(t *testing.T) {
 	require.Equal(t, []vmconfig.VirtioFSMountInfo{{Tag: "share", ReadOnly: true}}, guestConfig.VirtioFSMounts)
 }
 
-func TestRunDoesNotTraverseNonOptInOrReadOnlyMounts(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		mount VirtioFSMount
-	}{
-		{name: "non-opt-in", mount: VirtioFSMount{Tag: "share"}},
-		{name: "read-only", mount: VirtioFSMount{Tag: "share", ReadOnly: true, OverrideUID: 65532}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			dataDir := t.TempDir()
-			rootfs := filepath.Join(dataDir, "rootfs")
-			share := filepath.Join(dataDir, "share")
-			require.NoError(t, os.Mkdir(rootfs, 0o755))
-			require.NoError(t, os.Mkdir(share, 0o755))
-			require.NoError(t, unix.Lsetxattr(share, "user.containers.override_stat", []byte("malformed"), 0))
-			tt.mount.HostPath = share
-			backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
-			vm, err := Run(context.Background(), "unused",
-				WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
-				WithRootFSPath(rootfs), WithBackend(backend), WithVirtioFS(tt.mount),
-			)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = vm.Stop(context.Background()) })
-			assert.Equal(t, "malformed", readOverrideForRunTest(t, share))
-			assert.Equal(t, 1, backend.startCalls)
-		})
-	}
+func TestRunDoesNotTraverseMountWithoutOverride(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	share := filepath.Join(dataDir, "share")
+	require.NoError(t, os.Mkdir(rootfs, 0o755))
+	require.NoError(t, os.Mkdir(share, 0o755))
+	require.NoError(t, unix.Lsetxattr(share, "user.containers.override_stat", []byte("malformed"), 0))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+	vm, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, ReadOnly: true, StrictOwnershipPreparation: true}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vm.Stop(context.Background()) })
+	assert.Equal(t, "malformed", readOverrideForRunTest(t, share))
+	assert.Equal(t, 1, backend.startCalls)
+}
+
+func TestRunBestEffortOwnershipDoesNotSwallowCancellation(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	share := filepath.Join(dataDir, "share")
+	require.NoError(t, os.Mkdir(rootfs, 0o755))
+	require.NoError(t, os.Mkdir(share, 0o755))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+	provider := &mockNetProvider{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Run(ctx, "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend), WithNetProvider(provider),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, OverrideUID: 65532}),
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, provider.startCalls)
+	assert.Zero(t, backend.startCalls)
+}
+
+func TestRunValidatesAllOwnershipMountsBeforeStamping(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	first := filepath.Join(dataDir, "first")
+	require.NoError(t, os.Mkdir(rootfs, 0o755))
+	require.NoError(t, os.Mkdir(first, 0o755))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	_, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(
+			VirtioFSMount{Tag: "first", HostPath: first, OverrideUID: 65532},
+			VirtioFSMount{Tag: "invalid", HostPath: first, OverrideGID: 1},
+		),
+	)
+	require.ErrorContains(t, err, "OverrideGID set without OverrideUID")
+	_, xattrErr := unix.Lgetxattr(first, "user.containers.override_stat", make([]byte, 256))
+	assert.Error(t, xattrErr)
+	assert.Zero(t, backend.startCalls)
+}
+
+func TestRunBestEffortOwnershipContinuesMountAndSubsequentMounts(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	first := filepath.Join(dataDir, "first")
+	second := filepath.Join(dataDir, "second")
+	require.NoError(t, os.Mkdir(rootfs, 0o755))
+	require.NoError(t, os.Mkdir(first, 0o755))
+	require.NoError(t, os.Mkdir(second, 0o755))
+	require.NoError(t, unix.Lsetxattr(first, "user.containers.override_stat", []byte("malformed"), 0))
+	firstChild := filepath.Join(first, "child")
+	secondChild := filepath.Join(second, "child")
+	require.NoError(t, os.WriteFile(firstChild, nil, 0o600))
+	require.NoError(t, os.WriteFile(secondChild, nil, 0o640))
+
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+	vm, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(
+			VirtioFSMount{Tag: "first", HostPath: first, OverrideUID: 65532},
+			VirtioFSMount{Tag: "second", HostPath: second, OverrideUID: 65532},
+		),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vm.Stop(context.Background()) })
+	assert.Equal(t, "malformed", readOverrideForRunTest(t, first))
+	assert.Equal(t, "65532:65532:0100600", readOverrideForRunTest(t, firstChild))
+	assert.Equal(t, "65532:65532:0100640", readOverrideForRunTest(t, secondChild))
+	assert.Equal(t, 1, backend.startCalls)
 }
 
 func TestPrepareOwnershipAfterRunTargetsReplacementWithoutRestart(t *testing.T) {
