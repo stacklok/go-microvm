@@ -37,11 +37,11 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
-	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
 	rootfspkg "github.com/stacklok/go-microvm/rootfs"
 	"github.com/stacklok/go-microvm/state"
+	"github.com/stacklok/go-microvm/virtiofs"
 )
 
 // Run pulls an OCI image and boots it as a microVM. It is the primary entry
@@ -209,7 +209,39 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		span.End()
 	}
 
-	// 5. Start networking.
+	// 5. Validate and prepare ownership overrides before starting networking.
+	// Read-only backing directories are deliberately not modified at startup;
+	// callers can prepare them explicitly with virtiofs.PrepareOwnership.
+	for _, m := range cfg.virtioFS {
+		if m.OverrideUID < 0 || m.OverrideGID < 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must be non-negative", m.Tag)
+		}
+		if uint64(m.OverrideUID) > uint64(^uint32(0)) || uint64(m.OverrideGID) > uint64(^uint32(0)) {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must fit in uint32", m.Tag)
+		}
+		if m.OverrideUID == 0 && m.OverrideGID > 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideGID set without OverrideUID", m.Tag)
+		}
+	}
+
+	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
+	for _, m := range cfg.virtioFS {
+		if m.OverrideUID > 0 && !m.ReadOnly {
+			gid := m.OverrideGID
+			if gid == 0 {
+				gid = m.OverrideUID
+			}
+			if err := virtiofs.PrepareOwnership(ctx, m.HostPath, ".", uint32(m.OverrideUID), uint32(gid)); err != nil {
+				xattrSpan.RecordError(err)
+				xattrSpan.SetStatus(codes.Error, err.Error())
+				xattrSpan.End()
+				return nil, fmt.Errorf("prepare virtiofs mount %q ownership: %w", m.Tag, err)
+			}
+		}
+	}
+	xattrSpan.End()
+
+	// 6. Start networking.
 	//
 	// Default path: port forwards are passed to the runner, which creates
 	// an in-process VirtualNetwork (gvisor-tap-vsock) alongside the VM.
@@ -232,33 +264,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		span.End()
 	}
 
-	// 5b. Validate and set override_stat xattrs on virtiofs mount entries so
-	// the guest sees correct ownership (macOS + Linux; no-op on other platforms).
-	for _, m := range cfg.virtioFS {
-		if m.OverrideUID < 0 || m.OverrideGID < 0 {
-			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must be non-negative", m.Tag)
-		}
-		if m.OverrideUID == 0 && m.OverrideGID > 0 {
-			return nil, fmt.Errorf("virtiofs mount %q: OverrideGID set without OverrideUID", m.Tag)
-		}
-	}
-	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
-	for _, m := range cfg.virtioFS {
-		if m.OverrideUID > 0 && !m.ReadOnly {
-			gid := m.OverrideGID
-			if gid <= 0 {
-				gid = m.OverrideUID
-			}
-			if err := xattr.SetOverrideStatTree(m.HostPath, m.OverrideUID, gid); err != nil {
-				xattrSpan.RecordError(err)
-				slog.Warn("failed to set override_stat on virtiofs mount",
-					"tag", m.Tag, "path", m.HostPath, "error", err)
-			}
-		}
-	}
-	xattrSpan.End()
-
-	// 6. Start VM via backend.
+	// 7. Start VM via backend.
 	_, vmSpawnSpan := tracer.Start(ctx, "microvm.VMSpawn")
 	slog.Debug("starting VM")
 	var netEndpoint hypervisor.NetEndpoint
@@ -325,7 +331,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		ls.Release()
 	}
 
-	// 7. Post-boot hooks (no-op on happy path).
+	// 8. Post-boot hooks (no-op on happy path).
 	{
 		_, span := tracer.Start(ctx, "microvm.PostBoot")
 		for _, hook := range cfg.postBootHooks {

@@ -102,20 +102,11 @@ func TestSetOverrideStatTree_RootIsSymlink(t *testing.T) {
 	t.Parallel()
 
 	real := t.TempDir()
-	sub := filepath.Join(real, "child")
-	require.NoError(t, os.Mkdir(sub, 0o755))
-
-	// Create a symlink that points to real. The walk should resolve it
-	// and set xattrs on the real directory tree.
 	link := filepath.Join(t.TempDir(), "link")
 	require.NoError(t, os.Symlink(real, link))
 
-	require.NoError(t, SetOverrideStatTree(link, 1000, 1000))
-
-	val := readXattrOpt(t, real)
-	assert.Contains(t, val, "1000:1000:", "resolved root should have override xattr")
-	val = readXattrOpt(t, sub)
-	assert.Contains(t, val, "1000:1000:", "child dir should have override xattr")
+	err := SetOverrideStatTree(link, 1000, 1000)
+	assert.ErrorContains(t, err, "open authorized root")
 }
 
 func TestSetOverrideStatTree_DifferentUIDGID(t *testing.T) {

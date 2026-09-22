@@ -86,6 +86,76 @@ uid/gid/mode to the guest. This is the same mechanism used by podman on macOS.
 The xattr is set automatically during OCI layer extraction and rootfs cloning
 -- no user action is needed.
 
+### virtio-fs shared directory ownership
+
+A writable `microvm.VirtioFSMount` with `OverrideUID > 0` is strictly prepared
+before networking starts. `OverrideGID` defaults to the UID. Startup fails on
+inaccessible entries, malformed metadata, unsupported special files, or xattr
+errors instead of continuing with partly incorrect guest ownership. This is a
+deliberate compatibility change from the previous best-effort behavior. There is
+no best-effort toggle for opted-in writable mounts.
+
+```go
+microvm.WithVirtioFS(microvm.VirtioFSMount{
+    Tag:         "shared",
+    HostPath:    "/srv/vm-share",
+    OverrideUID: 65532,
+    OverrideGID: 65532,
+})
+```
+
+Read-only mounts are not prepared automatically, and explicit preparation does
+not change their export flags. Prepare the backing tree first when the host OS
+permits its xattr operation, then request a read-only export:
+
+```go
+if err := virtiofs.PrepareOwnership(ctx, "/srv/vm-share", ".", 65532, 65532); err != nil {
+    return err
+}
+vm, err := microvm.Run(ctx, image,
+    microvm.WithVirtioFS(microvm.VirtioFSMount{
+        Tag: "shared", HostPath: "/srv/vm-share", ReadOnly: true,
+    }),
+)
+```
+
+The same API can prepare one replaced file or subtree while a VM is running,
+without rescanning siblings:
+
+```go
+if err := virtiofs.PrepareOwnership(ctx, "/srv/vm-share", "results/job-42", 65532, 65532); err != nil {
+    return err
+}
+```
+
+The root must be a real directory, and the selected target must be `.` or a
+relative path. Trusted ancestor symlinks such as macOS `/var` are allowed, but
+the final root and every explicit relative component are opened without
+following symlinks. Descendant symlinks are skipped. Only directories and
+regular files are supported. Keep the export root stable for the VM lifetime:
+libkrun pins that host mount, so replacing the root pathname does not retarget a
+running guest.
+
+Host ownership and mode are unchanged. New metadata derives the guest mode from
+the host inode. Existing metadata retains its permission, set-ID, and sticky
+bits (including guest `chmod` changes), while preparation corrects the file type
+and applies the requested uid/gid. Matching metadata is not rewritten.
+
+Creating or changing metadata requires the host OS permission to write xattrs.
+An ordinary unprivileged user therefore cannot normally annotate an unannotated
+`0400` file. `PrepareOwnership` returns a path-specific permission error and
+leaves its host mode and IDs intact. A read-only virtio-fs export does not grant
+xattr-write permission on its backing inodes.
+
+Preparation is nontransactional. Callers must synchronize it with host rename,
+creation, and replacement and with guest access or `chmod`. There is no atomic
+visibility or cache-invalidation guarantee; a descriptor held across replacement
+continues to refer to the old inode. A hard link in the authorized tree
+authorizes changing the xattr on that inode, including names outside the tree.
+The caller must also trust and protect the root's parent while the root descriptor
+is acquired; subsequent traversal is descriptor-relative and confined beneath
+the acquired root.
+
 ## Guest Networking
 
 On macOS, libkrun's Hypervisor.framework backend pre-configures the guest

@@ -175,6 +175,8 @@ type mockBackend struct {
 	preparePath string // if set, returned instead of rootfsPath
 	startHandle hypervisor.VMHandle
 	startErr    error
+	startCalls  int
+	lastConfig  hypervisor.VMConfig
 }
 
 func (m *mockBackend) Name() string { return "mock" }
@@ -189,7 +191,9 @@ func (m *mockBackend) PrepareRootFS(_ context.Context, rootfsPath string, _ hype
 	return rootfsPath, nil
 }
 
-func (m *mockBackend) Start(_ context.Context, _ hypervisor.VMConfig) (hypervisor.VMHandle, error) {
+func (m *mockBackend) Start(_ context.Context, cfg hypervisor.VMConfig) (hypervisor.VMHandle, error) {
+	m.startCalls++
+	m.lastConfig = cfg
 	return m.startHandle, m.startErr
 }
 

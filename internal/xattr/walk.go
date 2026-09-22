@@ -6,60 +6,18 @@
 package xattr
 
 import (
+	"context"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"strings"
+	"math"
+
+	"github.com/stacklok/go-microvm/virtiofs"
 )
 
-// SetOverrideStatTree walks root and sets user.containers.override_stat
-// on every file and directory. Each entry's real mode (from Lstat) is
-// preserved in the xattr value. Symlinks are skipped — they cannot carry
-// user.* xattrs on Linux, and skipping them prevents setting xattrs
-// outside the mount boundary via symlink traversal.
-//
-// The root path is resolved via [filepath.EvalSymlinks] before walking,
-// and every visited entry is verified to remain under the resolved root.
-//
-// Errors on individual entries are logged at debug level and skipped.
-// Returns an error only if the root itself cannot be accessed.
-//
-// On platforms other than macOS and Linux a no-op stub is provided.
+// SetOverrideStatTree strictly prepares the entire root for virtio-fs ownership
+// mapping. New code should call [virtiofs.PrepareOwnership] directly.
 func SetOverrideStatTree(root string, uid, gid int) error {
-	if _, err := os.Lstat(root); err != nil {
-		return fmt.Errorf("access root %s: %w", root, err)
+	if uid < 0 || gid < 0 || uint64(uid) > math.MaxUint32 || uint64(gid) > math.MaxUint32 {
+		return fmt.Errorf("override_stat uid/gid out of uint32 range: %d:%d", uid, gid)
 	}
-
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("resolve root: %w", err)
-	}
-	realRoot = filepath.Clean(realRoot)
-	rootPrefix := realRoot + string(filepath.Separator)
-
-	return filepath.WalkDir(realRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // best-effort, skip inaccessible entries
-		}
-		// Skip symlinks: prevents setting xattrs outside mount boundary,
-		// and Linux rejects user.* xattrs on symlinks anyway.
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		// Boundary check: verify path stays under resolved root.
-		cleanPath := filepath.Clean(path)
-		if cleanPath != realRoot && !strings.HasPrefix(cleanPath, rootPrefix) {
-			if d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		SetOverrideStat(path, uid, gid, info.Mode())
-		return nil
-	})
+	return virtiofs.PrepareOwnership(context.Background(), root, ".", uint32(uid), uint32(gid))
 }

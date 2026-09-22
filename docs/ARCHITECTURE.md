@@ -76,7 +76,15 @@ in `microvm.Run()`:
    config (Entrypoint, Cmd, Env, WorkingDir), applying `WithInitOverride` if
    set. Writes the JSON file to `/.krun_config.json` in the rootfs.
 
-5. **Start networking** -- Networking follows one of two paths:
+5. **Prepare virtio-fs ownership** -- For writable mounts opting into
+   `OverrideUID`, strictly prepares `override_stat` metadata through the public
+   `virtiofs.PrepareOwnership` implementation. New or changed metadata needs
+   OS xattr-write permission, so an unannotated `0400` backing file can fail
+   preparation for an unprivileged caller. Validation and preparation complete
+   before any custom network provider starts. Read-only mounts are not prepared
+   automatically.
+
+6. **Start networking** -- Networking follows one of two paths:
    - **Default (no `WithNetProvider`)**: Port forwards are passed to the
      runner via `runner.Config`. The runner creates an in-process
      VirtualNetwork (gvisor-tap-vsock) connected via a socketpair.
@@ -90,14 +98,14 @@ in `microvm.Run()`:
    runs the VirtualNetwork in the caller's process and supports HTTP
    services on the gateway IP.
 
-6. **Start VM via backend** -- The `hypervisor.Backend` handles rootfs
+7. **Start VM via backend** -- The `hypervisor.Backend` handles rootfs
    preparation and VM launch. The default libkrun backend serializes
    `runner.Config` as JSON and spawns `go-microvm-runner` as a detached
    subprocess (`setsid` for new session). The runner is located by
    searching: explicit path, system PATH, then next to the calling
    executable. Custom backends can be provided via `WithBackend()`.
 
-7. **Post-boot hooks** -- Runs caller-provided `PostBootHook` functions. If
+8. **Post-boot hooks** -- Runs caller-provided `PostBootHook` functions. If
    any hook fails, the VM is stopped and the error is returned.
 
 ### Runner Side (go-microvm-runner)
