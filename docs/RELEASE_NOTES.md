@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## v0.0.41
 
 ### Virtio-fs ownership preparation
 
