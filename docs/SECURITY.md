@@ -464,17 +464,41 @@ capsh --addamb=cap_chown -- -c '/path/to/your-binary'
 
 ### override_stat xattr (macOS and Linux)
 
-go-microvm also sets the `user.containers.override_stat` extended attribute on
-extracted files so that libkrun's virtiofs server reports correct ownership to
-the guest. This is the same mechanism that podman uses on macOS.
+go-microvm sets `user.containers.override_stat` on extracted files so libkrun's
+virtiofs server reports intended guest ownership without changing host uid, gid,
+or mode. This is the mechanism podman uses on macOS. Image extraction and hooks
+retain their single-entry best-effort behavior for compatibility.
 
-On Linux, the xattr is set on regular files and directories. The kernel
-restricts `user.*` xattrs on symlinks and special files, so those are silently
-skipped. Once libkrun's Linux virtiofs passthrough adds support for reading
-these xattrs (the same support already exists on macOS), file ownership in the
-guest will be correct without requiring `CAP_CHOWN`.
+For shared virtio-fs trees, mounts with `OverrideUID > 0`, including read-only
+exports, use the same descriptor-relative ownership walker before networking.
+Startup is best-effort by default: recoverable per-entry failures are retained in
+a bounded report, emitted as one warning for the incomplete mount, and do not
+stop safe descendants, siblings, later mounts, or VM startup. Setting
+`StrictOwnershipPreparation` on a mount makes the first failure fatal. Root or
+target acquisition failures and cancellation are always fatal. The public
+`virtiofs.PrepareOwnership` API is always strict.
 
-See the `internal/xattr` package for details.
+Matching existing metadata is read without a rewrite, but new or changed
+metadata requires OS permission to write xattrs. Thus an unprivileged caller can
+receive a path-specific permission error for an unannotated `0400` backing file,
+while host mode and IDs remain unchanged. New metadata derives guest mode from
+the host inode; later preparation preserves guest mode bits recorded in
+`override_stat`. Read-only export enforcement is independent and does not skip
+preparation or change the backing inode. The walker uses descriptor-relative,
+`O_NOFOLLOW` traversal after opening the authorized root. Explicit root/target
+symlinks fail, descendant symlinks are skipped, and regular files/directories
+are the only supported types. This prevents mutable intermediate symlinks from
+redirecting the walk, but does not make preparation transactional. The caller
+must trust the root's parent during root descriptor acquisition and synchronize
+rename, creation, replacement, and guest chmod. Hard links authorize their
+shared inode, including names outside the tree. There are no cache invalidation
+or atomic guest-visibility guarantees.
+
+Public strict errors and startup incomplete reports are path-specific. Valid
+matching metadata is not rewritten. Neither policy changes host ownership or
+mode, invokes `chmod`/`chown`, widens permissions, watches the tree, or claims
+atomicity. On Linux, this does not alter user-namespace behavior; it only
+prepares metadata for libkrun versions that consume `override_stat`.
 
 ## File Permissions
 

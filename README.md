@@ -16,6 +16,7 @@
     <a href="#quick-start">Quick Start</a> &middot;
     <a href="#architecture">Architecture</a> &middot;
     <a href="docs/ARCHITECTURE.md">Docs</a> &middot;
+    <a href="docs/RELEASE_NOTES.md">Release Notes</a> &middot;
     <a href="#contributing">Contributing</a> &middot;
     <a href="#license">License</a>
   </p>
@@ -164,6 +165,19 @@ func main() {
 layer extraction, rootfs caching, networking setup, subprocess spawn, and
 post-boot hooks. It returns a `*VM` handle that you use to query status, stop,
 or remove the VM.
+
+Virtio-fs ownership overrides preserve host ownership and mode. Mounts with
+`OverrideUID` are prepared before startup, including read-only exports. Startup
+uses bounded best-effort reporting by default: recoverable entry failures produce
+one warning for the incomplete mount while safe descendants, siblings, later
+mounts, and VM startup continue. Set `StrictOwnershipPreparation: true` on a
+mount to fail startup before networking. The public
+`virtiofs.PrepareOwnership` API is always strict and supports targeted updates
+after startup. Both policies use the same descriptor-relative, symlink-confined
+filesystem operations. New or changed xattrs still require host permission; no
+path implicitly changes mode or ownership. See
+[macOS support](docs/MACOS.md#virtio-fs-shared-directory-ownership) and
+[release notes](docs/RELEASE_NOTES.md).
 
 ## Advanced Usage
 
@@ -329,6 +343,7 @@ func main() {
 | `ssh` | No | ECDSA key generation and SSH client for guest communication |
 | `state` | No | flock-based state persistence with atomic JSON writes |
 | `rootfs` | No | Rootfs cloning with reflink (copy-on-write) support |
+| `virtiofs` | No | Strict, symlink-confined `override_stat` ownership preparation for shared host trees |
 | `internal/pathutil` | No | Path traversal validation for safe file operations |
 | `internal/xattr` | No | Extended attribute helpers for `override_stat` ownership mapping |
 

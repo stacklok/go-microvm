@@ -6,6 +6,8 @@
 package xattr
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,20 +104,11 @@ func TestSetOverrideStatTree_RootIsSymlink(t *testing.T) {
 	t.Parallel()
 
 	real := t.TempDir()
-	sub := filepath.Join(real, "child")
-	require.NoError(t, os.Mkdir(sub, 0o755))
-
-	// Create a symlink that points to real. The walk should resolve it
-	// and set xattrs on the real directory tree.
 	link := filepath.Join(t.TempDir(), "link")
 	require.NoError(t, os.Symlink(real, link))
 
-	require.NoError(t, SetOverrideStatTree(link, 1000, 1000))
-
-	val := readXattrOpt(t, real)
-	assert.Contains(t, val, "1000:1000:", "resolved root should have override xattr")
-	val = readXattrOpt(t, sub)
-	assert.Contains(t, val, "1000:1000:", "child dir should have override xattr")
+	err := SetOverrideStatTree(link, 1000, 1000)
+	assert.ErrorContains(t, err, "open authorized root")
 }
 
 func TestSetOverrideStatTree_DifferentUIDGID(t *testing.T) {
@@ -133,6 +126,156 @@ func TestSetOverrideStatTree_DifferentUIDGID(t *testing.T) {
 
 	val = readXattrOpt(t, filePath)
 	assert.Contains(t, val, "1000:2000:", "file should have uid=1000 gid=2000")
+}
+
+func TestPrepareOwnershipBestEffortContinuesAfterEntryFailure(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "broken-dir")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	require.NoError(t, unix.Lsetxattr(dir, overrideKey, []byte("malformed"), 0))
+	descendant := filepath.Join(dir, "descendant")
+	sibling := filepath.Join(root, "sibling")
+	require.NoError(t, os.WriteFile(descendant, nil, 0o600))
+	require.NoError(t, os.WriteFile(sibling, nil, 0o640))
+
+	report, err := PrepareOwnership(context.Background(), root, ".", 42, 43, false)
+	require.NoError(t, err)
+	require.False(t, report.Complete())
+	assert.Contains(t, report.Error(), "malformed")
+	assert.Equal(t, "42:43:0100600", readXattrOpt(t, descendant))
+	assert.Equal(t, "42:43:0100640", readXattrOpt(t, sibling))
+}
+
+func TestPrepareOwnershipBestEffortBoundsFailures(t *testing.T) {
+	root := t.TempDir()
+	for i := range maxPreparationErrors + 3 {
+		path := filepath.Join(root, fmt.Sprintf("broken-%02d", i))
+		require.NoError(t, os.WriteFile(path, nil, 0o600))
+		require.NoError(t, unix.Lsetxattr(path, overrideKey, []byte("malformed"), 0))
+	}
+	report, err := PrepareOwnership(context.Background(), root, ".", 42, 43, false)
+	require.NoError(t, err)
+	assert.Len(t, report.Errors, maxPreparationErrors)
+	assert.Equal(t, 3, report.Omitted)
+	assert.Contains(t, report.Error(), "3 additional errors omitted")
+}
+
+func TestPrepareOwnershipBestEffortKeepsSymlinkConfined(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "external")
+	require.NoError(t, os.WriteFile(external, nil, 0o600))
+	require.NoError(t, os.Symlink(external, filepath.Join(root, "link")))
+
+	report, err := PrepareOwnership(context.Background(), root, ".", 42, 43, false)
+	require.NoError(t, err)
+	assert.True(t, report.Complete())
+	assert.Empty(t, readXattrOpt(t, external))
+}
+
+func TestPrepareOwnershipBestEffortDoesNotSwallowCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := PrepareOwnership(ctx, t.TempDir(), ".", 42, 43, false)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestPrepareOwnershipInjectedFailures(t *testing.T) {
+	t.Run("xattr read oversized", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(path, nil, 0o600))
+		require.NoError(t, unix.Lsetxattr(path, overrideKey, make([]byte, 300), 0))
+		file, err := os.Open(path)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, file.Close()) })
+		assert.ErrorContains(t, prepareEntry(int(file.Fd()), path, 1, 1, unix.S_IFREG|0o600), "read override_stat")
+	})
+
+	t.Run("xattr write strict", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(path, nil, 0o600))
+		file, err := os.Open(path)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, file.Close()) })
+		err = prepareEntryWith(int(file.Fd()), path, 1, 1, unix.S_IFREG|0o600, unix.Fgetxattr,
+			func(int, string, []byte, int) error { return unix.EROFS })
+		assert.ErrorContains(t, err, "write override_stat")
+	})
+
+	t.Run("directory enumeration strict", func(t *testing.T) {
+		fd, err := unix.Open(t.TempDir(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		require.NoError(t, err)
+		report := PreparationReport{}
+		err = prepareTreeWith(context.Background(), fd, ".", 1, 1, true, &report, unix.Openat,
+			func(*os.File) ([]os.DirEntry, error) { return nil, unix.EACCES })
+		assert.ErrorContains(t, err, "read directory")
+	})
+
+	t.Run("descendant open best effort continues sibling", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(root, "blocked"), nil, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "safe"), nil, 0o640))
+		fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		require.NoError(t, err)
+		report := PreparationReport{}
+		err = prepareTreeWith(context.Background(), fd, ".", 1, 1, false, &report,
+			func(parent int, name string, flags int, mode uint32) (int, error) {
+				if name == "blocked" {
+					return -1, unix.EACCES
+				}
+				return unix.Openat(parent, name, flags, mode)
+			}, func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) })
+		require.NoError(t, err)
+		assert.Contains(t, report.Error(), "blocked")
+		assert.Equal(t, "1:1:0100640", readXattrOpt(t, filepath.Join(root, "safe")))
+	})
+}
+
+func TestPrepareOwnershipPinnedTargetCannotEscapeAfterReplacement(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "inside"), nil, 0o600))
+	external := t.TempDir()
+	externalFile := filepath.Join(external, "outside")
+	require.NoError(t, os.WriteFile(externalFile, nil, 0o600))
+
+	parts, err := validateTarget("target")
+	require.NoError(t, err)
+	fd, err := acquireTarget(root, "target", parts)
+	require.NoError(t, err)
+	oldTarget := filepath.Join(root, "old-target")
+	require.NoError(t, os.Rename(target, oldTarget))
+	require.NoError(t, os.Symlink(external, target))
+	report := PreparationReport{}
+	require.NoError(t, prepareTree(context.Background(), fd, "target", 42, 43, true, &report))
+	assert.Contains(t, readXattrOpt(t, filepath.Join(oldTarget, "inside")), "42:43:")
+	assert.Empty(t, readXattrOpt(t, externalFile))
+}
+
+func TestPrepareOwnershipDescendantReplacementCannotEscape(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	replaced := filepath.Join(root, "replaced-victim")
+	external := t.TempDir()
+	externalFile := filepath.Join(external, "secret")
+	require.NoError(t, os.Mkdir(victim, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(victim, "inside"), nil, 0o600))
+	require.NoError(t, os.WriteFile(externalFile, nil, 0o600))
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	require.NoError(t, err)
+	replacedOnce := false
+	report := PreparationReport{}
+	err = prepareTreeWith(context.Background(), fd, ".", 42, 43, false, &report,
+		func(parent int, name string, flags int, mode uint32) (int, error) {
+			if !replacedOnce && name == "victim" {
+				replacedOnce = true
+				require.NoError(t, os.Rename(victim, replaced))
+				require.NoError(t, os.Symlink(external, victim))
+			}
+			return unix.Openat(parent, name, flags, mode)
+		}, func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) })
+	require.NoError(t, err)
+	assert.Empty(t, readXattrOpt(t, externalFile))
 }
 
 // readXattrOpt reads the override_stat xattr and returns its value, or

@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build darwin
+
+package xattr
+
+import (
+	"errors"
+
+	"golang.org/x/sys/unix"
+)
+
+func isNoAttribute(err error) bool { return errors.Is(err, unix.ENOATTR) }
