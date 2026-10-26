@@ -507,7 +507,8 @@ func TestPullWithFetcher_CacheMiss(t *testing.T) {
 	require.NoError(t, err)
 
 	fetcher := &mockFetcher{img: fakeImg}
-	cache := NewCache(t.TempDir())
+	cacheDir := t.TempDir()
+	cache := NewCache(cacheDir)
 
 	rootfs, err := PullWithFetcher(context.Background(), "example.com/test:latest", cache, fetcher)
 	require.NoError(t, err)
@@ -515,8 +516,14 @@ func TestPullWithFetcher_CacheMiss(t *testing.T) {
 	assert.DirExists(t, rootfs.Path)
 	assert.NotNil(t, rootfs.Config)
 
-	// Fresh extractions are the only reference — safe to modify in place.
-	assert.False(t, rootfs.FromCache, "cache miss should set FromCache=false")
+	// The fresh extraction now lives in the cache and is reused by later
+	// pulls, so callers must COW-clone it before mutation.
+	assert.True(t, strings.HasPrefix(rootfs.Path, cacheDir+string(filepath.Separator)), "rootfs %q not in cache %q", rootfs.Path, cacheDir)
+	assert.True(t, rootfs.FromCache, "rootfs stored in the cache should set FromCache=true")
+
+	again, err := PullWithFetcher(context.Background(), "example.com/test:latest", cache, fetcher)
+	require.NoError(t, err)
+	assert.Equal(t, rootfs.Path, again.Path, "second pull reuses the cached rootfs")
 }
 
 func TestPullWithFetcher_NilCache(t *testing.T) {
