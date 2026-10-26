@@ -542,3 +542,17 @@ func TestBackend_Start_NoDisks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, spawner.captured.Disks)
 }
+
+func TestToRunnerVirtioFS_SimplifiedOwnership(t *testing.T) {
+	t.Parallel()
+
+	got := toRunnerVirtioFS([]hypervisor.FilesystemMount{
+		{Tag: "workspace", HostPath: "/tmp/src", SimplifiedOwnership: true},
+		{Tag: "data", HostPath: "/tmp/data", ReadOnly: true},
+	})
+
+	assert.Equal(t, []runner.VirtioFSMount{
+		{Tag: "workspace", HostPath: "/tmp/src", SimplifiedOwnership: true},
+		{Tag: "data", HostPath: "/tmp/data", ReadOnly: true},
+	}, got)
+}

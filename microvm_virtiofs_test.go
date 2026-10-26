@@ -167,6 +167,25 @@ func TestRunValidatesAllOwnershipMountsBeforeStamping(t *testing.T) {
 	assert.Zero(t, backend.startCalls)
 }
 
+func TestRunRejectsSimplifiedOwnershipWithOverride(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	share := filepath.Join(dataDir, "share")
+	require.NoError(t, os.Mkdir(rootfs, 0o755))
+	require.NoError(t, os.Mkdir(share, 0o755))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	_, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, OverrideUID: 65532, SimplifiedOwnership: true}),
+	)
+	require.ErrorContains(t, err, "SimplifiedOwnership cannot be combined with OverrideUID")
+	_, xattrErr := unix.Lgetxattr(share, "user.containers.override_stat", make([]byte, 256))
+	assert.Error(t, xattrErr)
+	assert.Zero(t, backend.startCalls)
+}
+
 func TestRunBestEffortOwnershipContinuesMountAndSubsequentMounts(t *testing.T) {
 	dataDir := t.TempDir()
 	rootfs := filepath.Join(dataDir, "rootfs")

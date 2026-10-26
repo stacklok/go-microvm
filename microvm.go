@@ -229,6 +229,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		if m.OverrideUID == 0 && m.OverrideGID > 0 {
 			return nil, fmt.Errorf("virtiofs mount %q: OverrideGID set without OverrideUID", m.Tag)
 		}
+		if m.SimplifiedOwnership && m.OverrideUID > 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership cannot be combined with OverrideUID", m.Tag)
+		}
 	}
 
 	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
@@ -638,7 +641,12 @@ func buildVMConfig(cfg *config) vmconfig.Config {
 func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 	out := make([]hypervisor.FilesystemMount, len(mounts))
 	for i, m := range mounts {
-		out[i] = hypervisor.FilesystemMount{Tag: m.Tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly}
+		out[i] = hypervisor.FilesystemMount{
+			Tag:                 m.Tag,
+			HostPath:            m.HostPath,
+			ReadOnly:            m.ReadOnly,
+			SimplifiedOwnership: m.SimplifiedOwnership,
+		}
 	}
 	return out
 }
