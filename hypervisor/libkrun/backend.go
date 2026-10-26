@@ -177,6 +177,7 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 		NetSocket:     netSocket,
 		PortForwards:  toRunnerPortForwards(cfg.PortForwards),
 		VirtioFS:      toRunnerVirtioFS(cfg.FilesystemMounts),
+		Disks:         toRunnerDisks(cfg.Disks),
 		VsockPorts:    toRunnerVsockPorts(cfg.VsockPorts),
 		ConsoleLog:    cfg.ConsoleLogPath,
 		LogLevel:      cfg.LogLevel,
@@ -213,6 +214,17 @@ func toRunnerVirtioFS(mounts []hypervisor.FilesystemMount) []runner.VirtioFSMoun
 	out := make([]runner.VirtioFSMount, len(mounts))
 	for i, m := range mounts {
 		out[i] = runner.VirtioFSMount{Tag: m.Tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly}
+	}
+	return out
+}
+
+func toRunnerDisks(disks []hypervisor.Disk) []runner.Disk {
+	if len(disks) == 0 {
+		return nil
+	}
+	out := make([]runner.Disk, len(disks))
+	for i, d := range disks {
+		out[i] = runner.Disk{ID: d.ID, HostPath: d.HostPath, Format: d.Format, ReadOnly: d.ReadOnly}
 	}
 	return out
 }

@@ -67,6 +67,8 @@ type Config struct {
 	PortForwards []PortForward `json:"port_forwards,omitempty"`
 	// VirtioFSMounts contains virtio-fs mounts as tag:path entries.
 	VirtioFSMounts []VirtioFSMount `json:"virtiofs_mounts,omitempty"`
+	// Disks attaches host disk images as virtio-blk devices, in order.
+	Disks []Disk `json:"disks,omitempty"`
 	// VsockPorts wires guest vsock ports to host Unix domain socket paths
 	// via krun_add_vsock_port. Used by bbox-k8s for ttrpc-over-vsock.
 	VsockPorts []VsockPort `json:"vsock_ports,omitempty"`
@@ -74,6 +76,15 @@ type Config struct {
 	ConsoleLogPath string `json:"console_log_path,omitempty"`
 	// LogLevel sets the libkrun log verbosity (0-5).
 	LogLevel uint32 `json:"log_level,omitempty"`
+}
+
+// Disk represents a virtio-blk device backed by a host disk image.
+// Must match runner.Disk's JSON tags.
+type Disk struct {
+	ID       string `json:"block_id"`
+	Path     string `json:"path"`
+	Format   string `json:"format"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 // VirtioFSMount represents a virtio-fs mount point.
@@ -222,6 +233,20 @@ func runVM(config *Config) error {
 		}
 	}
 
+	// Attach virtio-blk devices in order. The format is always explicit so
+	// libkrun never probes a guest-writable image.
+	for _, disk := range config.Disks {
+		format, err := diskFormat(disk.Format)
+		if err != nil {
+			_ = ctx.Free()
+			return fmt.Errorf("disk %s: %w", disk.ID, err)
+		}
+		if err := ctx.AddDisk2(disk.ID, disk.Path, format, disk.ReadOnly); err != nil {
+			_ = ctx.Free()
+			return fmt.Errorf("add disk %s: %w", disk.ID, err)
+		}
+	}
+
 	// Configure console output.
 	if config.ConsoleLogPath != "" {
 		if err := ctx.SetConsoleOutput(config.ConsoleLogPath); err != nil {
@@ -254,6 +279,18 @@ func runVM(config *Config) error {
 
 	// Should never reach here.
 	return fmt.Errorf("unexpected return from krun_start_enter")
+}
+
+// diskFormat maps a runner disk format name to the libkrun constant.
+func diskFormat(name string) (krun.DiskFormat, error) {
+	switch name {
+	case "", "raw":
+		return krun.DiskFormatRaw, nil
+	case "qcow2":
+		return krun.DiskFormatQCOW2, nil
+	default:
+		return 0, fmt.Errorf("unsupported disk format %q", name)
+	}
 }
 
 // setupInProcessNetworking creates a gvisor-tap-vsock VirtualNetwork with

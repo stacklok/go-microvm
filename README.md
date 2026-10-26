@@ -311,6 +311,7 @@ func main() {
 | `WithPreflightChecker(c)` | Replace entire preflight checker | platform defaults |
 | `WithPreflightChecks(...)` | Add custom pre-boot checks | KVM + resources |
 | `WithVirtioFS(...)` | Host directory mounts via virtio-fs | none |
+| `WithDisks(...)` | Host image files attached as virtio-blk devices (raw or qcow2, optional read-only) | none |
 | `WithDataDir(p)` | State, cache, and log directory | `~/.config/go-microvm` |
 | `WithCleanDataDir()` | Remove existing data dir contents before boot | disabled |
 | `WithEgressPolicy(p)` | Restrict outbound traffic to allowed DNS hostnames | none |

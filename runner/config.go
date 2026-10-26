@@ -41,6 +41,8 @@ type Config struct {
 	PortForwards []PortForward `json:"port_forwards,omitempty"`
 	// VirtioFS contains virtio-fs mounts to expose host directories to the guest.
 	VirtioFS []VirtioFSMount `json:"virtiofs_mounts,omitempty"`
+	// Disks attaches host disk images as virtio-blk devices, in order.
+	Disks []Disk `json:"disks,omitempty"`
 	// VsockPorts wires guest vsock ports to host Unix domain sockets via
 	// krun_add_vsock_port. Each entry is processed in order. Used by the
 	// bbox-k8s ttrpc-over-vsock guest channel; the SSH-based brood-box
@@ -65,6 +67,18 @@ type Config struct {
 	// libkrun's virtiofs passthrough can call set_creds() without host caps.
 	// Not serialized to JSON; applied by SpawnProcess before exec.
 	UserNamespace *UserNamespaceConfig `json:"-"`
+}
+
+// Disk attaches a host disk image to the guest as a virtio-blk device.
+type Disk struct {
+	// ID is the libkrun block device identifier.
+	ID string `json:"block_id"`
+	// HostPath is the host path of the disk image file.
+	HostPath string `json:"path"`
+	// Format is the image format: "raw" or "qcow2".
+	Format string `json:"format"`
+	// ReadOnly exposes the device to the guest as read-only.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // VirtioFSMount exposes a host directory to the guest via virtio-fs.

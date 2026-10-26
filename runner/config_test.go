@@ -280,3 +280,33 @@ func TestVirtioFSMount_ReadOnly_Serialization(t *testing.T) {
 	assert.Equal(t, mount.HostPath, restored.HostPath)
 	assert.True(t, restored.ReadOnly)
 }
+
+func TestConfig_Disks_JSON(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		RootPath: "/rootfs",
+		Disks: []Disk{
+			{ID: "data", HostPath: "/var/lib/vm/data.img", Format: "raw"},
+			{ID: "seed", HostPath: "/var/lib/vm/seed.qcow2", Format: "qcow2", ReadOnly: true},
+		},
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"disks":[{"block_id":"data","path":"/var/lib/vm/data.img","format":"raw"},`)
+
+	var restored Config
+	require.NoError(t, json.Unmarshal(data, &restored))
+	assert.Equal(t, cfg.Disks, restored.Disks)
+}
+
+func TestConfig_Disks_OmitEmpty(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(Config{RootPath: "/rootfs"})
+	require.NoError(t, err)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.NotContains(t, raw, "disks", "Disks must be omitted from JSON when empty")
+}

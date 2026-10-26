@@ -46,6 +46,7 @@ type VMConfig struct {
 	RAMMiB           uint32
 	PortForwards     []PortForward
 	FilesystemMounts []FilesystemMount
+	Disks            []Disk
 	VsockPorts       []VsockPort
 	InitConfig       InitConfig
 	DataDir          string
@@ -103,5 +104,17 @@ type VsockPort struct {
 type FilesystemMount struct {
 	Tag      string
 	HostPath string
+	ReadOnly bool
+}
+
+// Disk attaches a host disk image to the guest as a block device.
+type Disk struct {
+	// ID identifies the device to the hypervisor.
+	ID string
+	// HostPath is the path of the disk image file.
+	HostPath string
+	// Format is the image format ("raw" or "qcow2").
+	Format string
+	// ReadOnly exposes the device to the guest as read-only.
 	ReadOnly bool
 }

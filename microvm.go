@@ -100,6 +100,10 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		cfg.firewallDefaultAction = firewall.Deny
 	}
 
+	if err := validateDisks(cfg); err != nil {
+		return nil, err
+	}
+
 	wireDefaultProvider(cfg)
 
 	// 1. Preflight checks.
@@ -285,6 +289,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		RAMMiB:           cfg.memory,
 		PortForwards:     toHypervisorPorts(cfg.ports),
 		FilesystemMounts: toHypervisorMounts(cfg.virtioFS),
+		Disks:            toHypervisorDisks(cfg.disks),
 		VsockPorts:       toHypervisorVsockPorts(cfg.vsockPorts),
 		InitConfig:       initCfg,
 		DataDir:          cfg.dataDir,
@@ -554,6 +559,51 @@ func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 	out := make([]hypervisor.FilesystemMount, len(mounts))
 	for i, m := range mounts {
 		out[i] = hypervisor.FilesystemMount{Tag: m.Tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly}
+	}
+	return out
+}
+
+// validateDisks checks disk options before any host state is changed.
+func validateDisks(cfg *config) error {
+	seen := make(map[string]bool, len(cfg.disks))
+	for i, d := range cfg.disks {
+		if d.ID == "" {
+			return fmt.Errorf("disk %d: ID must not be empty", i)
+		}
+		if seen[d.ID] {
+			return fmt.Errorf("disk %q: duplicate ID", d.ID)
+		}
+		seen[d.ID] = true
+		switch d.Format {
+		case "", DiskFormatRaw, DiskFormatQCOW2:
+		default:
+			return fmt.Errorf("disk %q: unsupported format %q", d.ID, d.Format)
+		}
+		if !filepath.IsAbs(d.HostPath) {
+			return fmt.Errorf("disk %q: HostPath must be absolute: %q", d.ID, d.HostPath)
+		}
+		info, err := cfg.stat(d.HostPath)
+		if err != nil {
+			return fmt.Errorf("disk %q: %w", d.ID, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("disk %q: HostPath is not a regular file: %q", d.ID, d.HostPath)
+		}
+	}
+	return nil
+}
+
+func toHypervisorDisks(disks []Disk) []hypervisor.Disk {
+	if len(disks) == 0 {
+		return nil
+	}
+	out := make([]hypervisor.Disk, len(disks))
+	for i, d := range disks {
+		format := d.Format
+		if format == "" {
+			format = DiskFormatRaw
+		}
+		out[i] = hypervisor.Disk{ID: d.ID, HostPath: d.HostPath, Format: string(format), ReadOnly: d.ReadOnly}
 	}
 	return out
 }
