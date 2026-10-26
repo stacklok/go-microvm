@@ -69,6 +69,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	if err := validateDisks(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateEnv(cfg.env); err != nil {
+		return nil, err
+	}
 
 	if cfg.cleanDataDir {
 		if err := cleanDataDir(cfg); err != nil {
@@ -529,7 +532,50 @@ func buildInitConfig(ociCfg *image.OCIConfig, cfg *config) hypervisor.InitConfig
 		ic.Cmd = cfg.initOverride
 	}
 
+	ic.Env = mergeEnv(ic.Env, cfg.env)
+
 	return ic
+}
+
+// mergeEnv returns base with each KEY=VALUE entry of extra applied: an entry
+// replaces the first base entry with the same key, otherwise it is appended.
+// libkrun's init does not overwrite variables that are already set, so a
+// duplicate key would keep its first value; merging keeps the last one.
+func mergeEnv(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	out = append(out, base...)
+	index := make(map[string]int, len(out))
+	for i, e := range out {
+		key, _, _ := strings.Cut(e, "=")
+		if _, seen := index[key]; !seen {
+			index[key] = i
+		}
+	}
+	for _, e := range extra {
+		key, _, _ := strings.Cut(e, "=")
+		if i, ok := index[key]; ok {
+			out[i] = e
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, e)
+	}
+	return out
+}
+
+// validateEnv rejects WithEnv entries that are not KEY=VALUE with a
+// non-empty key.
+func validateEnv(env []string) error {
+	for i, e := range env {
+		key, _, ok := strings.Cut(e, "=")
+		if !ok || key == "" {
+			return fmt.Errorf("env[%d] %q: want KEY=VALUE with a non-empty key", i, e)
+		}
+	}
+	return nil
 }
 
 func toHypervisorPorts(ports []PortForward) []hypervisor.PortForward {

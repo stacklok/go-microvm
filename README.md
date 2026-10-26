@@ -302,6 +302,7 @@ func main() {
 | `WithMemory(mib)` | RAM in MiB | `512` |
 | `WithPorts(...)` | TCP port forwards from host to guest | none |
 | `WithInitOverride(cmd...)` | Replace OCI ENTRYPOINT/CMD | OCI config |
+| `WithEnv(env...)` | Add or replace `KEY=VALUE` entries in the init environment (e.g. `KRUN_INIT_PID1=1` to run the workload as PID 1) | OCI config env |
 | `WithRootFSPath(path)` | Use pre-built rootfs directory, skip OCI image pull | none |
 | `WithRootFSHook(...)` | Modify rootfs before boot | none |
 | `WithPostBoot(...)` | Run logic after VM process starts | none |
