@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2021-2024 Red Hat, Inc.
 //
-// Synchronized from libkrun/libkrun@v1.19.4 (include/libkrun.h)
+// Synchronized from libkrun/libkrun@v1.19.7 (include/libkrun.h)
 // Run 'task update-libkrun-header' after bumping LIBKRUN_VERSION.
 
 #ifndef _LIBKRUN_H
@@ -528,8 +528,8 @@ int32_t krun_add_net_unixgram(uint32_t ctx_id,
  *  Zero on success or a negative error number on failure.
  */
 int32_t krun_add_net_tap(uint32_t ctx_id,
-                         char *c_tap_name,
-                         uint8_t *const c_mac,
+                         const char *c_tap_name,
+                         const uint8_t *c_mac,
                          uint32_t features,
                          uint32_t flags);
 
@@ -651,6 +651,20 @@ int32_t krun_set_gpu_options2(uint32_t ctx_id,
                               uint32_t virgl_flags,
                               uint64_t shm_size);
 
+/**
+ * Sets the file descriptor of the virgl render server to be used instead of having
+ * libvirglrenderer starting it on its own. This enables the caller to have total control
+ * over the context where the render server is started.
+ *
+ * Arguments:
+ *  "ctx_id"            - the configuration context ID.
+ *  "render_server_fd"  - the file descriptor of the render server.
+ *
+ * Returns:
+ *  Zero on success or a negative error number on failure.
+ */
+int32_t krun_set_gpu_render_server_fd(uint32_t ctx_id, int render_server_fd);
+
 /* Maximum number of displays. Same as VIRTIO_GPU_MAX_SCANOUTS defined in the virtio-gpu spec */
 #define KRUN_MAX_DISPLAYS 16
 
@@ -764,12 +778,12 @@ int krun_add_input_device(uint32_t ctx_id, const void *config_backend, size_t co
                             const void *events_backend, size_t events_backend_size);
 
 /**
- * Creates a passthrough input device from a host /dev/input/* file descriptor.
+ * Creates a passthrough input device from a host /dev/input/event* file descriptor.
  * The device configuration will be automatically queried from the host device using ioctls.
  * 
  * Arguments:
  *  "ctx_id"  - The krun context
- *  "input_fd" - File descriptor to a /dev/input/* device on the host
+ *  "input_fd" - File descriptor to a /dev/input/event* device on the host
  *
  * Returns:
  *  Zero on success or a negative error code otherwise.
@@ -959,14 +973,16 @@ int32_t krun_add_vsock_port2(uint32_t ctx_id,
 int32_t krun_add_vsock(uint32_t ctx_id, uint32_t tsi_features);
 
 /**
- * Returns the eventfd file descriptor to signal the guest to shut down orderly. This must be
- * called before starting the microVM with "krun_start_event". Only available in libkrun-efi.
+ * Returns the eventfd file descriptor to signal the guest to shut down orderly. Calling this
+ * function enables the guest shutdown device for the context. This must be called before starting
+ * the microVM with "krun_start_enter". Only available on macOS/aarch64.
  *
  * Arguments:
  *  "ctx_id"    - the configuration context ID.
  *
  * Returns:
- *  The eventfd file descriptor or a negative error number on failure.
+ *  A new eventfd file descriptor owned by the caller, which must be closed, or a negative error
+ *  number on failure.
  */
 int32_t krun_get_shutdown_eventfd(uint32_t ctx_id);
 
