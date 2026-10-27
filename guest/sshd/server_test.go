@@ -443,3 +443,50 @@ func TestNoSocketWithoutForwardingRequest(t *testing.T) {
 	result := strings.TrimSpace(string(output))
 	assert.Equal(t, "unset", result, "SSH_AUTH_SOCK should not be set without forwarding request")
 }
+
+func TestExecExitsWithoutReadingStdin(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServer(t, pubKey)
+
+	client := dialSSH(t, addr, signer)
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	// Keep stdin open and never write to it: the command exits without
+	// reading input, and the exit status must still arrive.
+	stdin, err := session.StdinPipe()
+	require.NoError(t, err)
+	defer func() { _ = stdin.Close() }()
+	require.NoError(t, session.Start("echo early; exit 3"))
+
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	select {
+	case err := <-done:
+		exitErr, ok := err.(*ssh.ExitError)
+		require.True(t, ok, "expected *ssh.ExitError, got %T", err)
+		assert.Equal(t, 3, exitErr.ExitStatus())
+	case <-time.After(5 * time.Second):
+		t.Fatal("exit status not delivered while stdin stays open")
+	}
+}
+
+func TestExecReadsStdin(t *testing.T) {
+	t.Parallel()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServer(t, pubKey)
+
+	client := dialSSH(t, addr, signer)
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	session.Stdin = strings.NewReader("from stdin\n")
+	output, err := session.Output("cat")
+	require.NoError(t, err)
+	assert.Equal(t, "from stdin\n", string(output))
+}
