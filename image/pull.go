@@ -182,10 +182,12 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	}
 	xattr.SetOverrideStat(tmpDir, 0, 0, os.ModeDir|0o755)
 
-	// Move into cache if available. The extraction is fresh and this is
-	// the only reference, so FromCache stays false — callers may safely
-	// modify the rootfs in place without a COW clone.
+	// Move into cache if available. Without a cache the extraction is the
+	// only reference and callers may modify it in place. Once it is stored
+	// in the cache, later runs reuse the same directory, so it is reported
+	// as FromCache and callers COW-clone it before mutation.
 	rootfsPath := tmpDir
+	fromCache := false
 	if cache != nil {
 		_, cacheSpan := tracer.Start(ctx, "microvm.image.CacheStore")
 		if err := cache.Put(digestStr, tmpDir); err != nil {
@@ -198,13 +200,14 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		// After Put, the canonical path is in the cache.
 		if cachedPath, ok := cache.Get(digestStr); ok {
 			rootfsPath = cachedPath
+			fromCache = true
 		}
 		// Record ref→digest mapping and OCI config for next-run fast path.
 		cache.StoreRef(ref.String(), digestStr, ociCfg)
 		cacheSpan.End()
 	}
 
-	return &RootFS{Path: rootfsPath, Config: ociCfg}, nil
+	return &RootFS{Path: rootfsPath, Config: ociCfg, FromCache: fromCache}, nil
 }
 
 // extractOCIConfig parses the image configuration into our OCIConfig type.
