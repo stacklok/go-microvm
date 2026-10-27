@@ -120,10 +120,10 @@ func TestRun_InvalidDiskPreservesData(t *testing.T) {
 			)
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), "WithCleanDataDir", "reject invalid options before cleanup checks")
-			got, err := os.ReadFile(statePath)
+			got, err := os.ReadFile(statePath) //nolint:gosec // test-controlled path
 			require.NoError(t, err)
 			assert.Equal(t, state, got)
-			got, err = os.ReadFile(diskPath)
+			got, err = os.ReadFile(diskPath) //nolint:gosec // test-controlled path
 			require.NoError(t, err)
 			assert.Equal(t, "disk contents", string(got))
 		})
@@ -219,7 +219,7 @@ func TestRun_DisksWithCleanup(t *testing.T) {
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Zero(t, backend.startCalls)
-				got, readErr := os.ReadFile(statePath)
+				got, readErr := os.ReadFile(statePath) //nolint:gosec // test-controlled path
 				require.NoError(t, readErr)
 				assert.Equal(t, state, got)
 				if tt.hardLink != "" {
@@ -317,10 +317,10 @@ func TestRun_DiskCleanupCaseInsensitiveAliases(t *testing.T) {
 			}
 			_, err = Run(context.Background(), "unused", opts...)
 			require.ErrorContains(t, err, "would be removed")
-			got, err := os.ReadFile(statePath)
+			got, err := os.ReadFile(statePath) //nolint:gosec // test-controlled path
 			require.NoError(t, err)
 			assert.Equal(t, state, got)
-			got, err = os.ReadFile(diskPath)
+			got, err = os.ReadFile(diskPath) //nolint:gosec // test-controlled path
 			require.NoError(t, err)
 			assert.Equal(t, "disk contents", string(got))
 		})
