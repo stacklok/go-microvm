@@ -309,14 +309,28 @@ func (s *Server) runWithPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd *e
 // runWithoutPTY executes the command with direct stdin/stdout/stderr
 // piping, handling signal forwarding.
 func (s *Server) runWithoutPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd *exec.Cmd) int {
-	cmd.Stdin = ch
 	cmd.Stdout = ch
 	cmd.Stderr = ch.Stderr()
+	// Feed stdin through an explicit pipe instead of cmd.Stdin = ch:
+	// exec.Cmd.Wait waits for its stdin copy, which blocks reading the
+	// channel until the client sends data or EOF, so a command that exits
+	// without reading its input would never report its exit status.
+	// Wait closes this pipe once the command exits; the copy goroutine
+	// ends when the channel is closed after the exit status is sent.
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		s.logger.Error("create stdin pipe", "error", err)
+		return 1
+	}
 
 	if err := cmd.Start(); err != nil {
 		s.logger.Error("start command", "error", err)
 		return 1
 	}
+	go func() {
+		_, _ = io.Copy(stdin, ch)
+		_ = stdin.Close()
+	}()
 
 	// Handle ongoing requests in the background.
 	go func() {
@@ -330,8 +344,7 @@ func (s *Server) runWithoutPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd
 		}
 	}()
 
-	err := cmd.Wait()
-	return exitCode(err)
+	return exitCode(cmd.Wait())
 }
 
 // signalProcess forwards an SSH "signal" request to the running process.
