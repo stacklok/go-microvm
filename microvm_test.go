@@ -475,6 +475,56 @@ func TestRun_WithImageFetcher_CacheMiss(t *testing.T) {
 	assert.NotEmpty(t, vm.RootFSPath())
 }
 
+func TestRun_FreshCacheEntry_IsolatedFromRootFSHooks(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cache := image.NewCache(t.TempDir())
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+	digest, err := fakeImg.Digest()
+	require.NoError(t, err)
+	require.False(t, cache.Has(digest.String()), "image digest must initially be absent")
+
+	const imageRef = "example.com/test:latest"
+	const markerName = "rootfs-hook-marker"
+	const markerContents = "written to the working rootfs\n"
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	vm, err := Run(context.Background(), imageRef,
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithImageCache(cache),
+		WithImageFetcher(&mockImageFetcher{img: fakeImg}),
+		WithNetProvider(&mockNetProvider{sockPath: "/tmp/fake.sock"}),
+		WithBackend(backend),
+		WithRootFSHook(func(rootfsPath string, _ *image.OCIConfig) error {
+			return os.WriteFile(filepath.Join(rootfsPath, markerName), []byte(markerContents), 0o644)
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, vm.Stop(context.Background()))
+	})
+
+	workingPath := vm.RootFSPath()
+	contents, err := os.ReadFile(filepath.Join(workingPath, markerName))
+	require.NoError(t, err)
+	assert.Equal(t, markerContents, string(contents))
+	assert.Equal(t, workingPath, backend.lastConfig.RootFSPath)
+
+	cached, err := image.PullWithFetcher(context.Background(), imageRef, cache,
+		&mockImageFetcher{err: fmt.Errorf("unexpected image cache miss")})
+	require.NoError(t, err)
+	cachePath, ok := cache.Get(digest.String())
+	require.True(t, ok)
+	assert.Equal(t, cachePath, cached.Path)
+	assert.True(t, cached.FromCache)
+	assert.NotEqual(t, workingPath, cached.Path)
+	_, err = os.Stat(filepath.Join(cached.Path, markerName))
+	assert.True(t, os.IsNotExist(err), "hook marker must not exist in shared cache: %v", err)
+}
+
 func TestRun_RootfsHookError(t *testing.T) {
 	t.Parallel()
 
