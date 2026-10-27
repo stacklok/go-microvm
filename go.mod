@@ -12,7 +12,7 @@ require (
 	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/gofrs/flock v0.13.1
 	github.com/google/go-containerregistry v0.21.8
-	github.com/klauspost/compress v1.19.1
+	github.com/klauspost/compress v1.20.3
 	github.com/miekg/dns v1.1.73
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.12.1
