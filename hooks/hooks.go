@@ -226,6 +226,8 @@ func BestEffortLchown(path string, uid, gid int) error {
 		slog.Debug("lchown permission denied; relying on xattr + guest fixup",
 			"path", path, "uid", uid, "gid", gid)
 	}
-	xattr.SetOverrideStatFromPath(path, uid, gid)
+	if err := xattr.SetOverrideStatFromPath(path, uid, gid); err != nil {
+		return fmt.Errorf("set override_stat for %s: %w", path, err)
+	}
 	return nil
 }

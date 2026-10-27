@@ -143,6 +143,13 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		lc := cache.LayerCache()
 		extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", true))
 		if err := extractImageLayered(ctx, img, tmpDir, lc); err != nil {
+			if errors.Is(err, xattr.ErrPermissionRestore) {
+				_ = os.RemoveAll(tmpDir)
+				extractSpan.RecordError(err)
+				extractSpan.SetStatus(codes.Error, err.Error())
+				extractSpan.End()
+				return nil, fmt.Errorf("extract image layers: %w", err)
+			}
 			slog.Warn("layered extraction failed, falling back to flat extraction", "err", err)
 			extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", false))
 			// Clean tmpDir contents before retrying with flat extraction.
@@ -180,7 +187,10 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	if err := os.Chmod(tmpDir, 0o755); err != nil {
 		slog.Warn("chmod rootfs root dir failed", "err", err)
 	}
-	xattr.SetOverrideStat(tmpDir, 0, 0, os.ModeDir|0o755)
+	if err := xattr.SetOverrideStat(tmpDir, 0, 0, os.ModeDir|0o755); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("set rootfs override_stat: %w", err)
+	}
 
 	// Move into cache if available. Without a cache the extraction is the
 	// only reference and callers may modify it in place. Once it is stored
@@ -458,23 +468,25 @@ func applyLayerToDir(layerDir, dst string) error {
 
 		// Preserve ownership from the cached layer entry. The cached
 		// layer already has ownership set by extractTar's bestEffortLchown.
-		copyOwnership(path, target)
+		if err := copyOwnership(path, target); err != nil {
+			return fmt.Errorf("copy ownership %s: %w", rel, err)
+		}
 		return nil
 	})
 }
 
 // copyOwnership copies the uid/gid from src to dst using best-effort lchown.
-func copyOwnership(src, dst string) {
+func copyOwnership(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
-		return
+		return nil
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return
+		return nil
 	}
 	bestEffortLchown(dst, int(stat.Uid), int(stat.Gid))
-	xattr.CopyOverrideStat(src, dst)
+	return xattr.CopyOverrideStat(src, dst)
 }
 
 // copyFileToDir copies a regular file from src to target within rootDir.
@@ -748,7 +760,9 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 	// Note: uid/gid/mode come from untrusted OCI tar headers and are
 	// intentionally forwarded — the guest is hardware-isolated and the
 	// image author already controls everything the guest runs.
-	xattr.SetOverrideStat(target, hdr.Uid, hdr.Gid, hdr.FileInfo().Mode())
+	if err := xattr.SetOverrideStat(target, hdr.Uid, hdr.Gid, hdr.FileInfo().Mode()); err != nil {
+		return fmt.Errorf("set override_stat: %w", err)
+	}
 
 	return nil
 }

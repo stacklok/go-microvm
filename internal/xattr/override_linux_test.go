@@ -21,7 +21,7 @@ func TestSetOverrideStat_RegularFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "test.txt")
 	require.NoError(t, os.WriteFile(f, []byte("hello"), 0o644))
 
-	SetOverrideStat(f, 0, 0, 0o644)
+	require.NoError(t, SetOverrideStat(f, 0, 0, 0o644))
 
 	assert.Equal(t, "0:0:0100644", readXattr(t, f))
 }
@@ -32,7 +32,7 @@ func TestSetOverrideStat_ExecutableFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "bin")
 	require.NoError(t, os.WriteFile(f, []byte("#!/bin/sh"), 0o755))
 
-	SetOverrideStat(f, 0, 0, 0o755)
+	require.NoError(t, SetOverrideStat(f, 0, 0, 0o755))
 
 	assert.Equal(t, "0:0:0100755", readXattr(t, f))
 }
@@ -43,7 +43,7 @@ func TestSetOverrideStat_Directory(t *testing.T) {
 	d := filepath.Join(t.TempDir(), "dir")
 	require.NoError(t, os.Mkdir(d, 0o755))
 
-	SetOverrideStat(d, 1000, 1000, os.ModeDir|0o755)
+	require.NoError(t, SetOverrideStat(d, 1000, 1000, os.ModeDir|0o755))
 
 	assert.Equal(t, "1000:1000:040755", readXattr(t, d))
 }
@@ -54,7 +54,7 @@ func TestSetOverrideStat_RestrictiveMode(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "secret")
 	require.NoError(t, os.WriteFile(f, []byte("secret"), 0o600))
 
-	SetOverrideStat(f, 1000, 1000, 0o600)
+	require.NoError(t, SetOverrideStat(f, 1000, 1000, 0o600))
 
 	assert.Equal(t, "1000:1000:0100600", readXattr(t, f))
 }
@@ -70,7 +70,7 @@ func TestSetOverrideStat_Symlink_Skipped(t *testing.T) {
 
 	// On Linux, user.* xattrs are not allowed on symlinks.
 	// SetOverrideStat should silently skip when ModeSymlink is set.
-	SetOverrideStat(link, 0, 0, os.ModeSymlink|0o777)
+	require.NoError(t, SetOverrideStat(link, 0, 0, os.ModeSymlink|0o777))
 
 	buf := make([]byte, 256)
 	_, err := unix.Lgetxattr(link, overrideKey, buf)
@@ -83,7 +83,7 @@ func TestSetOverrideStatFromPath(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "test.sh")
 	require.NoError(t, os.WriteFile(f, []byte("#!/bin/sh"), 0o755))
 
-	SetOverrideStatFromPath(f, 0, 0)
+	require.NoError(t, SetOverrideStatFromPath(f, 0, 0))
 
 	// Mode should be read from the file (regular + 0755).
 	assert.Equal(t, "0:0:0100755", readXattr(t, f))
@@ -99,7 +99,7 @@ func TestSetOverrideStatFromPath_Symlink_Skipped(t *testing.T) {
 	require.NoError(t, os.Symlink(target, link))
 
 	// Lstat returns ModeSymlink, so SetOverrideStat's guard should fire.
-	SetOverrideStatFromPath(link, 0, 0)
+	require.NoError(t, SetOverrideStatFromPath(link, 0, 0))
 
 	buf := make([]byte, 256)
 	_, err := unix.Lgetxattr(link, overrideKey, buf)
@@ -115,8 +115,8 @@ func TestCopyOverrideStat(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("data"), 0o644))
 	require.NoError(t, os.WriteFile(dst, []byte("data"), 0o644))
 
-	SetOverrideStat(src, 42, 42, 0o755)
-	CopyOverrideStat(src, dst)
+	require.NoError(t, SetOverrideStat(src, 42, 42, 0o755))
+	require.NoError(t, CopyOverrideStat(src, dst))
 
 	assert.Equal(t, "42:42:0100755", readXattr(t, dst))
 }
@@ -131,7 +131,7 @@ func TestCopyOverrideStat_NoXattr(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, []byte("data"), 0o644))
 
 	// No xattr on src — should be a no-op.
-	CopyOverrideStat(src, dst)
+	require.NoError(t, CopyOverrideStat(src, dst))
 
 	buf := make([]byte, 256)
 	_, err := unix.Lgetxattr(dst, overrideKey, buf)
