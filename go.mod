@@ -14,7 +14,7 @@ require (
 	github.com/google/go-containerregistry v0.21.8
 	github.com/klauspost/compress v1.19.1
 	github.com/miekg/dns v1.1.73
-	github.com/sirupsen/logrus v1.9.4
+	github.com/sirupsen/logrus v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/vishvananda/netlink v1.3.1
 	go.opentelemetry.io/otel v1.47.0
