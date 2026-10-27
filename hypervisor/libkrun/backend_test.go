@@ -508,3 +508,37 @@ func TestBackend_Start_WithoutUserNamespace(t *testing.T) {
 
 // Verify mockSource implements extract.Source.
 var _ extract.Source = (*mockSource)(nil)
+
+func TestBackend_Start_PassesDisksToRunner(t *testing.T) {
+	t.Parallel()
+
+	spawner := &captureSpawner{proc: &mockProcessHandle{pid: 11, alive: true}}
+	b := NewBackend(WithSpawner(spawner))
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+		Disks: []hypervisor.Disk{
+			{ID: "data", HostPath: "/d/data.img", Format: "raw"},
+			{ID: "seed", HostPath: "/d/seed.qcow2", Format: "qcow2", ReadOnly: true},
+		},
+	}
+
+	_, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, []runner.Disk{
+		{ID: "data", HostPath: "/d/data.img", Format: "raw"},
+		{ID: "seed", HostPath: "/d/seed.qcow2", Format: "qcow2", ReadOnly: true},
+	}, spawner.captured.Disks)
+}
+
+func TestBackend_Start_NoDisks(t *testing.T) {
+	t.Parallel()
+
+	spawner := &captureSpawner{proc: &mockProcessHandle{pid: 12, alive: true}}
+	b := NewBackend(WithSpawner(spawner))
+
+	_, err := b.Start(context.Background(), hypervisor.VMConfig{RootFSPath: t.TempDir(), DataDir: t.TempDir()})
+	require.NoError(t, err)
+	assert.Nil(t, spawner.captured.Disks)
+}

@@ -52,6 +52,39 @@ type VsockPort struct {
 	SocketPath string
 }
 
+// DiskFormat is the image format of a [Disk].
+type DiskFormat string
+
+const (
+	// DiskFormatRaw is a raw disk image. It is the default when Format is empty.
+	DiskFormatRaw DiskFormat = "raw"
+	// DiskFormatQCOW2 is a QCOW2 disk image. The image and its entire backing
+	// chain must be fully trusted, even when [Disk.ReadOnly] is true.
+	DiskFormatQCOW2 DiskFormat = "qcow2"
+)
+
+// Disk attaches a host disk image to the guest as a virtio-blk device.
+// Devices appear in the guest in the order they are added (/dev/vda,
+// /dev/vdb, ...); the guest is responsible for mounting them.
+// QCOW2 images and their backing chains must be fully trusted, even read-only.
+// Host-level image metadata writable by a guest must not be trusted on reuse.
+type Disk struct {
+	// ID identifies the device to libkrun. It must be non-empty and unique.
+	ID string
+	// HostPath is the absolute path of an existing disk image file. With
+	// [WithCleanDataDir], it must survive cleanup. Accepted aliases are resolved
+	// before cleanup so the backend does not depend on removed symlinks.
+	HostPath string
+	// Format selects the image format explicitly; empty means [DiskFormatRaw].
+	// The format is never probed from the image contents, so a guest that
+	// writes a different image header into a raw disk cannot change how the
+	// host opens it. Explicit format does not constrain QCOW2 backing references;
+	// the entire image and backing chain must be fully trusted even with ReadOnly.
+	Format DiskFormat
+	// ReadOnly exposes the device to the guest as read-only.
+	ReadOnly bool
+}
+
 // VirtioFSMount exposes a host directory to the guest via virtio-fs.
 type VirtioFSMount struct {
 	Tag      string
@@ -118,6 +151,7 @@ type config struct {
 	dataDir               string
 	egressPolicy          *EgressPolicy
 	virtioFS              []VirtioFSMount
+	disks                 []Disk
 	imageCache            *image.Cache
 	externalCache         bool               // true when WithImageCache was called explicitly
 	imageFetcher          image.ImageFetcher // nil = default local-then-remote fallback
@@ -307,7 +341,8 @@ func WithDataDir(path string) Option {
 
 // WithCleanDataDir removes any existing data directory contents before boot.
 // Use only when the data dir is VM-scoped; the image cache is preserved if it
-// lives under the data dir.
+// lives under the data dir. Configured [Disk.HostPath] locations must survive
+// cleanup.
 func WithCleanDataDir() Option {
 	return optionFunc(func(c *config) { c.cleanDataDir = true })
 }
@@ -327,6 +362,14 @@ func WithEgressPolicy(p EgressPolicy) Option {
 // WithVirtioFS adds virtio-fs mounts that expose host directories to the guest.
 func WithVirtioFS(mounts ...VirtioFSMount) Option {
 	return optionFunc(func(c *config) { c.virtioFS = append(c.virtioFS, mounts...) })
+}
+
+// WithDisks attaches host disk images to the guest as virtio-blk devices.
+// Unlike virtio-fs, a block device keeps its filesystem inside the guest, which
+// suits workloads that need a real local filesystem (overlayfs, databases,
+// container storage) on persistent storage.
+func WithDisks(disks ...Disk) Option {
+	return optionFunc(func(c *config) { c.disks = append(c.disks, disks...) })
 }
 
 // WithImageCache sets a custom image cache. When set, [WithDataDir] will not

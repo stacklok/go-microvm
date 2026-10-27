@@ -66,6 +66,10 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		attribute.Int("microvm.memory_mib", int(cfg.memory)),
 	)
 
+	if err := validateDisks(cfg); err != nil {
+		return nil, err
+	}
+
 	if cfg.cleanDataDir {
 		if err := cleanDataDir(cfg); err != nil {
 			return nil, err
@@ -285,6 +289,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		RAMMiB:           cfg.memory,
 		PortForwards:     toHypervisorPorts(cfg.ports),
 		FilesystemMounts: toHypervisorMounts(cfg.virtioFS),
+		Disks:            toHypervisorDisks(cfg.disks),
 		VsockPorts:       toHypervisorVsockPorts(cfg.vsockPorts),
 		InitConfig:       initCfg,
 		DataDir:          cfg.dataDir,
@@ -554,6 +559,144 @@ func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 	out := make([]hypervisor.FilesystemMount, len(mounts))
 	for i, m := range mounts {
 		out[i] = hypervisor.FilesystemMount{Tag: m.Tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly}
+	}
+	return out
+}
+
+// validateDisks checks disk options before any host state is changed.
+func validateDisks(cfg *config) error {
+	seen := make(map[string]bool, len(cfg.disks))
+	for i, d := range cfg.disks {
+		if d.ID == "" {
+			return fmt.Errorf("disk %d: ID must not be empty", i)
+		}
+		if seen[d.ID] {
+			return fmt.Errorf("disk %q: duplicate ID", d.ID)
+		}
+		seen[d.ID] = true
+		switch d.Format {
+		case "", DiskFormatRaw, DiskFormatQCOW2:
+		default:
+			return fmt.Errorf("disk %q: unsupported format %q", d.ID, d.Format)
+		}
+		if !filepath.IsAbs(d.HostPath) {
+			return fmt.Errorf("disk %q: HostPath must be absolute: %q", d.ID, d.HostPath)
+		}
+		info, err := cfg.stat(d.HostPath)
+		if err != nil {
+			return fmt.Errorf("disk %q: %w", d.ID, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("disk %q: HostPath is not a regular file: %q", d.ID, d.HostPath)
+		}
+	}
+	if cfg.cleanDataDir && len(cfg.disks) > 0 {
+		return validateDiskCleanup(cfg)
+	}
+	return nil
+}
+
+// validateDiskCleanup mirrors cleanDataDir's exact-entry preservation rules.
+func validateDiskCleanup(cfg *config) error {
+	if cfg.dataDir == "" {
+		return nil
+	}
+	if _, err := cfg.stat(cfg.dataDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("check data dir for disks: %w", err)
+	}
+
+	var keep []string
+	for _, path := range []string{cacheDir(cfg), cfg.rootfsPath} {
+		if path != "" && isWithin(cfg.dataDir, path) {
+			keep = append(keep, path)
+		}
+	}
+	type cleanupEntry struct {
+		info   os.FileInfo
+		parent os.FileInfo
+	}
+	var removed []cleanupEntry
+	collect := func(path string) error {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("check disk cleanup path: %w", err)
+		}
+		var parent os.FileInfo
+		if !info.IsDir() {
+			parent, err = os.Stat(filepath.Dir(path))
+			if err != nil {
+				return fmt.Errorf("check disk cleanup parent: %w", err)
+			}
+		}
+		removed = append(removed, cleanupEntry{info, parent})
+		return nil
+	}
+	var err error
+	if len(keep) > 0 {
+		err = removeDataDirContentsExcept(collect, cfg.dataDir, keep)
+	} else {
+		err = collect(cfg.dataDir)
+	}
+	if err != nil {
+		return err
+	}
+
+	for i, d := range cfg.disks {
+		resolved, err := filepath.EvalSymlinks(d.HostPath)
+		if err != nil {
+			return fmt.Errorf("disk %q: resolve HostPath: %w", d.ID, err)
+		}
+		// Check both the configured access path and the resolved target.
+		// Lstat distinguishes removing a symlink from removing its target.
+		for _, path := range []string{d.HostPath, resolved} {
+			for {
+				info, err := os.Lstat(path)
+				if err != nil {
+					return fmt.Errorf("disk %q: check ancestor: %w", d.ID, err)
+				}
+				for _, entry := range removed {
+					if !os.SameFile(info, entry.info) {
+						continue
+					}
+					// Unlinking a hard link in another directory preserves this path.
+					if entry.parent != nil {
+						parent, err := os.Stat(filepath.Dir(path))
+						if err != nil {
+							return fmt.Errorf("disk %q: check parent: %w", d.ID, err)
+						}
+						if !os.SameFile(parent, entry.parent) {
+							continue
+						}
+					}
+					return fmt.Errorf("disk %q: HostPath would be removed by WithCleanDataDir", d.ID)
+				}
+				parent := filepath.Dir(path)
+				if parent == path {
+					break
+				}
+				path = parent
+			}
+		}
+		// Cleanup may break an indirect symlink chain even if its target survives.
+		cfg.disks[i].HostPath = resolved
+	}
+	return nil
+}
+
+func toHypervisorDisks(disks []Disk) []hypervisor.Disk {
+	if len(disks) == 0 {
+		return nil
+	}
+	out := make([]hypervisor.Disk, len(disks))
+	for i, d := range disks {
+		format := d.Format
+		if format == "" {
+			format = DiskFormatRaw
+		}
+		out[i] = hypervisor.Disk{ID: d.ID, HostPath: d.HostPath, Format: string(format), ReadOnly: d.ReadOnly}
 	}
 	return out
 }
