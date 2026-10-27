@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 
@@ -184,6 +185,30 @@ func TestRunRejectsSimplifiedOwnershipWithOverride(t *testing.T) {
 	_, xattrErr := unix.Lgetxattr(share, "user.containers.override_stat", make([]byte, 256))
 	assert.Error(t, xattrErr)
 	assert.Zero(t, backend.startCalls)
+}
+
+func TestRunSimplifiedOwnershipPlatformSupport(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	share := filepath.Join(dataDir, "share")
+	require.NoError(t, os.Mkdir(rootfs, 0o750))
+	require.NoError(t, os.Mkdir(share, 0o750))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	vm, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, SimplifiedOwnership: true}),
+	)
+	if runtime.GOOS != "darwin" {
+		require.ErrorContains(t, err, "SimplifiedOwnership is only supported on macOS hosts")
+		assert.Zero(t, backend.startCalls)
+		return
+	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vm.Stop(context.Background()) })
+	require.Len(t, backend.lastConfig.FilesystemMounts, 1)
+	assert.True(t, backend.lastConfig.FilesystemMounts[0].SimplifiedOwnership)
 }
 
 func TestRunBestEffortOwnershipContinuesMountAndSubsequentMounts(t *testing.T) {

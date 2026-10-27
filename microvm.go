@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -231,6 +232,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		}
 		if m.SimplifiedOwnership && m.OverrideUID > 0 {
 			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership cannot be combined with OverrideUID", m.Tag)
+		}
+		if m.SimplifiedOwnership && runtime.GOOS != "darwin" {
+			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership is only supported on macOS hosts", m.Tag)
 		}
 	}
 

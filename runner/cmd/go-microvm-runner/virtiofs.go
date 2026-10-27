@@ -5,7 +5,12 @@
 
 package main
 
-import "github.com/stacklok/go-microvm/krun"
+import (
+	"fmt"
+	"runtime"
+
+	"github.com/stacklok/go-microvm/krun"
+)
 
 type virtioFSMounter interface {
 	AddVirtioFS(tag, path string) error
@@ -15,6 +20,10 @@ type virtioFSMounter interface {
 
 func addVirtioFSMount(ctx virtioFSMounter, mount VirtioFSMount) error {
 	if mount.SimplifiedOwnership {
+		// libkrun's Linux passthrough backend ignores the semantics argument.
+		if runtime.GOOS != "darwin" {
+			return fmt.Errorf("virtiofs mount %q: simplified ownership is only supported on macOS hosts", mount.Tag)
+		}
 		return ctx.AddVirtioFS4(mount.Tag, mount.Path, 0, mount.ReadOnly, krun.FSSemanticsLinuxSimplified)
 	}
 	if mount.ReadOnly {

@@ -196,10 +196,17 @@ the acquired root.
 permission semantics (`krun_add_virtiofs4` with
 `KRUN_SEMANTICS_LINUX_SIMPLIFIED`). Ownership bits are ignored: every guest
 process sees itself as the owner of every file, permission bits are stored on
-the host, and idmaps are not supported. Host files are not touched, so files
-created on the host while the VM runs need no preparation. It suits writable
-project shares used by a guest user whose UID differs from the host user's. It
-cannot be combined with `OverrideUID`; `ReadOnly` still applies.
+the host, and idmaps are not supported. No startup ownership or xattr
+preparation is performed, so files created on the host while the VM runs need
+no preparation. Writable guest operations still modify host files and
+permissions. It suits writable project shares used by a guest user whose UID
+differs from the host user's. It cannot be combined with `OverrideUID`;
+`ReadOnly` still applies.
+
+The option is supported only on macOS hosts. libkrun's Linux passthrough
+backend ignores the semantics argument, so `Run` and the runner reject
+`SimplifiedOwnership` on other platforms instead of silently exposing host
+ownership.
 
 ```go
 microvm.WithVirtioFS(microvm.VirtioFSMount{

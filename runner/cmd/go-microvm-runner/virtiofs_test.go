@@ -8,6 +8,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -70,6 +71,13 @@ func TestSimplifiedOwnershipSelectsVirtioFS4(t *testing.T) {
 	}`), &cfg))
 
 	recorder := &recordingVirtioFSMounter{}
+	if runtime.GOOS != "darwin" {
+		for _, mount := range cfg.VirtioFSMounts {
+			require.ErrorContains(t, addVirtioFSMount(recorder, mount), "only supported on macOS")
+		}
+		require.Empty(t, recorder.v4Calls)
+		return
+	}
 	for _, mount := range cfg.VirtioFSMounts {
 		require.NoError(t, addVirtioFSMount(recorder, mount))
 	}

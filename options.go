@@ -121,9 +121,12 @@ type VirtioFSMount struct {
 	// permission semantics (KRUN_SEMANTICS_LINUX_SIMPLIFIED): ownership bits
 	// are ignored and every guest process sees itself as the owner of every
 	// file, while permission bits are stored on the host and idmaps are not
-	// supported. Host files are not modified. Use it when the guest user's
-	// UID differs from the host user's, for example an unprivileged container
-	// user writing a project directory. It cannot be combined with
+	// supported. No startup ownership or xattr preparation is performed, but
+	// writable guest operations still modify host files and permissions. Use it
+	// when the guest user's UID differs from the host user's, for example an
+	// unprivileged container user writing a project directory. It is supported
+	// only on macOS hosts, because libkrun's Linux passthrough backend ignores
+	// the semantics; Run rejects it elsewhere. It cannot be combined with
 	// OverrideUID. Requires the libkrun krun_add_virtiofs4 API.
 	SimplifiedOwnership bool
 }
