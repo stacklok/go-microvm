@@ -223,7 +223,7 @@ func TestRun_DisksWithCleanup(t *testing.T) {
 				require.NoError(t, readErr)
 				assert.Equal(t, state, got)
 				if tt.hardLink != "" {
-					got, readErr = os.ReadFile(filepath.Join(base, tt.hardLink))
+					got, readErr = os.ReadFile(filepath.Join(base, tt.hardLink)) //nolint:gosec // test-controlled path
 					require.NoError(t, readErr)
 					assert.Equal(t, "disk contents", string(got))
 				}
