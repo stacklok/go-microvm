@@ -217,6 +217,8 @@ func shellEscape(s string) string {
 // intended ownership to the guest, and the guest init fixes up ownership at
 // boot. Errors other than permission denied (e.g. ENOENT, EROFS, EIO) are
 // returned to the caller rather than silently dropped.
+// Failure to restore temporary host permissions while setting override_stat is
+// also returned; ordinary xattr failures remain best-effort.
 // Lchown is used instead of Chown to avoid following symlinks in the rootfs.
 func BestEffortLchown(path string, uid, gid int) error {
 	if err := os.Lchown(path, uid, gid); err != nil {
@@ -226,6 +228,8 @@ func BestEffortLchown(path string, uid, gid int) error {
 		slog.Debug("lchown permission denied; relying on xattr + guest fixup",
 			"path", path, "uid", uid, "gid", gid)
 	}
-	xattr.SetOverrideStatFromPath(path, uid, gid)
+	if err := xattr.SetOverrideStatFromPath(path, uid, gid); err != nil {
+		return fmt.Errorf("set override_stat for %s: %w", path, err)
+	}
 	return nil
 }

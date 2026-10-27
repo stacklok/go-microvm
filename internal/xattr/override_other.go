@@ -8,10 +8,10 @@ package xattr
 import "os"
 
 // SetOverrideStat is a no-op on non-darwin platforms.
-func SetOverrideStat(_ string, _, _ int, _ os.FileMode) {}
+func SetOverrideStat(_ string, _, _ int, _ os.FileMode) error { return nil }
 
 // SetOverrideStatFromPath is a no-op on non-darwin platforms.
-func SetOverrideStatFromPath(_ string, _, _ int) {}
+func SetOverrideStatFromPath(_ string, _, _ int) error { return nil }
 
 // CopyOverrideStat is a no-op on non-darwin platforms.
-func CopyOverrideStat(_, _ string) {}
+func CopyOverrideStat(_, _ string) error { return nil }

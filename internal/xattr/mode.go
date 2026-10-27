@@ -3,9 +3,16 @@
 
 package xattr
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 const overrideKey = "user.containers.override_stat"
+
+// ErrPermissionRestore reports that the temporary owner-write permission could
+// not be restored after setting an xattr.
+var ErrPermissionRestore = errors.New("restore xattr target permissions")
 
 // goFileModeToPosix converts a Go os.FileMode to a POSIX st_mode value
 // including file type bits.

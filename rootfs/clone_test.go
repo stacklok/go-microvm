@@ -4,6 +4,7 @@
 package rootfs_test
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -216,5 +217,60 @@ func TestCloneDir(t *testing.T) {
 		err := rootfs.CloneDir(linkDir, dst)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "symlink")
+	})
+
+	t.Run("cleans failed destination and permits retry", func(t *testing.T) {
+		src, err := os.MkdirTemp("/tmp", "go-microvm-clone-")
+		require.NoError(t, err)
+		restricted := filepath.Join(src, "a-restricted")
+		t.Cleanup(func() {
+			_ = os.Chmod(restricted, 0o755)
+			_ = os.RemoveAll(src)
+		})
+		require.NoError(t, os.Mkdir(restricted, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(restricted, "good.txt"), []byte("good"), 0o644))
+		require.NoError(t, os.Chmod(restricted, 0o555))
+
+		socketPath := filepath.Join(src, "z-failing.socket")
+		listener, err := net.Listen("unix", socketPath)
+		require.NoError(t, err)
+		defer func() { _ = listener.Close() }()
+
+		dst := filepath.Join(t.TempDir(), "clone")
+		err = rootfs.CloneDir(src, dst)
+		require.Error(t, err)
+		_, err = os.Lstat(dst)
+		assert.True(t, os.IsNotExist(err), "failed clone destination must be removed")
+
+		require.NoError(t, listener.Close())
+		err = os.Remove(socketPath)
+		require.True(t, err == nil || os.IsNotExist(err))
+		require.NoError(t, rootfs.CloneDir(src, dst))
+		got, err := os.ReadFile(filepath.Join(dst, "a-restricted", "good.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "good", string(got))
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(dst, "a-restricted"), 0o755) })
+	})
+
+	t.Run("rejects existing destination without touching it", func(t *testing.T) {
+		src := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(src, "source.txt"), []byte("source"), 0o644))
+
+		parent := t.TempDir()
+		target := filepath.Join(parent, "target")
+		require.NoError(t, os.Mkdir(target, 0o755))
+		marker := filepath.Join(target, "marker.txt")
+		require.NoError(t, os.WriteFile(marker, []byte("preserve"), 0o644))
+		dst := filepath.Join(parent, "clone")
+		require.NoError(t, os.Symlink(target, dst))
+
+		err := rootfs.CloneDir(src, dst)
+		require.Error(t, err)
+		linkTarget, err := os.Readlink(dst)
+		require.NoError(t, err)
+		assert.Equal(t, target, linkTarget)
+		got, err := os.ReadFile(marker)
+		require.NoError(t, err)
+		assert.Equal(t, "preserve", string(got))
 	})
 }
