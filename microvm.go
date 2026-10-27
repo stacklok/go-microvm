@@ -69,6 +69,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	if err := validateDisks(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateEnv(cfg.env); err != nil {
+		return nil, err
+	}
 
 	if cfg.cleanDataDir {
 		if err := cleanDataDir(cfg); err != nil {
@@ -529,7 +532,61 @@ func buildInitConfig(ociCfg *image.OCIConfig, cfg *config) hypervisor.InitConfig
 		ic.Cmd = cfg.initOverride
 	}
 
+	ic.Env = mergeEnv(ic.Env, cfg.env)
+
 	return ic
+}
+
+// mergeEnv applies extra entries at the first matching base position, removing
+// duplicates of overridden keys. Other base entries are preserved unchanged.
+// This makes overrides work whether init uses first-wins or last-wins semantics.
+func mergeEnv(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	overridden := make(map[string]bool, len(extra))
+	for _, e := range extra {
+		key, _, _ := strings.Cut(e, "=")
+		overridden[key] = true
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	index := make(map[string]int, len(base))
+	for _, e := range base {
+		key, _, _ := strings.Cut(e, "=")
+		if _, seen := index[key]; seen {
+			if overridden[key] {
+				continue
+			}
+		} else {
+			index[key] = len(out)
+		}
+		out = append(out, e)
+	}
+	for _, e := range extra {
+		key, _, _ := strings.Cut(e, "=")
+		if i, ok := index[key]; ok {
+			out[i] = e
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, e)
+	}
+	return out
+}
+
+// validateEnv rejects WithEnv entries that contain NUL bytes or are not
+// KEY=VALUE with a non-empty key.
+func validateEnv(env []string) error {
+	for i, e := range env {
+		if strings.ContainsRune(e, '\x00') {
+			return fmt.Errorf("env[%d]: NUL bytes are not allowed", i)
+		}
+		key, _, ok := strings.Cut(e, "=")
+		if !ok || key == "" {
+			return fmt.Errorf("env[%d] %q: want KEY=VALUE with a non-empty key", i, e)
+		}
+	}
+	return nil
 }
 
 func toHypervisorPorts(ports []PortForward) []hypervisor.PortForward {

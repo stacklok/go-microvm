@@ -141,7 +141,8 @@ type config struct {
 	tmpSizeMiB            uint32 // /tmp tmpfs size in MiB; 0 = use guest default (256)
 	ports                 []PortForward
 	initOverride          []string
-	rootfsPath            string // pre-built rootfs directory; skips OCI image pull when set
+	env                   []string // KEY=VALUE entries merged into the init environment
+	rootfsPath            string   // pre-built rootfs directory; skips OCI image pull when set
 	rootfsHooks           []RootFSHook
 	netProvider           net.Provider
 	firewallRules         []firewall.Rule
@@ -262,6 +263,20 @@ func WithPorts(forwards ...PortForward) Option {
 // This is how advanced users (e.g. toolhive-appliance) inject a custom init script.
 func WithInitOverride(cmd ...string) Option {
 	return optionFunc(func(c *config) { c.initOverride = cmd })
+}
+
+// WithEnv adds KEY=VALUE entries to the environment written to
+// .krun_config.json. libkrun's init applies this environment to itself
+// before it starts the workload, so the entries reach the workload and also
+// control init behavior; for example "KRUN_INIT_PID1=1" makes init exec the
+// workload as PID 1 instead of supervising it as a child, which an init
+// system such as systemd requires.
+//
+// An entry replaces an image environment variable with the same key; later
+// entries replace earlier ones. Multiple calls append. [Run] rejects entries
+// without "=", with an empty key, or containing NUL bytes.
+func WithEnv(env ...string) Option {
+	return optionFunc(func(c *config) { c.env = append(c.env, env...) })
 }
 
 // WithRootFSPath uses a pre-built rootfs directory instead of pulling an OCI
