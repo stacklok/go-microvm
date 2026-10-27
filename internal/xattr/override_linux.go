@@ -30,7 +30,7 @@ func SetOverrideStat(path string, uid, gid int, mode os.FileMode) {
 
 	unixMode := goFileModeToPosix(mode)
 	val := fmt.Sprintf("%d:%d:0%o", uid, gid, unixMode)
-	if err := unix.Lsetxattr(path, overrideKey, []byte(val), 0); err != nil {
+	if err := lsetxattr(path, overrideKey, []byte(val)); err != nil {
 		slog.Debug("setxattr override_stat failed", "path", path, "err", err)
 	}
 }
@@ -55,7 +55,7 @@ func CopyOverrideStat(src, dst string) {
 	if err != nil || n == 0 {
 		return
 	}
-	if err := unix.Lsetxattr(dst, overrideKey, buf[:n], 0); err != nil {
+	if err := lsetxattr(dst, overrideKey, buf[:n]); err != nil {
 		slog.Debug("copy override_stat xattr failed", "dst", dst, "err", err)
 	}
 }
