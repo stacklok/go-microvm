@@ -68,6 +68,20 @@ func TestBuildInitConfig_WithOCIConfig(t *testing.T) {
 	assert.Contains(t, ic.Env[0], "PATH=")
 }
 
+func TestBuildInitConfig_ImageEnvOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	ociCfg := &image.OCIConfig{
+		Env: []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "FOO=bar", "FOO=baz"},
+	}
+
+	ic := buildInitConfig(ociCfg, defaultConfig())
+
+	// The image's PATH replaces the default in place, while repeated image
+	// environment keys are preserved.
+	assert.Equal(t, []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "FOO=bar", "FOO=baz"}, ic.Env)
+}
+
 func TestBuildInitConfig_WithInitOverride(t *testing.T) {
 	t.Parallel()
 

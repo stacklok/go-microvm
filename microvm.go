@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -523,7 +524,7 @@ func buildInitConfig(ociCfg *image.OCIConfig, cfg *config) hypervisor.InitConfig
 		if ociCfg.WorkingDir != "" {
 			ic.WorkingDir = ociCfg.WorkingDir
 		}
-		ic.Env = append(ic.Env, ociCfg.Env...)
+		ic.Env = mergeImageEnv(ic.Env, ociCfg.Env)
 		ic.Cmd = append(ociCfg.Entrypoint, ociCfg.Cmd...)
 	}
 
@@ -572,6 +573,28 @@ func mergeEnv(base, extra []string) []string {
 		out = append(out, e)
 	}
 	return out
+}
+
+// mergeImageEnv replaces defaults with image values while preserving repeated
+// keys from the image configuration.
+func mergeImageEnv(base, imageEnv []string) []string {
+	env := slices.Clone(base)
+	baseLen := len(base)
+	replaced := make(map[string]bool, baseLen)
+	for _, entry := range imageEnv {
+		key, _, _ := strings.Cut(entry, "=")
+		i := slices.IndexFunc(env[:baseLen], func(e string) bool {
+			k, _, _ := strings.Cut(e, "=")
+			return k == key
+		})
+		if i >= 0 && !replaced[key] {
+			env[i] = entry
+			replaced[key] = true
+		} else {
+			env = append(env, entry)
+		}
+	}
+	return env
 }
 
 // validateEnv rejects WithEnv entries that contain NUL bytes or are not
