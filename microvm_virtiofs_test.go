@@ -171,8 +171,8 @@ func TestRunRejectsSimplifiedOwnershipWithOverride(t *testing.T) {
 	dataDir := t.TempDir()
 	rootfs := filepath.Join(dataDir, "rootfs")
 	share := filepath.Join(dataDir, "share")
-	require.NoError(t, os.Mkdir(rootfs, 0o755))
-	require.NoError(t, os.Mkdir(share, 0o755))
+	require.NoError(t, os.Mkdir(rootfs, 0o750))
+	require.NoError(t, os.Mkdir(share, 0o750))
 	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
 
 	_, err := Run(context.Background(), "unused",
