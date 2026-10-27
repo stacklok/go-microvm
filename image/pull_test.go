@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -433,6 +435,87 @@ type mockFetcher struct {
 
 func (m *mockFetcher) Pull(_ context.Context, _ string) (v1.Image, error) {
 	return m.img, m.err
+}
+
+type imageWithLayers struct {
+	v1.Image
+	layers []v1.Layer
+}
+
+func (i imageWithLayers) Layers() ([]v1.Layer, error) {
+	return i.layers, nil
+}
+
+type failingUncompressedLayer struct {
+	v1.Layer
+	err      error
+	failures atomic.Int32
+	accesses atomic.Int32
+}
+
+func (l *failingUncompressedLayer) Uncompressed() (io.ReadCloser, error) {
+	l.accesses.Add(1)
+	if l.failures.Add(-1) >= 0 {
+		return nil, l.err
+	}
+	return l.Layer.Uncompressed()
+}
+
+func TestPullWithFetcher_LayeredExtractionFailure(t *testing.T) {
+	baseLayer := createLayerFromEntries(t, []tarEntry{
+		{name: "file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "content"},
+	})
+	baseImage := createImageFromLayers(t, baseLayer)
+
+	tests := []struct {
+		name          string
+		extractionErr error
+		wantErr       bool
+	}{
+		{
+			name:          "permission restore error is fatal",
+			extractionErr: fmt.Errorf("restore layer xattr: %w", xattr.ErrPermissionRestore),
+			wantErr:       true,
+		},
+		{
+			name:          "ordinary extraction error falls back to flat extraction",
+			extractionErr: errors.New("layer extraction failed"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			layer := &failingUncompressedLayer{Layer: baseLayer, err: tt.extractionErr}
+			layer.failures.Store(1)
+			img := imageWithLayers{Image: baseImage, layers: []v1.Layer{layer}}
+			cacheDir := t.TempDir()
+			cache := NewCache(cacheDir)
+
+			rootfs, err := PullWithFetcher(context.Background(), "example.com/test:layered-failure", cache, &mockFetcher{img: img})
+			if tt.wantErr {
+				require.ErrorIs(t, err, xattr.ErrPermissionRestore)
+				assert.Nil(t, rootfs)
+				assert.Equal(t, int32(1), layer.accesses.Load(), "flat extraction must not access the layer")
+
+				entries, readErr := os.ReadDir(cacheDir)
+				require.NoError(t, readErr)
+				for _, entry := range entries {
+					assert.False(t, strings.HasPrefix(entry.Name(), "tmp-rootfs-"), "temporary rootfs must be removed")
+				}
+				cached, listErr := cache.List()
+				require.NoError(t, listErr)
+				assert.Empty(t, cached, "failed extraction must not publish a rootfs cache entry")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.NotNil(t, rootfs)
+			assert.Equal(t, int32(2), layer.accesses.Load(), "flat extraction must retry the layer")
+			cached, listErr := cache.List()
+			require.NoError(t, listErr)
+			assert.Len(t, cached, 1)
+		})
+	}
 }
 
 func TestExtractOCIConfig_WithConfig(t *testing.T) {

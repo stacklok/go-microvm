@@ -4,6 +4,7 @@
 package rootfs
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -24,8 +25,10 @@ import (
 // Symlinks whose targets would resolve outside dstDir are skipped to prevent
 // rootfs hooks from writing through them to arbitrary host paths.
 //
-// dstDir must not already exist; it is created by CloneDir.
-func CloneDir(srcDir, dstDir string) error {
+// dstDir must not already exist; it is created by CloneDir. If cloning fails
+// after creating dstDir, CloneDir removes that destination before returning.
+// Parent directories created to contain dstDir are preserved.
+func CloneDir(srcDir, dstDir string) (retErr error) {
 	// Guard: ensure srcDir is a real directory, not a symlink.
 	srcInfo, err := os.Lstat(srcDir)
 	if err != nil {
@@ -45,9 +48,14 @@ func CloneDir(srcDir, dstDir string) error {
 	}
 
 	// Create the root destination directory. Ensure owner-write so we can
-	// populate it; permissions are restored after the walk.
+	// populate it; permissions are restored after the walk. Create parent
+	// directories as before, but use Mkdir for the destination so an existing
+	// path is always rejected rather than reused.
 	srcPerm := srcStat.Mode().Perm()
-	if err := os.MkdirAll(dstDir, srcPerm|0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dstDir), srcPerm|0o700); err != nil {
+		return fmt.Errorf("create destination parent dir: %w", err)
+	}
+	if err := os.Mkdir(dstDir, srcPerm|0o700); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
 	}
 
@@ -57,8 +65,29 @@ func CloneDir(srcDir, dstDir string) error {
 		path string
 		perm os.FileMode
 	}
-	var dirsToRestore []dirRestore
-	dirsToRestore = append(dirsToRestore, dirRestore{path: dstDir, perm: srcPerm})
+	dirsToRestore := []dirRestore{{path: dstDir, perm: srcPerm}}
+	defer func() {
+		if retErr == nil {
+			return
+		}
+
+		// Make directories traversable and writable parent-first before removal.
+		// This destination was created above, so cleanup never touches a caller's
+		// pre-existing path.
+		var cleanupErr error
+		for _, dir := range dirsToRestore {
+			//nolint:gosec // Owner-only access is required to remove this invocation's incomplete clone.
+			if err := os.Chmod(dir.path, 0o700); err != nil && !os.IsNotExist(err) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("make clone directory writable %s: %w", dir.path, err))
+			}
+		}
+		if err := os.RemoveAll(dstDir); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove clone destination: %w", err))
+		}
+		if cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("clean up failed clone destination: %w", cleanupErr))
+		}
+	}()
 
 	walkErr := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, wErr error) error {
 		if wErr != nil {
@@ -94,7 +123,9 @@ func CloneDir(srcDir, dstDir string) error {
 				return fmt.Errorf("create directory %s: %w", relPath, err)
 			}
 			dirsToRestore = append(dirsToRestore, dirRestore{path: dstPath, perm: dirPerm})
-			bestEffortLchown(path, dstPath)
+			if err := bestEffortLchown(path, dstPath); err != nil {
+				return fmt.Errorf("copy ownership for directory %s: %w", relPath, err)
+			}
 			return nil
 		}
 
@@ -102,7 +133,9 @@ func CloneDir(srcDir, dstDir string) error {
 		if err := cloneFile(path, dstPath); err != nil {
 			return fmt.Errorf("clone file %s: %w", relPath, err)
 		}
-		bestEffortLchown(path, dstPath)
+		if err := bestEffortLchown(path, dstPath); err != nil {
+			return fmt.Errorf("copy ownership for file %s: %w", relPath, err)
+		}
 		return nil
 	})
 	if walkErr != nil {
@@ -117,7 +150,9 @@ func CloneDir(srcDir, dstDir string) error {
 
 	// Copy the override_stat xattr on the root directory itself.
 	// The walk skips "." so the root dir's xattr is not covered above.
-	xattr.CopyOverrideStat(srcDir, dstDir)
+	if err := xattr.CopyOverrideStat(srcDir, dstDir); err != nil {
+		return fmt.Errorf("copy root override_stat: %w", err)
+	}
 
 	return nil
 }
@@ -206,16 +241,17 @@ func copyFile(src, dst string) error {
 }
 
 // bestEffortLchown copies the ownership (uid/gid) from src to dst without
-// following symlinks. Failures are silently ignored (non-root can't chown).
-func bestEffortLchown(src, dst string) {
+// following symlinks. Lchown failures are ignored (non-root can't chown), but
+// unsafe override_stat permission restoration failures are returned.
+func bestEffortLchown(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
-		return
+		return nil
 	}
 	uid, gid := fileOwner(info)
 	if uid < 0 || gid < 0 {
-		return
+		return nil
 	}
 	_ = os.Lchown(dst, uid, gid)
-	xattr.CopyOverrideStat(src, dst)
+	return xattr.CopyOverrideStat(src, dst)
 }
