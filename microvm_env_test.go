@@ -55,6 +55,41 @@ func TestBuildInitConfig_WithEnv(t *testing.T) {
 			want:     []string{defaultPath, "FOO=override", "BAR=image"},
 		},
 		{
+			name:     "duplicate HOME entries are removed when overridden",
+			imageEnv: []string{"HOME=/one", "BAR=image", "HOME=/two"},
+			env:      []string{"HOME=/custom"},
+			want:     []string{defaultPath, "HOME=/custom", "BAR=image"},
+		},
+		{
+			name:     "duplicate TERM entries are removed when overridden",
+			imageEnv: []string{"TERM=linux", "TERM=vt100"},
+			env:      []string{"TERM=xterm"},
+			want:     []string{defaultPath, "TERM=xterm"},
+		},
+		{
+			name:     "duplicate ordinary keys and later overrides",
+			imageEnv: []string{"FOO=one", "FOO=two", "BAR=image"},
+			env:      []string{"FOO=first", "BAR=override", "FOO=last", "NEW=value"},
+			want:     []string{defaultPath, "FOO=last", "BAR=override", "NEW=value"},
+		},
+		{
+			name:     "unoverridden duplicates are preserved",
+			imageEnv: []string{"HOME=/one", "HOME=/two", "FOO=one", "FOO=two"},
+			env:      []string{"BAR=extra"},
+			want:     []string{defaultPath, "HOME=/one", "HOME=/two", "FOO=one", "FOO=two", "BAR=extra"},
+		},
+		{
+			name:     "no extra env preserves duplicates",
+			imageEnv: []string{"HOME=/one", "HOME=/two"},
+			want:     []string{defaultPath, "HOME=/one", "HOME=/two"},
+		},
+		{
+			name:     "default and image PATH are replaced",
+			imageEnv: []string{"PATH=/image/bin"},
+			env:      []string{"PATH=/opt/bin"},
+			want:     []string{"PATH=/opt/bin"},
+		},
+		{
 			name: "default PATH is replaced",
 			env:  []string{"PATH=/opt/bin"},
 			want: []string{"PATH=/opt/bin"},
@@ -108,6 +143,8 @@ func TestValidateEnv(t *testing.T) {
 		{name: "missing equals", env: []string{"A=1", "B"}, wantErr: `env[1] "B"`},
 		{name: "empty key", env: []string{"=1"}, wantErr: `env[0] "=1"`},
 		{name: "empty entry", env: []string{""}, wantErr: `env[0] ""`},
+		{name: "NUL in key", env: []string{"TO\x00KEN=value"}, wantErr: "env[0]: NUL bytes are not allowed"},
+		{name: "NUL in value", env: []string{"A=1", "TOKEN=before\x00after"}, wantErr: "env[1]: NUL bytes are not allowed"},
 	}
 
 	for _, tt := range tests {

@@ -537,22 +537,30 @@ func buildInitConfig(ociCfg *image.OCIConfig, cfg *config) hypervisor.InitConfig
 	return ic
 }
 
-// mergeEnv returns base with each KEY=VALUE entry of extra applied: an entry
-// replaces the first base entry with the same key, otherwise it is appended.
-// libkrun's init does not overwrite variables that are already set, so a
-// duplicate key would keep its first value; merging keeps the last one.
+// mergeEnv applies extra entries at the first matching base position, removing
+// duplicates of overridden keys. Other base entries are preserved unchanged.
+// This makes overrides work whether init uses first-wins or last-wins semantics.
 func mergeEnv(base, extra []string) []string {
 	if len(extra) == 0 {
 		return base
 	}
-	out := make([]string, 0, len(base)+len(extra))
-	out = append(out, base...)
-	index := make(map[string]int, len(out))
-	for i, e := range out {
+	overridden := make(map[string]bool, len(extra))
+	for _, e := range extra {
 		key, _, _ := strings.Cut(e, "=")
-		if _, seen := index[key]; !seen {
-			index[key] = i
+		overridden[key] = true
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	index := make(map[string]int, len(base))
+	for _, e := range base {
+		key, _, _ := strings.Cut(e, "=")
+		if _, seen := index[key]; seen {
+			if overridden[key] {
+				continue
+			}
+		} else {
+			index[key] = len(out)
 		}
+		out = append(out, e)
 	}
 	for _, e := range extra {
 		key, _, _ := strings.Cut(e, "=")
@@ -566,10 +574,13 @@ func mergeEnv(base, extra []string) []string {
 	return out
 }
 
-// validateEnv rejects WithEnv entries that are not KEY=VALUE with a
-// non-empty key.
+// validateEnv rejects WithEnv entries that contain NUL bytes or are not
+// KEY=VALUE with a non-empty key.
 func validateEnv(env []string) error {
 	for i, e := range env {
+		if strings.ContainsRune(e, '\x00') {
+			return fmt.Errorf("env[%d]: NUL bytes are not allowed", i)
+		}
 		key, _, ok := strings.Cut(e, "=")
 		if !ok || key == "" {
 			return fmt.Errorf("env[%d] %q: want KEY=VALUE with a non-empty key", i, e)

@@ -274,7 +274,7 @@ func WithInitOverride(cmd ...string) Option {
 //
 // An entry replaces an image environment variable with the same key; later
 // entries replace earlier ones. Multiple calls append. [Run] rejects entries
-// without "=" or with an empty key.
+// without "=", with an empty key, or containing NUL bytes.
 func WithEnv(env ...string) Option {
 	return optionFunc(func(c *config) { c.env = append(c.env, env...) })
 }
