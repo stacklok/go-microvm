@@ -3,7 +3,7 @@
 
 # Builder container image for building libkrun + libkrunfw from source.
 
-ARG LIBKRUN_VERSION=v1.19.4
+ARG LIBKRUN_VERSION=v1.19.7
 ARG LIBKRUNFW_VERSION=v5.5.0
 
 FROM fedora:43
