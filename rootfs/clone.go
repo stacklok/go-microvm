@@ -76,6 +76,7 @@ func CloneDir(srcDir, dstDir string) (retErr error) {
 		// pre-existing path.
 		var cleanupErr error
 		for _, dir := range dirsToRestore {
+			//nolint:gosec // Owner-only access is required to remove this invocation's incomplete clone.
 			if err := os.Chmod(dir.path, 0o700); err != nil && !os.IsNotExist(err) {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("make clone directory writable %s: %w", dir.path, err))
 			}

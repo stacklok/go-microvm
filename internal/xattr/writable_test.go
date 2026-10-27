@@ -55,6 +55,48 @@ func TestSetOverrideStat_OwnerReadOnly(t *testing.T) {
 	}
 }
 
+func TestSetOverrideStat_UnreadableTarget(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root can bypass read permissions")
+	}
+
+	tests := []struct {
+		name string
+		mode os.FileMode
+		dir  bool
+	}{
+		{name: "execute-only file", mode: 0o111},
+		{name: "inaccessible file", mode: 0o000},
+		{name: "execute-only directory", mode: 0o111, dir: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "entry")
+			mode := tt.mode
+			if tt.dir {
+				require.NoError(t, os.Mkdir(path, 0o700))
+				mode |= os.ModeDir
+			} else {
+				require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
+			}
+			t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+			require.NoError(t, os.Chmod(path, tt.mode))
+
+			require.NoError(t, SetOverrideStat(path, 0, 0, mode))
+			info, err := os.Lstat(path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.mode, info.Mode().Perm(), "unreadable target must not be chmod'ed")
+
+			// Allow inspection without relying on xattr reads on an unreadable inode.
+			require.NoError(t, os.Chmod(path, 0o600))
+			_, err = unix.Lgetxattr(path, overrideKey, make([]byte, 256))
+			assert.True(t, isNoAttribute(err), "override must be skipped, got %v", err)
+		})
+	}
+}
+
 func TestCopyOverrideStat_OwnerReadOnlyDestination(t *testing.T) {
 	t.Parallel()
 
