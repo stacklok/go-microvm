@@ -33,6 +33,11 @@ var defaultWritableOps = writableOps{
 // that inode, and restores its original POSIX permission and special bits.
 // Parent directories are trusted private preparation directories; this pins
 // only the leaf, not the full path.
+// The fallback requires read access to open the target. Callers preparing image
+// trees ensure owner-read on files and owner access on directories. If the open
+// is denied (for example, an unreadable 0111 or 0000 entry), no permissions are
+// changed and ordinary best-effort callers skip the override. Do not chmod by
+// pathname to obtain read access: that would reintroduce the replacement race.
 func lsetxattr(path, name string, value []byte) error {
 	return lsetxattrWith(path, name, value, unix.Lsetxattr, defaultWritableOps)
 }
@@ -61,7 +66,7 @@ func lsetxattrWith(path, name string, value []byte, lset func(string, string, []
 		return fmt.Errorf("stat xattr target: %w", statErr)
 	}
 	typeBits := uint32(stat.Mode) & unix.S_IFMT
-	if typeBits != unix.S_IFREG && typeBits != unix.S_IFDIR || stat.Mode&0o200 != 0 {
+	if (typeBits != unix.S_IFREG && typeBits != unix.S_IFDIR) || stat.Mode&0o200 != 0 {
 		return initialErr
 	}
 	mode := uint32(stat.Mode) & 0o7777
