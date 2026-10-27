@@ -95,7 +95,7 @@ func TestRelay_EndToEnd(t *testing.T) {
 
 	cancel()
 	// Drain the error; should be context.Canceled.
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_RejectsOversizedLengthPrefix(t *testing.T) {
@@ -176,7 +176,7 @@ func TestRelay_DroppedFrame(t *testing.T) {
 	assert.Equal(t, uint64(1), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_ARPPassthroughWithDenyAll(t *testing.T) {
@@ -215,7 +215,7 @@ func TestRelay_ARPPassthroughWithDenyAll(t *testing.T) {
 	assert.Equal(t, uint64(0), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_DropsNonIPv4UnderDenyDefault(t *testing.T) {
@@ -261,7 +261,7 @@ func TestRelay_DropsNonIPv4UnderDenyDefault(t *testing.T) {
 	assert.Equal(t, uint64(1), m.FramesDropped.Load(), "v6 frame must have been dropped")
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_Metrics(t *testing.T) {
@@ -298,7 +298,7 @@ func TestRelay_Metrics(t *testing.T) {
 	assert.Greater(t, m.BytesForwarded.Load(), uint64(0))
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_ContextCancellation(t *testing.T) {
@@ -376,7 +376,7 @@ func TestRelay_Bidirectional(t *testing.T) {
 	assert.Equal(t, uint64(2), m.FramesForwarded.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestNewRelayWithDNSHook_InterceptForward(t *testing.T) {
@@ -416,7 +416,7 @@ func TestNewRelayWithDNSHook_InterceptForward(t *testing.T) {
 	assert.Equal(t, uint64(0), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_DNSHook_InterceptDrop(t *testing.T) {
@@ -460,7 +460,7 @@ func TestRelay_DNSHook_InterceptDrop(t *testing.T) {
 	assert.Equal(t, uint64(1), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_DNSHook_InterceptRespond(t *testing.T) {
@@ -504,7 +504,7 @@ func TestRelay_DNSHook_InterceptRespond(t *testing.T) {
 	assert.Equal(t, uint64(1), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_DNSHook_IngressSnooping(t *testing.T) {
@@ -546,7 +546,7 @@ func TestRelay_DNSHook_IngressSnooping(t *testing.T) {
 	assert.Equal(t, uint64(1), m.FramesForwarded.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_DNSHook_DropsIPv6(t *testing.T) {
@@ -592,7 +592,7 @@ func TestRelay_DNSHook_DropsIPv6(t *testing.T) {
 	assert.Equal(t, uint64(1), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
 
 func TestRelay_DNSHook_AllowsARP(t *testing.T) {
@@ -633,5 +633,5 @@ func TestRelay_DNSHook_AllowsARP(t *testing.T) {
 	assert.Equal(t, uint64(0), m.FramesDropped.Load())
 
 	cancel()
-	<-errCh
+	assert.ErrorIs(t, <-errCh, context.Canceled)
 }
