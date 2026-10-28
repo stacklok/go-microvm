@@ -1413,3 +1413,27 @@ func TestExtractTar_SpecialModeBits(t *testing.T) {
 		assert.Equal(t, mode, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid), name)
 	}
 }
+
+func TestExtractImageLayered_SpecialModeBits(t *testing.T) {
+	t.Parallel()
+
+	layer := createLayerFromEntries(t, []tarEntry{
+		{name: "usr/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "usr/bin/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "usr/bin/sudo", typeflag: tar.TypeReg, mode: 0o4755, content: "sudo"},
+		{name: "usr/bin/wall", typeflag: tar.TypeReg, mode: 0o2755, content: "wall"},
+	})
+	img := createImageFromLayers(t, layer)
+	dst := t.TempDir()
+	require.NoError(t, extractImageLayered(context.Background(), img, dst, NewLayerCache(t.TempDir())))
+
+	want := map[string]os.FileMode{"sudo": 0o755, "wall": 0o755}
+	if os.Geteuid() != 0 {
+		want = map[string]os.FileMode{"sudo": os.ModeSetuid | 0o755, "wall": os.ModeSetgid | 0o755}
+	}
+	for name, mode := range want {
+		info, err := os.Stat(filepath.Join(dst, "usr", "bin", name))
+		require.NoError(t, err)
+		assert.Equal(t, mode, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid), name)
+	}
+}

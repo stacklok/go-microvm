@@ -473,8 +473,27 @@ func applyLayerToDir(layerDir, dst string) error {
 		if err := copyOwnership(path, target); err != nil {
 			return fmt.Errorf("copy ownership %s: %w", rel, err)
 		}
+		// A successful chown clears setuid and setgid; restore the bits
+		// copyFileToDir set.
+		if info.Mode().IsRegular() {
+			if err := restoreSpecialBits(target, pathutil.FileMode(info.Mode())|0o400); err != nil {
+				return fmt.Errorf("restore mode %s: %w", rel, err)
+			}
+		}
 		return nil
 	})
+}
+
+// restoreSpecialBits re-applies mode to target when it carries setuid or
+// setgid, which chown clears.
+func restoreSpecialBits(target string, mode os.FileMode) error {
+	if mode&(os.ModeSetuid|os.ModeSetgid) == 0 {
+		return nil
+	}
+	if err := os.Chmod(target, mode); err != nil {
+		return fmt.Errorf("restore setuid/setgid bits: %w", err)
+	}
+	return nil
 }
 
 // copyOwnership copies the uid/gid from src to dst using best-effort lchown.
@@ -760,6 +779,12 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 	// Best-effort ownership preservation from tar headers.
 	// When running as non-root, Lchown will fail with EPERM — that's fine.
 	bestEffortLchown(target, hdr.Uid, hdr.Gid)
+	// A successful chown clears setuid and setgid; restore them.
+	if hdr.Typeflag == tar.TypeReg {
+		if err := restoreSpecialBits(target, pathutil.FileMode(hdr.FileInfo().Mode())|0o400); err != nil {
+			return err
+		}
+	}
 
 	// On macOS, set the override_stat xattr so libkrun's virtiofs FUSE
 	// server reports the tar entry's original ownership to the guest.
