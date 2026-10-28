@@ -19,6 +19,8 @@ import (
 
 	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/stacklok/go-microvm/guest/reaper"
 )
 
 // ptyRequest is the payload of an SSH "pty-req" request.
@@ -257,11 +259,17 @@ func (s *Server) buildEnv(state *sessionState) []string {
 // runWithPTY executes the command with a pseudo-terminal, handling
 // bidirectional I/O, window-change events, and signal forwarding.
 func (s *Server) runWithPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd *exec.Cmd, pr *ptyRequest) int {
-	ptmx, err := pty.Start(cmd)
+	// Keep the init reaper away from the child so cmd.Wait gets its status.
+	var ptmx *os.File
+	release, err := reaper.Track(cmd, func() (err error) {
+		ptmx, err = pty.Start(cmd)
+		return err
+	})
 	if err != nil {
 		s.logger.Error("start pty", "error", err)
 		return 1
 	}
+	defer release()
 	defer func() { _ = ptmx.Close() }()
 
 	// Apply the initial window size.
@@ -323,10 +331,12 @@ func (s *Server) runWithoutPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd
 		return 1
 	}
 
-	if err := cmd.Start(); err != nil {
+	release, err := reaper.Track(cmd, cmd.Start)
+	if err != nil {
 		s.logger.Error("start command", "error", err)
 		return 1
 	}
+	defer release()
 	go func() {
 		_, _ = io.Copy(stdin, ch)
 		_ = stdin.Close()
