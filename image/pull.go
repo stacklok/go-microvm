@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/stacklok/go-microvm/internal/pathutil"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -457,7 +459,7 @@ func applyLayerToDir(layerDir, dst string) error {
 			}
 
 		case info.Mode().IsRegular():
-			if err := copyFileToDir(path, target, dst, info.Mode().Perm()); err != nil {
+			if err := copyFileToDir(path, target, dst, pathutil.FileMode(info.Mode())); err != nil {
 				return fmt.Errorf("copy file %s: %w", rel, err)
 			}
 
@@ -507,7 +509,7 @@ func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
 	}
 	defer func() { _ = srcFile.Close() }()
 
-	dstFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	dstFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm()) //nolint:gosec // target is validated to stay inside the rootfs
 	if err != nil {
 		return fmt.Errorf("create target: %w", err)
 	}
@@ -517,6 +519,10 @@ func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
 		return fmt.Errorf("copy contents: %w", err)
 	}
 
+	// Writing clears setuid and setgid, so set the full mode afterwards.
+	if err := dstFile.Chmod(mode); err != nil {
+		return fmt.Errorf("set file mode: %w", err)
+	}
 	return nil
 }
 
@@ -779,11 +785,11 @@ func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target, rootDir string)
 		return err
 	}
 
-	mode := hdr.FileInfo().Mode().Perm()
+	mode := pathutil.FileMode(hdr.FileInfo().Mode())
 	// Ensure files are at least owner-readable.
 	mode |= 0o400
 
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm()) //nolint:gosec // target is validated to stay inside the rootfs
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
@@ -794,6 +800,10 @@ func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target, rootDir string)
 		return fmt.Errorf("write file contents: %w", err)
 	}
 
+	// Writing clears setuid and setgid, so set the full mode afterwards.
+	if err := f.Chmod(mode); err != nil {
+		return fmt.Errorf("set file mode: %w", err)
+	}
 	return nil
 }
 

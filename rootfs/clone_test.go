@@ -274,3 +274,25 @@ func TestCloneDir(t *testing.T) {
 		assert.Equal(t, "preserve", string(got))
 	})
 }
+
+func TestCloneDir_SpecialModeBits(t *testing.T) {
+	t.Parallel()
+
+	src := t.TempDir()
+	path := filepath.Join(src, "sudo")
+	//nolint:gosec // Test needs an executable setuid file to check the clone keeps it.
+	require.NoError(t, os.WriteFile(path, []byte("sudo"), 0o755))
+	//nolint:gosec // Test needs a setuid file to check the clone keeps it.
+	require.NoError(t, os.Chmod(path, os.ModeSetuid|0o755))
+
+	dst := filepath.Join(t.TempDir(), "clone")
+	require.NoError(t, rootfs.CloneDir(src, dst))
+
+	info, err := os.Stat(filepath.Join(dst, "sudo"))
+	require.NoError(t, err)
+	want := os.FileMode(0o755)
+	if os.Geteuid() != 0 {
+		want |= os.ModeSetuid
+	}
+	assert.Equal(t, want, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid))
+}
