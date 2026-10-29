@@ -269,7 +269,6 @@ func (s *Server) runWithPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd *e
 		s.logger.Error("start pty", "error", err)
 		return 1
 	}
-	defer release()
 	defer func() { _ = ptmx.Close() }()
 
 	// Apply the initial window size.
@@ -307,6 +306,7 @@ func (s *Server) runWithPTY(ch ssh.Channel, requests <-chan *ssh.Request, cmd *e
 	}()
 
 	err = cmd.Wait()
+	release()
 	// Close the PTY to unblock the output copy.
 	_ = ptmx.Close()
 	<-outputDone

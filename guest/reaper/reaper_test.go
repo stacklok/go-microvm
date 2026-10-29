@@ -58,6 +58,32 @@ func TestParseStat(t *testing.T) {
 	}
 }
 
+// TestTrackReleaseAfterPIDReuse simulates PID reuse without starting processes.
+// It is not parallel because Track uses the process-wide registry.
+func TestTrackReleaseAfterPIDReuse(t *testing.T) {
+	const pid = 42
+	start := func() error { return nil }
+	first := &exec.Cmd{Process: &os.Process{Pid: pid}}
+	releaseFirst, err := Track(first, start)
+	require.NoError(t, err)
+	defer releaseFirst()
+
+	second := &exec.Cmd{Process: &os.Process{Pid: pid}}
+	releaseSecond, err := Track(second, start)
+	require.NoError(t, err)
+	defer releaseSecond()
+
+	releaseFirst()
+	mu.Lock()
+	assert.Same(t, second, tracked[pid])
+	mu.Unlock()
+
+	releaseSecond()
+	mu.Lock()
+	assert.NotContains(t, tracked, pid)
+	mu.Unlock()
+}
+
 // TestTrackKeepsExitStatus is not parallel: the reaper handles SIGCHLD for
 // the whole test process.
 func TestTrackKeepsExitStatus(t *testing.T) {

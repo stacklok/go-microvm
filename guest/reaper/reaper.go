@@ -22,7 +22,7 @@ var (
 	// mu serialises reaping with Track, so a tracked child is registered
 	// before the reaper can see it exit.
 	mu      sync.Mutex
-	tracked = map[int]struct{}{}
+	tracked = map[int]*exec.Cmd{}
 )
 
 // Start launches a background goroutine that reaps zombie child processes
@@ -58,10 +58,12 @@ func Track(cmd *exec.Cmd, start func() error) (release func(), err error) {
 		return func() {}, err
 	}
 	pid := cmd.Process.Pid
-	tracked[pid] = struct{}{}
+	tracked[pid] = cmd
 	return func() {
 		mu.Lock()
-		delete(tracked, pid)
+		if tracked[pid] == cmd {
+			delete(tracked, pid)
+		}
 		mu.Unlock()
 	}, nil
 }
