@@ -21,6 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+
+	"github.com/stacklok/go-microvm/guest/reaper"
 )
 
 // generateTestKeyPair creates an ECDSA P-256 key pair for testing and
@@ -489,4 +491,25 @@ func TestExecReadsStdin(t *testing.T) {
 	output, err := session.Output("cat")
 	require.NoError(t, err)
 	assert.Equal(t, "from stdin\n", string(output))
+}
+
+// TestExecStatusWithReaper runs short commands while the PID 1 reaper is
+// active: its wait4 must not steal the exit status from the session. It is
+// not parallel because the reaper handles SIGCHLD for the whole process.
+func TestExecStatusWithReaper(t *testing.T) {
+	stop := reaper.Start(slog.Default())
+	defer stop()
+
+	signer, pubKey := generateTestKeyPair(t)
+	_, addr := startTestServer(t, pubKey)
+	for i := range 200 {
+		client := dialSSH(t, addr, signer)
+		session, err := client.NewSession()
+		require.NoError(t, err)
+		output, err := session.CombinedOutput("echo ok")
+		_ = session.Close()
+		_ = client.Close()
+		require.NoError(t, err, "run %d: %q", i, output)
+		require.Equal(t, "ok\n", string(output), "run %d", i)
+	}
 }
