@@ -142,7 +142,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	if cache != nil {
 		lc := cache.LayerCache()
 		extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", true))
-		if err := extractImageLayered(ctx, img, tmpDir, lc); err != nil {
+		if err := composeImageLayered(ctx, img, tmpDir, lc, cache); err != nil {
 			if errors.Is(err, xattr.ErrPermissionRestore) {
 				_ = os.RemoveAll(tmpDir)
 				extractSpan.RecordError(err)
@@ -214,6 +214,10 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		}
 		// Record ref→digest mapping and OCI config for next-run fast path.
 		cache.StoreRef(ref.String(), digestStr, ociCfg)
+		// Record the layers so later images can start from this rootfs.
+		if cfgFile, err := img.ConfigFile(); err == nil {
+			cache.recordChain(digestStr, cfgFile.RootFS.DiffIDs)
+		}
 		cacheSpan.End()
 	}
 
@@ -270,6 +274,14 @@ func extractImage(ctx context.Context, img v1.Image, dst string) error {
 // cache, then composes them bottom-to-top into dst. Shared layers across
 // images are extracted only once.
 func extractImageLayered(ctx context.Context, img v1.Image, dst string, lc *LayerCache) error {
+	return composeImageLayered(ctx, img, dst, lc, nil)
+}
+
+// composeImageLayered is extractImageLayered that, with a cache, starts from
+// the longest snapshot or cached rootfs holding a prefix of the image's
+// layers and keeps a snapshot where the image diverges from the cached
+// images it shares layers with. See snapshot.go.
+func composeImageLayered(ctx context.Context, img v1.Image, dst string, lc *LayerCache, cache *Cache) error {
 	layers, err := img.Layers()
 	if err != nil {
 		return fmt.Errorf("get image layers: %w", err)
@@ -283,6 +295,15 @@ func extractImageLayered(ctx context.Context, img v1.Image, dst string, lc *Laye
 	diffIDs := cfgFile.RootFS.DiffIDs
 	if len(layers) != len(diffIDs) {
 		return fmt.Errorf("layer count mismatch: %d layers vs %d diffIDs", len(layers), len(diffIDs))
+	}
+
+	chain := chainIDs(diffIDs)
+	start := 0
+	if cache != nil {
+		if base := cache.findComposeBase(chain); startFrom(base, dst) {
+			start = base.layers
+			slog.Debug("composing rootfs from a cached prefix", "layers", base.layers, "path", base.path)
+		}
 	}
 
 	// Extract uncached layers in parallel with bounded concurrency.
@@ -299,8 +320,8 @@ func extractImageLayered(ctx context.Context, img v1.Image, dst string, lc *Laye
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(concurrency)
 
-	for i, layer := range layers {
-		diffID := diffIDs[i]
+	for i, layer := range layers[start:] {
+		diffID := diffIDs[start+i]
 
 		if lc.Has(diffID) {
 			slog.Debug("layer cache hit", "diffID", diffID.String(), "index", i)
@@ -316,8 +337,18 @@ func extractImageLayered(ctx context.Context, img v1.Image, dst string, lc *Laye
 		return fmt.Errorf("extract layers: %w", err)
 	}
 
+	// Snapshot where this image diverges from the cached images sharing its
+	// lower layers, so the next image built on the same layers starts there.
+	snapshotAt := 0
+	if cache != nil {
+		if k := cache.sharedPrefix(chain); k > start && k < len(chain) {
+			snapshotAt = k
+		}
+	}
+
 	// Apply layers sequentially bottom-to-top (order matters for whiteouts).
-	for i, diffID := range diffIDs {
+	for i := start; i < len(diffIDs); i++ {
+		diffID := diffIDs[i]
 		layerDir, ok := lc.Get(diffID)
 		if !ok {
 			return fmt.Errorf("layer %d (%s) missing from cache after extraction", i, diffID.String())
@@ -325,6 +356,9 @@ func extractImageLayered(ctx context.Context, img v1.Image, dst string, lc *Laye
 
 		if err := applyLayerToDir(layerDir, dst); err != nil {
 			return fmt.Errorf("apply layer %d (%s): %w", i, diffID.String(), err)
+		}
+		if i+1 == snapshotAt {
+			cache.putSnapshot(chain[i], dst)
 		}
 	}
 
@@ -500,6 +534,22 @@ func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
 	}
 
 	mode |= 0o400 // Ensure at least owner-readable.
+
+	// A file from a lower layer is replaced, not overwritten: the clone
+	// below needs a free name, and the old file may be read-only.
+	if existing, err := os.Lstat(target); err == nil && existing.Mode().IsRegular() {
+		if err := os.Remove(target); err != nil {
+			return fmt.Errorf("replace existing file: %w", err)
+		}
+	}
+	// Clone the file where the file system supports it: the layer and the
+	// rootfs then share data blocks and nothing is copied.
+	if err := cloneFile(src, target); err == nil {
+		if err := os.Chmod(target, mode); err != nil {
+			return fmt.Errorf("set file mode: %w", err)
+		}
+		return nil
+	}
 
 	srcFile, err := os.Open(src)
 	if err != nil {

@@ -15,3 +15,7 @@ func SetOverrideStatFromPath(_ string, _, _ int) error { return nil }
 
 // CopyOverrideStat is a no-op on non-darwin platforms.
 func CopyOverrideStat(_, _ string) error { return nil }
+
+// OverrideSpecialBits reports no override_stat xattr on non-darwin,
+// non-linux platforms.
+func OverrideSpecialBits(_ string) (os.FileMode, bool) { return 0, false }

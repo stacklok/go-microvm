@@ -135,6 +135,13 @@ func (c *Cache) Evict(maxAge time.Duration) (int, error) {
 		}
 	}
 
+	// Drop snapshots of layer prefixes no remaining entry starts with.
+	snapRemoved, err := c.PruneSnapshots(maxAge)
+	if err != nil {
+		return removed, fmt.Errorf("prune snapshots: %w", err)
+	}
+	removed += snapRemoved
+
 	// Also evict from the per-layer cache.
 	lc := c.LayerCache()
 	layerRemoved, err := lc.Evict(maxAge)
