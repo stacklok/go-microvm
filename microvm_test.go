@@ -117,17 +117,20 @@ func TestToHypervisorMounts(t *testing.T) {
 	mounts := []VirtioFSMount{
 		{Tag: "workspace", HostPath: "/home/user/src"},
 		{Tag: "data", HostPath: "/var/data", ReadOnly: true},
+		{Tag: "project", HostPath: "/home/user/project", SimplifiedOwnership: true},
 	}
 
 	result := toHypervisorMounts(mounts)
 
-	require.Len(t, result, 2)
+	require.Len(t, result, 3)
 	assert.Equal(t, "workspace", result[0].Tag)
 	assert.Equal(t, "/home/user/src", result[0].HostPath)
 	assert.False(t, result[0].ReadOnly)
 	assert.Equal(t, "data", result[1].Tag)
 	assert.Equal(t, "/var/data", result[1].HostPath)
 	assert.True(t, result[1].ReadOnly)
+	assert.False(t, result[1].SimplifiedOwnership)
+	assert.True(t, result[2].SimplifiedOwnership)
 }
 
 func TestToHypervisorMounts_Empty(t *testing.T) {

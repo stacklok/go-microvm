@@ -8,8 +8,10 @@ package microvm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 
@@ -18,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
+	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/preflight"
 	"github.com/stacklok/go-microvm/virtiofs"
 )
@@ -165,6 +168,93 @@ func TestRunValidatesAllOwnershipMountsBeforeStamping(t *testing.T) {
 	_, xattrErr := unix.Lgetxattr(first, "user.containers.override_stat", make([]byte, 256))
 	assert.Error(t, xattrErr)
 	assert.Zero(t, backend.startCalls)
+}
+
+func TestRunValidatesOwnershipBeforeCleanup(t *testing.T) {
+	tests := []struct {
+		name  string
+		mount VirtioFSMount
+		err   string
+	}{
+		{name: "negative UID", mount: VirtioFSMount{OverrideUID: -1}, err: "must be non-negative"},
+		{name: "negative GID", mount: VirtioFSMount{OverrideGID: -1}, err: "must be non-negative"},
+		{name: "GID without UID", mount: VirtioFSMount{OverrideGID: 1}, err: "OverrideGID set without OverrideUID"},
+		{name: "conflicting ownership", mount: VirtioFSMount{OverrideUID: 65532, SimplifiedOwnership: true}, err: "SimplifiedOwnership cannot be combined with OverrideUID"},
+		{name: "unsupported platform", mount: VirtioFSMount{SimplifiedOwnership: true}, err: "only supported on macOS hosts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "unsupported platform" && runtime.GOOS == "darwin" {
+				t.Skip("simplified ownership is supported on macOS")
+			}
+			dataDir := t.TempDir()
+			rootfs := t.TempDir()
+			sentinel := filepath.Join(dataDir, "existing-data")
+			require.NoError(t, os.WriteFile(sentinel, []byte("keep"), 0o600))
+			backend := &mockBackend{prepareErr: errors.New("unexpected backend preparation")}
+			hookCalled := false
+
+			_, err := Run(context.Background(), "unused",
+				WithDataDir(dataDir), WithCleanDataDir(),
+				WithPreflightChecker(preflight.NewEmpty()),
+				WithRootFSPath(rootfs), WithBackend(backend),
+				WithRootFSHook(func(string, *image.OCIConfig) error {
+					hookCalled = true
+					return nil
+				}),
+				WithVirtioFS(tt.mount),
+			)
+			require.ErrorContains(t, err, tt.err)
+			data, readErr := os.ReadFile(sentinel)
+			require.NoError(t, readErr)
+			assert.Equal(t, "keep", string(data))
+			assert.False(t, hookCalled)
+			assert.Zero(t, backend.startCalls)
+		})
+	}
+}
+
+func TestRunRejectsSimplifiedOwnershipWithOverride(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	share := filepath.Join(dataDir, "share")
+	require.NoError(t, os.Mkdir(rootfs, 0o750))
+	require.NoError(t, os.Mkdir(share, 0o750))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	_, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, OverrideUID: 65532, SimplifiedOwnership: true}),
+	)
+	require.ErrorContains(t, err, "SimplifiedOwnership cannot be combined with OverrideUID")
+	_, xattrErr := unix.Lgetxattr(share, "user.containers.override_stat", make([]byte, 256))
+	assert.Error(t, xattrErr)
+	assert.Zero(t, backend.startCalls)
+}
+
+func TestRunSimplifiedOwnershipPlatformSupport(t *testing.T) {
+	dataDir := t.TempDir()
+	rootfs := filepath.Join(dataDir, "rootfs")
+	share := filepath.Join(dataDir, "share")
+	require.NoError(t, os.Mkdir(rootfs, 0o750))
+	require.NoError(t, os.Mkdir(share, 0o750))
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	vm, err := Run(context.Background(), "unused",
+		WithDataDir(dataDir), WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfs), WithBackend(backend),
+		WithVirtioFS(VirtioFSMount{Tag: "share", HostPath: share, SimplifiedOwnership: true}),
+	)
+	if runtime.GOOS != "darwin" {
+		require.ErrorContains(t, err, "SimplifiedOwnership is only supported on macOS hosts")
+		assert.Zero(t, backend.startCalls)
+		return
+	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vm.Stop(context.Background()) })
+	require.Len(t, backend.lastConfig.FilesystemMounts, 1)
+	assert.True(t, backend.lastConfig.FilesystemMounts[0].SimplifiedOwnership)
 }
 
 func TestRunBestEffortOwnershipContinuesMountAndSubsequentMounts(t *testing.T) {
