@@ -74,6 +74,23 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	if err := validateEnv(cfg.env); err != nil {
 		return nil, err
 	}
+	for _, m := range cfg.virtioFS {
+		if m.OverrideUID < 0 || m.OverrideGID < 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must be non-negative", m.Tag)
+		}
+		if uint64(m.OverrideUID) > uint64(^uint32(0)) || uint64(m.OverrideGID) > uint64(^uint32(0)) {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must fit in uint32", m.Tag)
+		}
+		if m.OverrideUID == 0 && m.OverrideGID > 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: OverrideGID set without OverrideUID", m.Tag)
+		}
+		if m.SimplifiedOwnership && m.OverrideUID > 0 {
+			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership cannot be combined with OverrideUID", m.Tag)
+		}
+		if m.SimplifiedOwnership && runtime.GOOS != "darwin" {
+			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership is only supported on macOS hosts", m.Tag)
+		}
+	}
 
 	if cfg.cleanDataDir {
 		if err := cleanDataDir(cfg); err != nil {
@@ -218,25 +235,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		span.End()
 	}
 
-	// 5. Validate and prepare ownership overrides before starting networking.
-	// Validation is completed for every mount before any host metadata is changed.
-	for _, m := range cfg.virtioFS {
-		if m.OverrideUID < 0 || m.OverrideGID < 0 {
-			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must be non-negative", m.Tag)
-		}
-		if uint64(m.OverrideUID) > uint64(^uint32(0)) || uint64(m.OverrideGID) > uint64(^uint32(0)) {
-			return nil, fmt.Errorf("virtiofs mount %q: OverrideUID/OverrideGID must fit in uint32", m.Tag)
-		}
-		if m.OverrideUID == 0 && m.OverrideGID > 0 {
-			return nil, fmt.Errorf("virtiofs mount %q: OverrideGID set without OverrideUID", m.Tag)
-		}
-		if m.SimplifiedOwnership && m.OverrideUID > 0 {
-			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership cannot be combined with OverrideUID", m.Tag)
-		}
-		if m.SimplifiedOwnership && runtime.GOOS != "darwin" {
-			return nil, fmt.Errorf("virtiofs mount %q: SimplifiedOwnership is only supported on macOS hosts", m.Tag)
-		}
-	}
+	// 5. Prepare ownership overrides before starting networking.
 
 	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
 	for _, m := range cfg.virtioFS {
