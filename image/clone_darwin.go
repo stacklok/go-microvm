@@ -17,8 +17,7 @@ func cloneFile(src, dst string) error {
 }
 
 // cloneTree clones the directory tree src to dst, which must not exist, with
-// a single clonefile(2) call. As an unprivileged caller, setuid and setgid
-// bits are not carried over; restoreSpecialBitsTree puts them back.
+// a single clonefile(2) call.
 func cloneTree(src, dst string) error {
 	return unix.Clonefile(src, dst, unix.CLONE_NOFOLLOW)
 }

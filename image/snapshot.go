@@ -18,8 +18,6 @@ import (
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-
-	"github.com/stacklok/go-microvm/internal/xattr"
 )
 
 // Composed rootfs snapshots
@@ -197,9 +195,9 @@ func (c *Cache) putSnapshot(chainID, src string) {
 	}
 }
 
-// startFrom clones base into dst, an empty directory, and restores the
-// setuid and setgid bits the clone dropped. It reports whether dst now
-// holds the base layers.
+// startFrom clones base into dst, an empty directory. It reports whether dst
+// now holds the base layers. The clone keeps the override_stat xattrs, which
+// carry the guest-visible owners and modes, setuid and setgid included.
 func startFrom(base composeBase, dst string) bool {
 	if base.layers == 0 {
 		return false
@@ -214,32 +212,7 @@ func startFrom(base composeBase, dst string) bool {
 		}
 		return false
 	}
-	if err := restoreSpecialBitsTree(dst); err != nil {
-		slog.Debug("restore setuid/setgid bits after clone failed", "err", err)
-		_ = removeTree(dst)
-		_ = os.Mkdir(dst, 0o700)
-		return false
-	}
 	return true
-}
-
-// restoreSpecialBitsTree puts back the setuid and setgid bits of the regular
-// files under root that their override_stat xattr records.
-func restoreSpecialBitsTree(root string) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
-			return err
-		}
-		special, ok := xattr.OverrideSpecialBits(path)
-		if !ok || special == 0 {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		return os.Chmod(path, info.Mode().Perm()|special)
-	})
 }
 
 // PruneSnapshots removes the snapshots that are not a layer prefix of any

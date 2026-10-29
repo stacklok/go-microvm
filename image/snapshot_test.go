@@ -15,6 +15,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func pullLayers(t *testing.T, cache *Cache, ref string, layers ...v1.Layer) string {
@@ -83,10 +84,10 @@ func TestPullWithFetcher_ComposesFromSharedPrefix(t *testing.T) {
 	_, err := os.Lstat(filepath.Join(v3, "etc", "gone"))
 	assert.True(t, os.IsNotExist(err), "whiteout of the top layer applies on a cloned prefix")
 
-	info, err := os.Stat(filepath.Join(v3, "usr", "sudo"))
-	require.NoError(t, err)
+	// The guest sees owners and modes, setuid included, through the
+	// override_stat xattr; a cloned prefix keeps it.
 	if os.Geteuid() != 0 {
-		assert.Equal(t, os.ModeSetuid, info.Mode()&os.ModeSetuid, "setuid survives the prefix clone")
+		assert.Contains(t, overrideStat(t, filepath.Join(v3, "usr", "sudo")), "4755", "setuid survives the prefix clone")
 	}
 
 	cfg, err := createImageFromLayers(t, base, tool).ConfigFile()
@@ -171,4 +172,12 @@ func TestCopyFileToDir_ReplacesReadOnlyFile(t *testing.T) {
 	info, err := os.Stat(target)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+}
+
+func overrideStat(t *testing.T, path string) string {
+	t.Helper()
+	buf := make([]byte, 256)
+	n, err := unix.Lgetxattr(path, "user.containers.override_stat", buf)
+	require.NoError(t, err)
+	return string(buf[:n])
 }
