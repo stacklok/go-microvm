@@ -164,3 +164,45 @@ jobs:
 
       - name: Build and sign runner
         run: task build-dev-darwin
+
+  # Mirrors the release job (same runner image, same packaging task) so that
+  # Homebrew/tap changes break a PR instead of a tag push.
+  package-macos:
+    name: Package (macOS arm64)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Task
+        uses: arduino/setup-task@v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install libkrun
+        run: |
+          brew tap slp/krun
+          brew trust slp/krun
+          brew install libkrun libkrunfw
+
+      - name: Show libkrun linkage
+        run: |
+          brew list --versions libkrun libkrunfw libepoxy molten-vk virglrenderer virglrenderer-krun || true
+          for lib in libkrun libkrunfw libepoxy virglrenderer-krun virglrenderer molten-vk; do
+            prefix=$(brew --prefix "$lib" 2>/dev/null) || continue
+            for f in "$prefix"/lib/*.dylib; do
+              [ -f "$f" ] || continue
+              echo "== $f"
+              otool -L "$f"
+            done
+          done
+
+      - name: Build runner and copy libraries
+        run: task build-runner-darwin

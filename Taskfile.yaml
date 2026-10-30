@@ -87,7 +87,9 @@ tasks:
       - cp -f $(brew --prefix libkrun)/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/
       - cp -f $(brew --prefix libkrunfw)/lib/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/
       - cp -f $(brew --prefix libepoxy)/lib/libepoxy.0.dylib bin/
-      - cp -f $(brew --prefix virglrenderer)/lib/libvirglrenderer.1.dylib bin/
+      # virglrenderer is provided by different formulas over time (virglrenderer,
+      # virglrenderer-krun), so copy whatever libkrun actually links against
+      - cp -f "$(otool -L bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib | awk '/libvirglrenderer/ {print $1}')" bin/libvirglrenderer.1.dylib
       - cp -f $(brew --prefix molten-vk)/lib/libMoltenVK.dylib bin/
       # Rewrite LC_ID_DYLIB (each dylib's own identity) for portable bundles
       - install_name_tool -id @loader_path/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
@@ -101,28 +103,17 @@ tasks:
         /opt/homebrew/opt/libkrun/lib/libkrun.{{.LIBKRUN_MAJOR}}.dylib
         @loader_path/libkrun.{{.LIBKRUN_MAJOR}}.dylib
         bin/{{.RUNNER_NAME}}
-      # Rewrite libkrun → libepoxy, virglrenderer references
-      - >-
-        install_name_tool -change
-        /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib
-        @loader_path/libepoxy.0.dylib
-        bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
-      - >-
-        install_name_tool -change
-        /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib
-        @loader_path/libvirglrenderer.1.dylib
-        bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib
-      # Rewrite virglrenderer → MoltenVK, libepoxy references
-      - >-
-        install_name_tool -change
-        /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib
-        @loader_path/libMoltenVK.dylib
-        bin/libvirglrenderer.1.dylib
-      - >-
-        install_name_tool -change
-        /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib
-        @loader_path/libepoxy.0.dylib
-        bin/libvirglrenderer.1.dylib
+      # Point every bundled Homebrew dependency of libkrun and virglrenderer at its
+      # bundled sibling, independent of which formula provided it
+      - |
+        for f in bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/libvirglrenderer.1.dylib; do
+          for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep '^/opt/homebrew' || true); do
+            name=$(basename "$dep")
+            if [ "$name" = "libvirglrenderer.1.dylib" ] || [ -f "bin/$name" ]; then
+              install_name_tool -change "$dep" "@loader_path/$name" "$f"
+            fi
+          done
+        done
       # Remove stale Homebrew rpaths (ignore errors if none exist)
       - for f in bin/libkrun.{{.LIBKRUN_MAJOR}}.dylib bin/libkrunfw.{{.LIBKRUNFW_MAJOR}}.dylib bin/libepoxy.0.dylib bin/libvirglrenderer.1.dylib bin/libMoltenVK.dylib; do
           for rp in $(otool -l "$f" 2>/dev/null | grep -A2 LC_RPATH | grep 'path /opt/homebrew' | awk '{print $2}'); do
