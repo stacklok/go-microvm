@@ -85,8 +85,8 @@ func (c *Cache) findComposeBase(chain []string) composeBase {
 		if k <= best.layers || k > len(chain) || ids[k-1] != chain[k-1] {
 			continue
 		}
-		if path, ok := c.Get(digest); ok {
-			best = composeBase{layers: k, path: path}
+		if info, err := os.Stat(c.pathFor(digest)); err == nil && info.IsDir() {
+			best = composeBase{layers: k, path: c.pathFor(digest)}
 		}
 	}
 	if best.path != "" {
@@ -97,11 +97,12 @@ func (c *Cache) findComposeBase(chain []string) composeBase {
 }
 
 // sharedPrefix returns the number of leading layers the image shares with
-// the longest-matching other cached rootfs.
+// the longest-matching other cached rootfs. It only stats the entries: a
+// rootfs compared against is not used, so its mtime must not move for Evict.
 func (c *Cache) sharedPrefix(chain []string) int {
 	shared := 0
 	for digest, ids := range c.recordedChains() {
-		if _, ok := c.Get(digest); !ok {
+		if info, err := os.Stat(c.pathFor(digest)); err != nil || !info.IsDir() {
 			continue
 		}
 		k := 0
@@ -149,8 +150,10 @@ func (c *Cache) recordedChains() map[string][]string {
 	return out
 }
 
-// recordChain stores the layer list of the cached rootfs for digest.
-// Best-effort: without it the entry is only missing as a compose base.
+// recordChain stores the layer list of the cached rootfs for digest. The
+// list is renamed into place, so readers never see a truncated list, which
+// would claim the rootfs holds only a prefix of its layers. Best-effort:
+// without it the entry is only missing as a compose base.
 func (c *Cache) recordChain(digest string, diffIDs []v1.Hash) {
 	if c == nil || len(diffIDs) == 0 {
 		return
@@ -163,7 +166,20 @@ func (c *Cache) recordChain(digest string, diffIDs []v1.Hash) {
 	for _, d := range diffIDs {
 		b.WriteString(d.String() + "\n")
 	}
-	_ = os.WriteFile(filepath.Join(dir, filepath.Base(c.pathFor(digest))), []byte(b.String()), 0o600)
+	tmp, err := os.CreateTemp(dir, "tmp-chain-*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.WriteString(b.String())
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), filepath.Join(dir, filepath.Base(c.pathFor(digest))))
+	}
+	if werr != nil {
+		_ = os.Remove(tmp.Name())
+	}
 }
 
 // putSnapshot keeps a clone of the composed rootfs src as the snapshot of
@@ -217,8 +233,9 @@ func startFrom(base composeBase, dst string) bool {
 
 // PruneSnapshots removes the snapshots that are not a layer prefix of any
 // cached rootfs, unless they were used within grace, and the layer lists of
-// rootfs entries that no longer exist. It returns the number of snapshots
-// removed.
+// rootfs entries that no longer exist. Leftover temporary entries are
+// removed once older than a positive grace. It returns the number of
+// snapshots removed.
 func (c *Cache) PruneSnapshots(grace time.Duration) (int, error) {
 	if c == nil {
 		return 0, nil
@@ -246,13 +263,20 @@ func (c *Cache) PruneSnapshots(grace time.Duration) (int, error) {
 	for _, e := range entries {
 		path := filepath.Join(dir, e.Name())
 		info, err := os.Lstat(path)
-		if err != nil || !info.ModTime().Before(cutoff) {
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "tmp-") {
+			// A tmp-snapshot-* may be a snapshot being taken right now.
+			if grace > 0 {
+				_ = removeTree(path)
+			}
 			continue
 		}
 		if live[dirNameToDigest(e.Name())] {
 			continue
 		}
-		if err := removeTree(path); err != nil {
+		if err := discardTree(path); err != nil {
 			return removed, fmt.Errorf("remove snapshot %s: %w", e.Name(), err)
 		}
 		removed++
@@ -277,4 +301,19 @@ func removeTree(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
+}
+
+// discardTree deletes path after renaming it to a tmp-delete-* sibling. A
+// composition cloning path as its base then fails to find it and falls back
+// to applying every layer, instead of cloning a tree half removed.
+func discardTree(path string) error {
+	tmp, err := os.MkdirTemp(filepath.Dir(path), "tmp-delete-*")
+	if err != nil {
+		return fmt.Errorf("create discard dir: %w", err)
+	}
+	if err := os.Rename(path, filepath.Join(tmp, "tree")); err != nil {
+		_ = os.Remove(tmp) // best effort: tmp-* entries are pruned later anyway
+		return fmt.Errorf("move %s aside: %w", path, err)
+	}
+	return removeTree(tmp)
 }

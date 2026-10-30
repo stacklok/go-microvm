@@ -8,7 +8,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -93,7 +92,7 @@ func TestPullWithFetcher_ComposesFromSharedPrefix(t *testing.T) {
 	cfg, err := createImageFromLayers(t, base, tool).ConfigFile()
 	require.NoError(t, err)
 	snapshot := cache.snapshotPath(chainIDs(cfg.RootFS.DiffIDs)[1])
-	if runtime.GOOS == "darwin" {
+	if canCloneTree(t, cache.BaseDir()) {
 		assert.DirExists(t, snapshot, "snapshot of the shared prefix")
 		assert.Equal(t, "tool", readFile(t, filepath.Join(snapshot, "opt/tool")), "the snapshot is not changed by later layers")
 	} else {
@@ -157,6 +156,40 @@ func TestCache_PruneSnapshots(t *testing.T) {
 	assert.NotContains(t, cache.recordedChains(), dirNameToDigest(filepath.Base(rootB)), "layer list of a removed rootfs is dropped")
 }
 
+func TestCache_Evict_KeepsIndexDirs(t *testing.T) {
+	t.Parallel()
+
+	base := createLayerFromEntries(t, []tarEntry{{name: "base", typeflag: tar.TypeReg, mode: 0o644, content: "base"}})
+	cache := NewCache(t.TempDir())
+	pullLayers(t, cache, "example.com/base:1", base)
+
+	old := time.Now().Add(-2 * time.Hour)
+	for _, dir := range []string{refDir, chainDir} {
+		require.NoError(t, os.Chtimes(filepath.Join(cache.BaseDir(), dir), old, old))
+	}
+
+	_, err := cache.Evict(time.Hour)
+	require.NoError(t, err)
+	for _, dir := range []string{refDir, chainDir} {
+		assert.DirExists(t, filepath.Join(cache.BaseDir(), dir), "an old index dir is not evicted as a whole")
+	}
+}
+
+func TestCache_GC_PrunesSnapshots(t *testing.T) {
+	t.Parallel()
+
+	cache := NewCache(t.TempDir())
+	orphan := cache.snapshotPath("sha256:0000")
+	require.NoError(t, os.MkdirAll(orphan, 0o700))
+	pending := filepath.Join(cache.BaseDir(), snapshotDir, "tmp-snapshot-1")
+	require.NoError(t, os.MkdirAll(pending, 0o700))
+
+	_, err := cache.GC()
+	require.NoError(t, err)
+	assert.NoDirExists(t, orphan, "a snapshot of no cached rootfs is unreachable")
+	assert.DirExists(t, pending, "a snapshot being taken is kept")
+}
+
 func TestCopyFileToDir_ReplacesReadOnlyFile(t *testing.T) {
 	t.Parallel()
 
@@ -180,4 +213,16 @@ func overrideStat(t *testing.T, path string) string {
 	n, err := unix.Lgetxattr(path, "user.containers.override_stat", buf)
 	require.NoError(t, err)
 	return string(buf[:n])
+}
+
+// canCloneTree reports whether dir's file system clones directory trees,
+// which is what snapshots need: not every darwin volume is APFS.
+func canCloneTree(t *testing.T, dir string) bool {
+	t.Helper()
+	src, err := os.MkdirTemp(dir, "tmp-probe-*")
+	require.NoError(t, err)
+	defer func() { _ = os.RemoveAll(src) }()
+	dst := src + "-clone"
+	defer func() { _ = os.RemoveAll(dst) }()
+	return cloneTree(src, dst) == nil
 }
