@@ -178,6 +178,9 @@ filesystem operations. New or changed xattrs still require host permission; no
 path implicitly changes mode or ownership. See
 [macOS support](docs/MACOS.md#virtio-fs-shared-directory-ownership) and
 [release notes](docs/RELEASE_NOTES.md).
+Mounts with `SimplifiedOwnership` (macOS hosts only) instead present every
+file as owned by the requesting guest process without startup ownership
+preparation ([details](docs/MACOS.md#simplified-ownership-semantics)).
 
 ## Advanced Usage
 

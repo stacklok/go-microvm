@@ -90,4 +90,7 @@ type VirtioFSMount struct {
 	// ReadOnly makes the mount read-only both at the host virtio-fs device
 	// boundary and through the guest's MS_RDONLY mount flag.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// SimplifiedOwnership selects libkrun's simplified Linux permission
+	// semantics, where every guest process sees itself as the file owner.
+	SimplifiedOwnership bool `json:"simplified_ownership,omitempty"`
 }

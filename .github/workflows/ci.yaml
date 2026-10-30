@@ -164,3 +164,80 @@ jobs:
 
       - name: Build and sign runner
         run: task build-dev-darwin
+
+  # Mirrors the release job (same runner image, same packaging task) so that
+  # Homebrew/tap changes break a PR instead of a tag push.
+  package-macos:
+    name: Package (macOS arm64)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Task
+        uses: arduino/setup-task@v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install libkrun
+        run: |
+          brew tap slp/krun
+          brew trust slp/krun
+          brew install libkrun libkrunfw
+
+      - name: Show libkrun linkage
+        run: |
+          brew list --versions libkrun libkrunfw libepoxy molten-vk virglrenderer virglrenderer-krun || true
+          for lib in libkrun libkrunfw libepoxy virglrenderer-krun virglrenderer molten-vk; do
+            prefix=$(brew --prefix "$lib" 2>/dev/null) || continue
+            for f in "$prefix"/lib/*.dylib; do
+              [ -f "$f" ] || continue
+              echo "== $f"
+              otool -L "$f"
+            done
+          done
+
+      - name: Build runner and copy libraries
+        run: task build-runner-darwin
+
+      - name: Package runtime tarball
+        run: task package-runtime-darwin TAG=ci
+
+      # Load test only: GitHub macOS runners cannot boot a VM. Invalid config
+      # JSON makes the runner exit right after startup, so reaching that error
+      # means dyld resolved every bundled dylib.
+      - name: Smoke-test bundle
+        run: |
+          smoke=$(mktemp -d "$RUNNER_TEMP/smoke.XXXXXX")
+          tar xzf dist/go-microvm-runtime-darwin-arm64.tar.gz -C "$smoke"
+          runner="$smoke/go-microvm-runtime-darwin-arm64/go-microvm-runner"
+
+          set +e
+          out=$(DYLD_PRINT_LIBRARIES=1 "$runner" not-json 2>&1)
+          status=$?
+          set -e
+          echo "$out"
+
+          if ! grep -q "failed to parse config JSON" <<<"$out"; then
+            echo "FAIL: runner did not reach config parsing (exit $status)"
+            exit 1
+          fi
+          if grep -q "Library not loaded" <<<"$out"; then
+            echo "FAIL: dyld could not load a library"
+            exit 1
+          fi
+          # Every non-system library must come from the extracted bundle
+          loaded=$(grep -oE '/[^ ]+\.dylib' <<<"$out" | grep -vE '^/(usr/lib|System|Library)/' || true)
+          if grep -v "^$smoke/" <<<"$loaded" | grep -q .; then
+            echo "FAIL: libraries loaded from outside the bundle:"
+            grep -v "^$smoke/" <<<"$loaded"
+            exit 1
+          fi
+          grep -q libkrun <<<"$loaded" || { echo "FAIL: libkrun not loaded from bundle"; exit 1; }

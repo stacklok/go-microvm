@@ -202,6 +202,35 @@ func (c *Context) AddVirtioFS3(tag, path string, shmSize uint64, readOnly bool) 
 	return nil
 }
 
+// FSSemantics selects the permission semantics a virtio-fs device emulates.
+type FSSemantics uint32
+
+const (
+	// FSSemanticsLinuxComplete stays as close as possible to Linux file
+	// system semantics (KRUN_SEMANTICS_LINUX_COMPLETE).
+	FSSemanticsLinuxComplete FSSemantics = 0
+	// FSSemanticsLinuxSimplified ignores ownership bits and reports the
+	// requesting guest process as the owner; permission bits are stored on
+	// the host and idmaps are not supported (KRUN_SEMANTICS_LINUX_SIMPLIFIED).
+	FSSemanticsLinuxSimplified FSSemantics = 1
+)
+
+// AddVirtioFS4 adds a virtio-fs device with an explicit DAX window size,
+// host-enforced read-only setting and permission semantics.
+func (c *Context) AddVirtioFS4(tag, path string, shmSize uint64, readOnly bool, semantics FSSemantics) error {
+	cTag := C.CString(tag)
+	defer C.free(unsafe.Pointer(cTag))
+
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	ret := C.krun_add_virtiofs4(c.id, cTag, cPath, C.uint64_t(shmSize), C.bool(readOnly), C.uint32_t(semantics))
+	if ret < 0 {
+		return fmt.Errorf("krun_add_virtiofs4 failed: %d", ret)
+	}
+	return nil
+}
+
 // SetPortMap configures port mappings for the microVM.
 // Each port mapping should be in "host_port:guest_port" format.
 func (c *Context) SetPortMap(ports []string) error {

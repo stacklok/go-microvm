@@ -105,6 +105,9 @@ type FilesystemMount struct {
 	Tag      string
 	HostPath string
 	ReadOnly bool
+	// SimplifiedOwnership requests permission semantics where every guest
+	// process sees itself as the owner of every file.
+	SimplifiedOwnership bool
 }
 
 // Disk attaches a host disk image to the guest as a block device.
