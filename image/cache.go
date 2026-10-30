@@ -121,19 +121,38 @@ func (c *Cache) Evict(maxAge time.Duration) (int, error) {
 	removed := 0
 
 	for _, entry := range entries {
+		// Only rootfs entries and leftovers age out here: refs/, chains/,
+		// snapshots/ and layers/ are pruned by their own rules below.
+		name := entry.Name()
+		isTmp := strings.HasPrefix(name, "tmp-")
+		if !isRootfsEntry(name) && !isTmp {
+			continue
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 
 		if info.ModTime().Before(cutoff) {
-			entryPath := filepath.Join(c.baseDir, entry.Name())
-			if err := os.RemoveAll(entryPath); err != nil {
+			entryPath := filepath.Join(c.baseDir, name)
+			remove := discardTree
+			if isTmp {
+				remove = removeTree
+			}
+			if err := remove(entryPath); err != nil {
 				continue
 			}
 			removed++
 		}
 	}
+
+	// Drop snapshots of layer prefixes no remaining entry starts with.
+	snapRemoved, err := c.PruneSnapshots(maxAge)
+	if err != nil {
+		return removed, fmt.Errorf("prune snapshots: %w", err)
+	}
+	removed += snapRemoved
 
 	// Also evict from the per-layer cache.
 	lc := c.LayerCache()
@@ -252,10 +271,16 @@ func (c *Cache) GC() (int, error) {
 		}
 
 		entryPath := filepath.Join(c.baseDir, name)
-		if err := os.RemoveAll(entryPath); err != nil {
+		if err := discardTree(entryPath); err != nil {
 			continue
 		}
 		removed++
+	}
+
+	// Snapshots are only taken at prefixes of cached rootfs entries, so the
+	// ones no remaining entry starts with are unreachable too.
+	if _, err := c.PruneSnapshots(0); err != nil {
+		return removed, fmt.Errorf("prune snapshots: %w", err)
 	}
 
 	return removed, nil
