@@ -530,9 +530,10 @@ const (
 	cacheFormatFile = "format"
 )
 
-// ensureFormat discards every cache entry when the cache was written in an
-// older format, then records the current format. Pending tmp-* entries of
-// concurrent pulls are left alone.
+// ensureFormat discards the cache's entries (unpacked rootfs, refs and
+// extracted layers) when the cache was written in an older format, then
+// records the current format. Pending tmp-* entries of concurrent pulls and
+// files the caller keeps beside the cache, such as lock files, are left alone.
 func (c *Cache) ensureFormat() error {
 	formatPath := filepath.Join(c.baseDir, cacheFormatFile)
 	data, err := os.ReadFile(formatPath)
@@ -552,7 +553,7 @@ func (c *Cache) ensureFormat() error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == cacheFormatFile || strings.HasPrefix(name, "tmp-") {
+		if !isFormatEntry(name) {
 			continue
 		}
 		// Rename before removing so a concurrent clone of the entry sees
@@ -586,4 +587,10 @@ func (c *Cache) ensureFormat() error {
 		return fmt.Errorf("write cache format: %w", werr)
 	}
 	return nil
+}
+
+// isFormatEntry reports whether name is a cache entry whose content depends
+// on the cache format.
+func isFormatEntry(name string) bool {
+	return isRootfsEntry(name) || name == refDir || name == "layers"
 }
