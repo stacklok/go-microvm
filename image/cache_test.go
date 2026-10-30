@@ -652,7 +652,7 @@ func TestCache_EnsureFormat(t *testing.T) {
 
 	dir := t.TempDir()
 	cache := NewCache(dir)
-	for _, name := range []string{"sha256-abc", "refs", "layers", "tmp-rootfs-1", ".lock", ".save-1"} {
+	for _, name := range []string{"sha256-abc", "refs", "layers", "snapshots", "chains", "tmp-rootfs-1", ".lock", ".save-1"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, name, "sub"), 0o700))
 	}
 
