@@ -291,7 +291,16 @@ func extractImage(ctx context.Context, img v1.Image, dst string) error {
 	reader := mutate.Extract(img)
 	defer func() { _ = reader.Close() }()
 
-	return extractTar(ctx, &contextReader{ctx: ctx, r: reader}, dst)
+	if err := extractTar(ctx, &contextReader{ctx: ctx, r: reader}, dst); err != nil {
+		return err
+	}
+	// mutate.Extract ends the tar stream before reporting a layer it could
+	// not read, so the error only follows the end-of-archive marker. Drain
+	// the reader to get it instead of keeping a rootfs missing layers.
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return fmt.Errorf("read image layers: %w", err)
+	}
+	return nil
 }
 
 // extractImageLayered extracts each image layer individually into the layer

@@ -39,10 +39,17 @@ func (c *Cache) BaseDir() string {
 
 // LayerCache returns the per-layer cache, creating the layers/ subdirectory
 // lazily. Returns nil if the receiver is nil.
+//
+// Layers left by an older cache format are discarded first, so callers that
+// check the layer cache before pulling (e.g. to skip fetching cached layers)
+// never rely on entries the pull would then discard.
 func (c *Cache) LayerCache() *LayerCache {
 	if c == nil {
 		return nil
 	}
+	// A failure leaves stale entries in place; PullWithFetcher checks the
+	// format again and reports the error.
+	_ = c.ensureFormat()
 	return NewLayerCache(filepath.Join(c.baseDir, "layers"))
 }
 
@@ -417,9 +424,13 @@ const (
 
 // LookupRef checks whether the cache has a valid entry for the given image
 // reference. On a hit it returns a fully populated RootFS without any
-// network or daemon I/O. Returns nil on any miss or error.
+// network or daemon I/O. Returns nil on any miss or error, including a cache
+// written by an older format, whose entries are discarded.
 func (c *Cache) LookupRef(imageRef string) *RootFS {
 	if c == nil {
+		return nil
+	}
+	if err := c.ensureFormat(); err != nil {
 		return nil
 	}
 

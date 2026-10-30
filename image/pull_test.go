@@ -471,6 +471,7 @@ func TestPullWithFetcher_LayeredExtractionFailure(t *testing.T) {
 	tests := []struct {
 		name          string
 		extractionErr error
+		failures      int32
 		wantErr       bool
 	}{
 		{
@@ -482,21 +483,31 @@ func TestPullWithFetcher_LayeredExtractionFailure(t *testing.T) {
 			name:          "ordinary extraction error falls back to flat extraction",
 			extractionErr: errors.New("layer extraction failed"),
 		},
+		{
+			name:          "flat extraction fails on an unreadable layer",
+			extractionErr: errors.New("layer blob missing"),
+			failures:      2,
+			wantErr:       true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			layer := &failingUncompressedLayer{Layer: baseLayer, err: tt.extractionErr}
-			layer.failures.Store(1)
+			layer.failures.Store(max(tt.failures, 1))
 			img := imageWithLayers{Image: baseImage, layers: []v1.Layer{layer}}
 			cacheDir := t.TempDir()
 			cache := NewCache(cacheDir)
 
 			rootfs, err := PullWithFetcher(context.Background(), "example.com/test:layered-failure", cache, &mockFetcher{img: img})
 			if tt.wantErr {
-				require.ErrorIs(t, err, xattr.ErrPermissionRestore)
+				if errors.Is(tt.extractionErr, xattr.ErrPermissionRestore) {
+					require.ErrorIs(t, err, xattr.ErrPermissionRestore)
+					assert.Equal(t, int32(1), layer.accesses.Load(), "flat extraction must not access the layer")
+				} else {
+					require.ErrorContains(t, err, tt.extractionErr.Error())
+				}
 				assert.Nil(t, rootfs)
-				assert.Equal(t, int32(1), layer.accesses.Load(), "flat extraction must not access the layer")
 
 				entries, readErr := os.ReadDir(cacheDir)
 				require.NoError(t, readErr)
