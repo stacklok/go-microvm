@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,6 +156,7 @@ func TestCache_Evict_RemovesOldEntries(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	c := NewCache(cacheDir)
+	require.NoError(t, c.ensureFormat())
 
 	// Create a cache entry and backdate its mtime.
 	oldDir := filepath.Join(cacheDir, "sha256-old")
@@ -589,6 +591,7 @@ func TestLookupRef_UpgradesLegacyRef(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	c := NewCache(cacheDir)
+	require.NoError(t, c.ensureFormat())
 
 	digest := "sha256:legacyupgrade"
 	imageRef := "ghcr.io/org/image:latest"
@@ -641,4 +644,53 @@ func TestGetRef_BackwardCompatible(t *testing.T) {
 	digest, ok := c.getRef("old-image:latest")
 	assert.True(t, ok)
 	assert.Equal(t, "sha256:olddigest", digest)
+}
+
+func TestCache_EnsureFormat(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cache := NewCache(dir)
+	for _, name := range []string{"sha256-abc", "refs", "layers", "tmp-rootfs-1", ".lock", ".save-1"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, name, "sub"), 0o700))
+	}
+
+	// A cache without the current format loses its entries, but not
+	// pending tmp-* entries or files the caller keeps beside them.
+	require.NoError(t, cache.ensureFormat())
+	names := func() []string {
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+	assert.ElementsMatch(t, []string{cacheFormatFile, "tmp-rootfs-1", ".lock", ".save-1"}, names())
+
+	// Once current, entries are kept.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sha256-def"), 0o700))
+	require.NoError(t, cache.ensureFormat())
+	assert.ElementsMatch(t, []string{cacheFormatFile, "sha256-def", "tmp-rootfs-1", ".lock", ".save-1"}, names())
+}
+
+func TestCache_LookupAndLayerCacheDiscardOldFormat(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cache := NewCache(dir)
+	layer := filepath.Join(dir, "layers", "sha256-abc")
+	require.NoError(t, os.MkdirAll(layer, 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sha256-def"), 0o700))
+	cache.putRef("example.com/img:1", "sha256:def")
+
+	// Callers that consult the cache before pulling must not see entries
+	// of an older format, which the pull would discard.
+	assert.Nil(t, cache.LookupRef("example.com/img:1"))
+	require.NoError(t, os.MkdirAll(layer, 0o700))
+	require.NoError(t, os.Remove(filepath.Join(dir, cacheFormatFile)))
+	assert.False(t, cache.LayerCache().Has(v1.Hash{Algorithm: "sha256", Hex: "abc"}))
+	_, err := os.Stat(filepath.Join(dir, cacheFormatFile))
+	require.NoError(t, err)
 }

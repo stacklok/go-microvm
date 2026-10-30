@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/stacklok/go-microvm/internal/pathutil"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -64,6 +66,12 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("parse image reference %q: %w", imageRef, err)
+	}
+
+	if cache != nil {
+		if err := cache.ensureFormat(); err != nil {
+			return nil, fmt.Errorf("check image cache format: %w", err)
+		}
 	}
 
 	// Fast path: check if we have a cached ref→digest mapping with a valid
@@ -124,12 +132,17 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 
 	// Create a temporary directory for extraction. When a cache is
 	// available, create it inside the cache directory so that the
-	// subsequent os.Rename stays on the same filesystem.
+	// subsequent os.Rename stays on the same filesystem. Without a cache,
+	// extract into a subdirectory of a private (0700) directory: the rootfs
+	// root becomes world-accessible below, and its setuid files must not be
+	// reachable by other host users.
 	var tmpDir string
+	removeTmp := func() { _ = os.RemoveAll(tmpDir) }
 	if cache != nil {
 		tmpDir, err = cache.TempDir()
 	} else {
-		tmpDir, err = os.MkdirTemp("", "go-microvm-rootfs-*")
+		tmpDir, err = privateTempDir()
+		removeTmp = func() { _ = os.RemoveAll(filepath.Dir(tmpDir)) }
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir for rootfs: %w", err)
@@ -171,7 +184,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	} else {
 		extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", false))
 		if err := extractImage(ctx, img, tmpDir); err != nil {
-			_ = os.RemoveAll(tmpDir)
+			removeTmp()
 			extractSpan.RecordError(err)
 			extractSpan.SetStatus(codes.Error, err.Error())
 			extractSpan.End()
@@ -188,7 +201,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		slog.Warn("chmod rootfs root dir failed", "err", err)
 	}
 	if err := xattr.SetOverrideStat(tmpDir, 0, 0, os.ModeDir|0o755); err != nil {
-		_ = os.RemoveAll(tmpDir)
+		removeTmp()
 		return nil, fmt.Errorf("set rootfs override_stat: %w", err)
 	}
 
@@ -218,6 +231,21 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	}
 
 	return &RootFS{Path: rootfsPath, Config: ociCfg, FromCache: fromCache}, nil
+}
+
+// privateTempDir creates an empty rootfs directory inside a new private
+// (0700) temporary directory and returns the rootfs path.
+func privateTempDir() (string, error) {
+	parent, err := os.MkdirTemp("", "go-microvm-rootfs-*")
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(parent, "rootfs")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		_ = os.RemoveAll(parent)
+		return "", err
+	}
+	return dir, nil
 }
 
 // extractOCIConfig parses the image configuration into our OCIConfig type.
@@ -263,7 +291,16 @@ func extractImage(ctx context.Context, img v1.Image, dst string) error {
 	reader := mutate.Extract(img)
 	defer func() { _ = reader.Close() }()
 
-	return extractTar(ctx, &contextReader{ctx: ctx, r: reader}, dst)
+	if err := extractTar(ctx, &contextReader{ctx: ctx, r: reader}, dst); err != nil {
+		return err
+	}
+	// mutate.Extract ends the tar stream before reporting a layer it could
+	// not read, so the error only follows the end-of-archive marker. Drain
+	// the reader to get it instead of keeping a rootfs missing layers.
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return fmt.Errorf("read image layers: %w", err)
+	}
+	return nil
 }
 
 // extractImageLayered extracts each image layer individually into the layer
@@ -457,7 +494,7 @@ func applyLayerToDir(layerDir, dst string) error {
 			}
 
 		case info.Mode().IsRegular():
-			if err := copyFileToDir(path, target, dst, info.Mode().Perm()); err != nil {
+			if err := copyFileToDir(path, target, dst, pathutil.FileMode(info.Mode())); err != nil {
 				return fmt.Errorf("copy file %s: %w", rel, err)
 			}
 
@@ -470,6 +507,13 @@ func applyLayerToDir(layerDir, dst string) error {
 		// layer already has ownership set by extractTar's bestEffortLchown.
 		if err := copyOwnership(path, target); err != nil {
 			return fmt.Errorf("copy ownership %s: %w", rel, err)
+		}
+		// A successful chown clears setuid and setgid; restore the bits
+		// copyFileToDir set while the file still belongs to us.
+		if info.Mode().IsRegular() {
+			if err := pathutil.RestoreSpecialBits(target, pathutil.FileMode(info.Mode())); err != nil {
+				return fmt.Errorf("restore mode %s: %w", rel, err)
+			}
 		}
 		return nil
 	})
@@ -507,7 +551,7 @@ func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
 	}
 	defer func() { _ = srcFile.Close() }()
 
-	dstFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	dstFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm()) //nolint:gosec // target is validated to stay inside the rootfs
 	if err != nil {
 		return fmt.Errorf("create target: %w", err)
 	}
@@ -517,6 +561,10 @@ func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
 		return fmt.Errorf("copy contents: %w", err)
 	}
 
+	// Writing clears setuid and setgid, so set the full mode afterwards.
+	if err := dstFile.Chmod(mode); err != nil {
+		return fmt.Errorf("set file mode: %w", err)
+	}
 	return nil
 }
 
@@ -751,9 +799,24 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 		return nil
 	}
 
+	// Regular files and hard links may carry setuid or setgid, which a
+	// successful chown clears, also on the inode a hard link shares.
+	// Remember the mode so the bits can be restored afterwards.
+	var mode os.FileMode
+	if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeLink {
+		info, err := os.Lstat(target)
+		if err != nil {
+			return fmt.Errorf("stat extracted file: %w", err)
+		}
+		mode = info.Mode()
+	}
+
 	// Best-effort ownership preservation from tar headers.
 	// When running as non-root, Lchown will fail with EPERM — that's fine.
 	bestEffortLchown(target, hdr.Uid, hdr.Gid)
+	if err := pathutil.RestoreSpecialBits(target, mode); err != nil {
+		return err
+	}
 
 	// On macOS, set the override_stat xattr so libkrun's virtiofs FUSE
 	// server reports the tar entry's original ownership to the guest.
@@ -779,11 +842,11 @@ func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target, rootDir string)
 		return err
 	}
 
-	mode := hdr.FileInfo().Mode().Perm()
+	mode := pathutil.FileMode(hdr.FileInfo().Mode())
 	// Ensure files are at least owner-readable.
 	mode |= 0o400
 
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm()) //nolint:gosec // target is validated to stay inside the rootfs
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
@@ -794,6 +857,10 @@ func extractRegularFile(tr *tar.Reader, hdr *tar.Header, target, rootDir string)
 		return fmt.Errorf("write file contents: %w", err)
 	}
 
+	// Writing clears setuid and setgid, so set the full mode afterwards.
+	if err := f.Chmod(mode); err != nil {
+		return fmt.Errorf("set file mode: %w", err)
+	}
 	return nil
 }
 
