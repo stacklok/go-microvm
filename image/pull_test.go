@@ -22,6 +22,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -559,6 +560,7 @@ func TestPullWithFetcher_CacheHit(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	cache := NewCache(cacheDir)
+	require.NoError(t, cache.ensureFormat())
 
 	// Pre-populate the cache by creating the expected directory.
 	cachedRootfs := t.TempDir()
@@ -624,7 +626,7 @@ func TestPullWithFetcher_NilCache(t *testing.T) {
 	assert.NotNil(t, rootfs.Config)
 
 	// Clean up extracted rootfs since there's no cache managing it.
-	_ = os.RemoveAll(rootfs.Path)
+	_ = os.RemoveAll(filepath.Dir(rootfs.Path))
 }
 
 func TestPullWithFetcher_ParseError(t *testing.T) {
@@ -1396,44 +1398,76 @@ func TestExtractTarSharedLimit_ContextCancellation(t *testing.T) {
 func TestExtractTar_SpecialModeBits(t *testing.T) {
 	t.Parallel()
 
+	// Own uid and gid make the chown succeed, which clears setuid and setgid.
+	uid, gid := os.Getuid(), os.Getgid()
 	entries := []tarEntry{
-		{name: "usr/bin/sudo", typeflag: tar.TypeReg, mode: 0o4755, content: "sudo"},
-		{name: "usr/bin/wall", typeflag: tar.TypeReg, mode: 0o2755, content: "wall"},
+		{name: "usr/bin/sudo", typeflag: tar.TypeReg, mode: 0o4755, content: "sudo", uid: uid, gid: gid},
+		{name: "usr/bin/wall", typeflag: tar.TypeReg, mode: 0o2755, content: "wall", uid: uid, gid: gid},
+		{name: "usr/bin/sudoedit", typeflag: tar.TypeLink, mode: 0o4755, linkname: "usr/bin/sudo", uid: uid, gid: gid},
 	}
 	dst := t.TempDir()
 	require.NoError(t, extractTar(context.Background(), createTarBuffer(t, entries), dst))
 
-	want := map[string]os.FileMode{"sudo": 0o755, "wall": 0o755}
-	if os.Geteuid() != 0 {
-		want = map[string]os.FileMode{"sudo": os.ModeSetuid | 0o755, "wall": os.ModeSetgid | 0o755}
-	}
-	for name, mode := range want {
-		info, err := os.Stat(filepath.Join(dst, "usr", "bin", name))
-		require.NoError(t, err)
-		assert.Equal(t, mode, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid), name)
-	}
+	assertSpecialModeBits(t, filepath.Join(dst, "usr", "bin"))
+	info, err := os.Stat(filepath.Join(dst, "usr", "bin", "sudoedit"))
+	require.NoError(t, err)
+	assert.Equal(t, specialMode(os.ModeSetuid), info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid))
 }
 
 func TestExtractImageLayered_SpecialModeBits(t *testing.T) {
 	t.Parallel()
 
+	uid, gid := os.Getuid(), os.Getgid()
 	layer := createLayerFromEntries(t, []tarEntry{
 		{name: "usr/", typeflag: tar.TypeDir, mode: 0o755},
 		{name: "usr/bin/", typeflag: tar.TypeDir, mode: 0o755},
-		{name: "usr/bin/sudo", typeflag: tar.TypeReg, mode: 0o4755, content: "sudo"},
-		{name: "usr/bin/wall", typeflag: tar.TypeReg, mode: 0o2755, content: "wall"},
+		{name: "usr/bin/sudo", typeflag: tar.TypeReg, mode: 0o4755, content: "sudo", uid: uid, gid: gid},
+		{name: "usr/bin/wall", typeflag: tar.TypeReg, mode: 0o2755, content: "wall", uid: uid, gid: gid},
 	})
 	img := createImageFromLayers(t, layer)
 	dst := t.TempDir()
 	require.NoError(t, extractImageLayered(context.Background(), img, dst, NewLayerCache(t.TempDir())))
 
-	want := map[string]os.FileMode{"sudo": 0o755, "wall": 0o755}
-	if os.Geteuid() != 0 {
-		want = map[string]os.FileMode{"sudo": os.ModeSetuid | 0o755, "wall": os.ModeSetgid | 0o755}
+	assertSpecialModeBits(t, filepath.Join(dst, "usr", "bin"))
+}
+
+// specialMode returns the 0o755 mode an extracted file with the given
+// setuid or setgid bit should have on this host.
+func specialMode(bit os.FileMode) os.FileMode {
+	if pathutil.KeepsSpecialBits() {
+		return bit | 0o755
+	}
+	return 0o755
+}
+
+// assertSpecialModeBits checks the sudo (setuid) and wall (setgid) files
+// in dir.
+func assertSpecialModeBits(t *testing.T, dir string) {
+	t.Helper()
+
+	want := map[string]os.FileMode{
+		"sudo": specialMode(os.ModeSetuid),
+		"wall": specialMode(os.ModeSetgid),
 	}
 	for name, mode := range want {
-		info, err := os.Stat(filepath.Join(dst, "usr", "bin", name))
+		info, err := os.Stat(filepath.Join(dir, name))
 		require.NoError(t, err)
 		assert.Equal(t, mode, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid), name)
 	}
+}
+
+func TestPullWithFetcher_NilCachePrivateParent(t *testing.T) {
+	t.Parallel()
+
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+
+	rootfs, err := PullWithFetcher(context.Background(), "example.com/test:latest", nil, &mockFetcher{img: fakeImg})
+	require.NoError(t, err)
+	parent := filepath.Dir(rootfs.Path)
+	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+
+	info, err := os.Stat(parent)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 }

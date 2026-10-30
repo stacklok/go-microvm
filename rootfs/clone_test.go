@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/rootfs"
 )
 
@@ -291,7 +292,7 @@ func TestCloneDir_SpecialModeBits(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dst, "sudo"))
 	require.NoError(t, err)
 	want := os.FileMode(0o755)
-	if os.Geteuid() != 0 {
+	if pathutil.KeepsSpecialBits() {
 		want |= os.ModeSetuid
 	}
 	assert.Equal(t, want, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid))

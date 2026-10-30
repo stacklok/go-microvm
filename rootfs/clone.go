@@ -30,6 +30,10 @@ import (
 // dstDir must not already exist; it is created by CloneDir. If cloning fails
 // after creating dstDir, CloneDir removes that destination before returning.
 // Parent directories created to contain dstDir are preserved.
+//
+// On Linux, files owned by the (non-root) process keep their setuid and
+// setgid bits, so place dstDir below a directory other host users cannot
+// enter.
 func CloneDir(srcDir, dstDir string) (retErr error) {
 	// Guard: ensure srcDir is a real directory, not a symlink.
 	srcInfo, err := os.Lstat(srcDir)
@@ -138,7 +142,8 @@ func CloneDir(srcDir, dstDir string) (retErr error) {
 		if err := bestEffortLchown(path, dstPath); err != nil {
 			return fmt.Errorf("copy ownership for file %s: %w", relPath, err)
 		}
-		// chown clears setuid and setgid; restore the bits copyFile keeps.
+		// chown clears setuid and setgid; restore the bits cloneFile kept
+		// while the file still belongs to us.
 		if err := restoreSpecialBits(path, dstPath); err != nil {
 			return fmt.Errorf("restore mode of file %s: %w", relPath, err)
 		}
@@ -269,9 +274,5 @@ func restoreSpecialBits(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("lstat source: %w", err)
 	}
-	mode := pathutil.FileMode(info.Mode())
-	if mode&(os.ModeSetuid|os.ModeSetgid) == 0 {
-		return nil
-	}
-	return os.Chmod(dst, mode)
+	return pathutil.RestoreSpecialBits(dst, pathutil.FileMode(info.Mode()))
 }

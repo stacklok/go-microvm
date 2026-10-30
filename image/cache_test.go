@@ -642,3 +642,32 @@ func TestGetRef_BackwardCompatible(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "sha256:olddigest", digest)
 }
+
+func TestCache_EnsureFormat(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cache := NewCache(dir)
+	for _, name := range []string{"sha256-abc", "refs", "layers", "tmp-rootfs-1"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, name, "sub"), 0o700))
+	}
+
+	// A cache without the current format loses everything but pending
+	// tmp-* entries.
+	require.NoError(t, cache.ensureFormat())
+	names := func() []string {
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+	assert.ElementsMatch(t, []string{cacheFormatFile, "tmp-rootfs-1"}, names())
+
+	// Once current, entries are kept.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sha256-def"), 0o700))
+	require.NoError(t, cache.ensureFormat())
+	assert.ElementsMatch(t, []string{cacheFormatFile, "sha256-def", "tmp-rootfs-1"}, names())
+}

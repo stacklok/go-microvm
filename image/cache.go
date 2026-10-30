@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -517,4 +518,72 @@ func (c *Cache) putConfig(digest string, cfg *OCIConfig) {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(dir, configFile), data, 0o600)
+}
+
+// cacheFormat identifies what extraction stores in the cache. Bump it when
+// extraction changes the content of cached rootfs or layer entries, so
+// entries written by older versions are discarded instead of reused.
+//
+// Format 2 keeps setuid and setgid bits for unprivileged extraction.
+const (
+	cacheFormat     = "2"
+	cacheFormatFile = "format"
+)
+
+// ensureFormat discards every cache entry when the cache was written in an
+// older format, then records the current format. Pending tmp-* entries of
+// concurrent pulls are left alone.
+func (c *Cache) ensureFormat() error {
+	formatPath := filepath.Join(c.baseDir, cacheFormatFile)
+	data, err := os.ReadFile(formatPath)
+	if err == nil && string(data) == cacheFormat {
+		return nil
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read cache format: %w", err)
+	}
+	if err := os.MkdirAll(c.baseDir, 0o700); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(c.baseDir)
+	if err != nil {
+		return fmt.Errorf("read cache dir: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == cacheFormatFile || strings.HasPrefix(name, "tmp-") {
+			continue
+		}
+		// Rename before removing so a concurrent clone of the entry sees
+		// it whole or not at all.
+		stale, err := os.MkdirTemp(c.baseDir, "tmp-stale-*")
+		if err != nil {
+			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
+		}
+		if err := os.Rename(filepath.Join(c.baseDir, name), filepath.Join(stale, name)); err != nil {
+			_ = os.Remove(stale)
+			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
+		}
+		if err := os.RemoveAll(stale); err != nil {
+			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
+		}
+	}
+
+	tmp, err := os.CreateTemp(c.baseDir, "tmp-format-*")
+	if err != nil {
+		return fmt.Errorf("write cache format: %w", err)
+	}
+	_, werr := tmp.WriteString(cacheFormat)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), formatPath)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write cache format: %w", werr)
+	}
+	return nil
 }

@@ -68,6 +68,12 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		return nil, fmt.Errorf("parse image reference %q: %w", imageRef, err)
 	}
 
+	if cache != nil {
+		if err := cache.ensureFormat(); err != nil {
+			return nil, fmt.Errorf("check image cache format: %w", err)
+		}
+	}
+
 	// Fast path: check if we have a cached ref→digest mapping with a valid
 	// rootfs entry. This avoids the daemon/registry fetch entirely — critical
 	// because daemon.Image() does a full "docker save" export.
@@ -126,12 +132,17 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 
 	// Create a temporary directory for extraction. When a cache is
 	// available, create it inside the cache directory so that the
-	// subsequent os.Rename stays on the same filesystem.
+	// subsequent os.Rename stays on the same filesystem. Without a cache,
+	// extract into a subdirectory of a private (0700) directory: the rootfs
+	// root becomes world-accessible below, and its setuid files must not be
+	// reachable by other host users.
 	var tmpDir string
+	removeTmp := func() { _ = os.RemoveAll(tmpDir) }
 	if cache != nil {
 		tmpDir, err = cache.TempDir()
 	} else {
-		tmpDir, err = os.MkdirTemp("", "go-microvm-rootfs-*")
+		tmpDir, err = privateTempDir()
+		removeTmp = func() { _ = os.RemoveAll(filepath.Dir(tmpDir)) }
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir for rootfs: %w", err)
@@ -173,7 +184,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	} else {
 		extractSpan.SetAttributes(attribute.Bool("microvm.image.layered", false))
 		if err := extractImage(ctx, img, tmpDir); err != nil {
-			_ = os.RemoveAll(tmpDir)
+			removeTmp()
 			extractSpan.RecordError(err)
 			extractSpan.SetStatus(codes.Error, err.Error())
 			extractSpan.End()
@@ -190,7 +201,7 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		slog.Warn("chmod rootfs root dir failed", "err", err)
 	}
 	if err := xattr.SetOverrideStat(tmpDir, 0, 0, os.ModeDir|0o755); err != nil {
-		_ = os.RemoveAll(tmpDir)
+		removeTmp()
 		return nil, fmt.Errorf("set rootfs override_stat: %w", err)
 	}
 
@@ -220,6 +231,21 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 	}
 
 	return &RootFS{Path: rootfsPath, Config: ociCfg, FromCache: fromCache}, nil
+}
+
+// privateTempDir creates an empty rootfs directory inside a new private
+// (0700) temporary directory and returns the rootfs path.
+func privateTempDir() (string, error) {
+	parent, err := os.MkdirTemp("", "go-microvm-rootfs-*")
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(parent, "rootfs")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		_ = os.RemoveAll(parent)
+		return "", err
+	}
+	return dir, nil
 }
 
 // extractOCIConfig parses the image configuration into our OCIConfig type.
@@ -474,26 +500,14 @@ func applyLayerToDir(layerDir, dst string) error {
 			return fmt.Errorf("copy ownership %s: %w", rel, err)
 		}
 		// A successful chown clears setuid and setgid; restore the bits
-		// copyFileToDir set.
+		// copyFileToDir set while the file still belongs to us.
 		if info.Mode().IsRegular() {
-			if err := restoreSpecialBits(target, pathutil.FileMode(info.Mode())|0o400); err != nil {
+			if err := pathutil.RestoreSpecialBits(target, pathutil.FileMode(info.Mode())); err != nil {
 				return fmt.Errorf("restore mode %s: %w", rel, err)
 			}
 		}
 		return nil
 	})
-}
-
-// restoreSpecialBits re-applies mode to target when it carries setuid or
-// setgid, which chown clears.
-func restoreSpecialBits(target string, mode os.FileMode) error {
-	if mode&(os.ModeSetuid|os.ModeSetgid) == 0 {
-		return nil
-	}
-	if err := os.Chmod(target, mode); err != nil {
-		return fmt.Errorf("restore setuid/setgid bits: %w", err)
-	}
-	return nil
 }
 
 // copyOwnership copies the uid/gid from src to dst using best-effort lchown.
@@ -776,14 +790,23 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 		return nil
 	}
 
+	// Regular files and hard links may carry setuid or setgid, which a
+	// successful chown clears, also on the inode a hard link shares.
+	// Remember the mode so the bits can be restored afterwards.
+	var mode os.FileMode
+	if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeLink {
+		info, err := os.Lstat(target)
+		if err != nil {
+			return fmt.Errorf("stat extracted file: %w", err)
+		}
+		mode = info.Mode()
+	}
+
 	// Best-effort ownership preservation from tar headers.
 	// When running as non-root, Lchown will fail with EPERM — that's fine.
 	bestEffortLchown(target, hdr.Uid, hdr.Gid)
-	// A successful chown clears setuid and setgid; restore them.
-	if hdr.Typeflag == tar.TypeReg {
-		if err := restoreSpecialBits(target, pathutil.FileMode(hdr.FileInfo().Mode())|0o400); err != nil {
-			return err
-		}
+	if err := pathutil.RestoreSpecialBits(target, mode); err != nil {
+		return err
 	}
 
 	// On macOS, set the override_stat xattr so libkrun's virtiofs FUSE
