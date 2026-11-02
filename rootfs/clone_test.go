@@ -40,6 +40,33 @@ func TestCloneDir(t *testing.T) {
 		assert.Equal(t, "nested", string(got))
 	})
 
+	t.Run("allows writable directories below a private boundary", func(t *testing.T) {
+		t.Parallel()
+		src := t.TempDir()
+		require.NoError(t, os.Chmod(src, 0o775))
+		require.NoError(t, os.Mkdir(filepath.Join(src, "nested"), 0o700))
+		require.NoError(t, os.Chmod(filepath.Join(src, "nested"), 0o775))
+		require.NoError(t, os.WriteFile(filepath.Join(src, "nested", "file"), []byte("data"), 0o600))
+		private := t.TempDir()
+		require.NoError(t, os.Chmod(private, 0o700))
+		parent := filepath.Join(private, "writable", "nested")
+		require.NoError(t, os.MkdirAll(parent, 0o700))
+		for _, dir := range []string{filepath.Dir(parent), parent} {
+			require.NoError(t, os.Chmod(dir, 0o775))
+		}
+		dst := filepath.Join(parent, "clone")
+		require.NoError(t, rootfs.CloneDir(src, dst))
+		for _, dir := range []string{filepath.Dir(parent), parent, dst, filepath.Join(dst, "nested")} {
+			info, err := os.Stat(dir)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o775), info.Mode().Perm())
+		}
+		data, err := os.ReadFile(filepath.Join(dst, "nested", "file"))
+		require.NoError(t, err)
+		require.Equal(t, "data", string(data))
+		require.FileExists(t, filepath.Join(src, "nested", "file"))
+	})
+
 	t.Run("preserves file permissions", func(t *testing.T) {
 		t.Parallel()
 

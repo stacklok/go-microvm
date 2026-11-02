@@ -4,6 +4,7 @@
 package image
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -24,9 +25,9 @@ type LayerCache struct {
 	parent  *Cache
 }
 
-// NewLayerCache creates a new layer cache rooted at baseDir. The directory is
-// created lazily when an operation first prepares storage. Standalone handles
-// validate storage privacy but never infer a parent cache or migrate its format.
+// NewLayerCache creates a new layer cache rooted at baseDir. Missing directories
+// are created lazily by Put or TempDir. Standalone handles validate storage
+// privacy but never infer a parent cache or migrate its format.
 func NewLayerCache(baseDir string) *LayerCache {
 	return &LayerCache{baseDir: baseDir}
 }
@@ -42,12 +43,12 @@ func (lc *LayerCache) Has(diffID v1.Hash) bool {
 // On a hit, the entry's modification time is updated so that Evict does
 // not remove frequently used entries.
 func (lc *LayerCache) Get(diffID v1.Hash) (string, bool) {
-	if err := lc.prepare(); err != nil {
+	if err := lc.prepareRead(); err != nil {
 		return "", false
 	}
 	dir := lc.pathFor(diffID)
 
-	info, err := os.Lstat(dir)
+	info, err := statCacheDir(dir)
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
@@ -68,7 +69,7 @@ func (lc *LayerCache) Put(diffID v1.Hash, tempDir string) error {
 		return fmt.Errorf("initialize layer cache: %w", err)
 	}
 
-	info, err := os.Lstat(tempDir)
+	info, err := statCacheDir(tempDir)
 	if err != nil {
 		return fmt.Errorf("stat layer source: %w", err)
 	}
@@ -78,8 +79,8 @@ func (lc *LayerCache) Put(diffID v1.Hash, tempDir string) error {
 	dst := lc.pathFor(diffID)
 
 	// If the destination already exists, another concurrent extraction may
-	// have beaten us. Only real directories count as valid duplicates.
-	if info, err := os.Lstat(dst); err == nil {
+	// have beaten us. Validate duplicates using the same policy as Get.
+	if info, err := statCacheDir(dst); err == nil {
 		if !info.IsDir() {
 			return fmt.Errorf("cached layer is not a real directory: %s", dst)
 		}
@@ -114,6 +115,12 @@ func (lc *LayerCache) Evict(maxAge time.Duration) (int, error) {
 		return 0, err
 	}
 	if lc.parent != nil {
+		if err := existingCacheDir(lc.parent.baseDir); err != nil {
+			if os.IsNotExist(err) {
+				return 0, nil
+			}
+			return 0, err
+		}
 		if err := pathutil.EnsurePrivateDir(lc.parent.baseDir); err != nil {
 			return 0, err
 		}
@@ -166,7 +173,10 @@ func (lc *LayerCache) Size() (int64, error) {
 	if lc == nil {
 		return 0, nil
 	}
-	if err := lc.prepare(); err != nil {
+	if err := lc.prepareRead(); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
 		return 0, err
 	}
 	var total int64
@@ -191,6 +201,18 @@ func (lc *LayerCache) Size() (int64, error) {
 		return total, fmt.Errorf("walk layer cache: %w", err)
 	}
 	return total, nil
+}
+
+func (lc *LayerCache) prepareRead() error {
+	if lc.parent != nil {
+		if err := lc.parent.prepareRead(); err != nil {
+			return fmt.Errorf("initialize parent cache: %w", err)
+		}
+	}
+	if err := existingCacheDir(lc.baseDir); err != nil {
+		return err
+	}
+	return pathutil.EnsurePrivateDir(lc.baseDir)
 }
 
 func (lc *LayerCache) prepare() error {

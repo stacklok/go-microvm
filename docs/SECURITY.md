@@ -509,8 +509,42 @@ prepares metadata for libkrun versions that consume `override_stat`.
 | SSH private keys | 0600 | Owner read/write |
 | SSH public keys | 0644 | World readable |
 | VM log files | 0600 | Owner only |
-| Cache directories | 0700 | Owner only |
+| Cache containers (new) | 0700 | Existing paths are not chmodded; see below |
 | Unix socket (vnet.sock) | 0700 dir | Protected by parent directory permissions |
+
+### Private rootfs storage
+
+On non-root Linux, extraction and cloning retain setuid/setgid bits on files
+owned by the caller. Cache containers and clone destinations therefore require
+an effective-path private ancestor owned by the effective UID, with no group or
+other access (normally 0700). A public cache or clone boundary without that
+ancestor is intentionally rejected, even if the current image has no special
+bits. New container directories are created with mode 0700; existing caller
+paths are never automatically chmodded. Image directory modes are retained,
+including 0775 directories nested below a private boundary.
+
+Ancestry must be owned by root or the effective UID. Before the private boundary,
+non-sticky directories writable by other users are rejected. Symlinks in
+container ancestry are allowed only when their actual targets also have a safe
+effective path; a private ancestor in the spelling of a link is insufficient.
+Raw `..` components are rejected in storage paths in this mode. Cache entry and
+source leaf symlinks are also rejected, including sources with trailing slashes.
+On macOS and Linux as root, host special bits are not retained and the previous
+directory-symlink cache compatibility is preserved.
+
+Read lookups (`Get`, `Has`, `LookupRef`, and layer `Size`) do not create missing
+cache directories. Reads of an existing rootfs cache, including through a
+parent-backed layer handle, still validate its format and may discard stale
+rootfs, ref, and layer entries and publish the current format. Standalone layer
+caches do not infer or migrate a parent. Migration is serialized by a stable
+format lock; eviction, GC, and purge require quiescent callers across processes.
+
+Cache contents and namespace changes by root, the same UID, or other trusted
+callers are outside this protection's threat model. Checks assume stable paths,
+permissions, working directory, and ACLs that do not grant other users access.
+These permission checks are not atomic filesystem confinement or a sandbox
+against hostile same-UID processes. Previously exposed files are not remediated;
+callers must separately remove or secure any old public copies.
 
 ## SSH Client Security
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -75,11 +76,14 @@ func TestCache_EmptyStoragePath(t *testing.T) {
 
 func TestCache_DirectFormatValidation(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"Get", "Has", "Put"} {
+	for _, operation := range []string{"Get", "Has", "LookupRef", "LayerGet", "LayerHas", "LayerSize", "Put"} {
 		t.Run(operation, func(t *testing.T) {
 			c := NewCache(t.TempDir())
 			digest := "sha256:abc"
 			require.NoError(t, os.Mkdir(c.pathFor(digest), 0o700))
+			lc := c.LayerCache()
+			require.NoError(t, os.MkdirAll(lc.pathFor(testDiffID), 0o700))
+			c.putRef("example.com/img:1", digest)
 			source := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(source, "new"), nil, 0o600))
 			switch operation {
@@ -89,12 +93,33 @@ func TestCache_DirectFormatValidation(t *testing.T) {
 				require.Empty(t, path)
 			case "Has":
 				require.False(t, c.Has(digest))
+			case "LookupRef":
+				require.Nil(t, c.LookupRef("example.com/img:1"))
+			case "LayerGet":
+				path, hit := lc.Get(testDiffID)
+				require.False(t, hit)
+				require.Empty(t, path)
+			case "LayerHas":
+				require.False(t, lc.Has(testDiffID))
+			case "LayerSize":
+				size, err := lc.Size()
+				require.NoError(t, err)
+				require.Zero(t, size)
 			case "Put":
 				require.NoError(t, c.Put(digest, source))
 				path, hit := c.Get(digest)
 				require.True(t, hit)
 				require.FileExists(t, filepath.Join(path, "new"))
 				require.True(t, c.Has(digest))
+			}
+			require.NoDirExists(t, lc.baseDir)
+			require.NoDirExists(t, filepath.Join(c.baseDir, refDir))
+			marker, err := os.ReadFile(filepath.Join(c.baseDir, cacheFormatFile))
+			require.NoError(t, err)
+			require.Equal(t, cacheFormat, string(marker))
+			if operation != "Put" {
+				require.NoDirExists(t, c.pathFor(digest))
+				require.FileExists(t, filepath.Join(source, "new"))
 			}
 		})
 	}
@@ -323,6 +348,9 @@ func TestCache_RejectsRawParentComponents(t *testing.T) {
 
 func TestCache_RejectsLeafSymlinks(t *testing.T) {
 	t.Parallel()
+	if !pathutil.KeepsSpecialBits() {
+		t.Skip("leaf symlink rejection requires Linux nonroot")
+	}
 	for _, dangling := range []bool{false, true} {
 		t.Run(fmt.Sprintf("dangling=%t", dangling), func(t *testing.T) {
 			c := NewCache(t.TempDir())
@@ -349,6 +377,16 @@ func TestCache_RejectsLeafSymlinks(t *testing.T) {
 			require.Empty(t, entries)
 			c.StoreRef("example.com/img:1", "sha256:abc", &OCIConfig{})
 			require.NoFileExists(t, filepath.Join(target, configFile))
+			require.Nil(t, c.LookupRef("example.com/img:1"))
+			if !dangling {
+				stale := []byte(`{"Cmd":["stale"]}`)
+				require.NoError(t, os.WriteFile(filepath.Join(target, configFile), stale, 0o600))
+				c.StoreRef("example.com/img:1", "sha256:abc", &OCIConfig{Cmd: []string{"updated"}})
+				data, err := os.ReadFile(filepath.Join(target, configFile))
+				require.NoError(t, err)
+				require.Equal(t, stale, data)
+				require.Nil(t, c.LookupRef("example.com/img:1"))
+			}
 			for _, entry := range []string{c.pathFor("sha256:abc"), lc.pathFor(testDiffID)} {
 				info, err := os.Lstat(entry)
 				require.NoError(t, err)
@@ -361,12 +399,198 @@ func TestCache_RejectsLeafSymlinks(t *testing.T) {
 	lc := c.LayerCache()
 	source := filepath.Join(t.TempDir(), "source")
 	require.NoError(t, os.Symlink(t.TempDir(), source))
-	require.Error(t, c.Put("sha256:abc", source))
-	require.Error(t, lc.Put(testDiffID, source))
+	for _, suffix := range []string{"", "/", "///"} {
+		require.Error(t, c.Put("sha256:abc", source+suffix))
+		require.Error(t, lc.Put(testDiffID, source+suffix))
+	}
 	_, err := os.Lstat(source)
 	require.NoError(t, err)
 	require.False(t, c.Has("sha256:abc"))
 	require.False(t, lc.Has(testDiffID))
+}
+
+func TestStatCacheDir_Root(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/", "///"} {
+		info, err := statCacheDir(path)
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+	}
+}
+
+func TestCache_InvalidSourcePreservedWithDuplicate(t *testing.T) {
+	t.Parallel()
+	c := NewCache(t.TempDir())
+	source, err := c.TempDir()
+	require.NoError(t, err)
+	require.NoError(t, c.Put("sha256:abc", source))
+	lc := c.LayerCache()
+	source, err = lc.TempDir()
+	require.NoError(t, err)
+	require.NoError(t, lc.Put(testDiffID, source))
+	invalid := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(invalid, []byte("keep"), 0o600))
+	for _, path := range []string{invalid, invalid + "-missing"} {
+		require.Error(t, c.Put("sha256:abc", path))
+		require.Error(t, lc.Put(testDiffID, path))
+	}
+	data, err := os.ReadFile(invalid)
+	require.NoError(t, err)
+	require.Equal(t, "keep", string(data))
+	require.True(t, c.Has("sha256:abc"))
+	require.True(t, lc.Has(testDiffID))
+}
+
+func TestCache_DirectorySymlinkCompatibility(t *testing.T) {
+	t.Parallel()
+	if pathutil.KeepsSpecialBits() {
+		t.Skip("directory symlink compatibility applies without host special bits")
+	}
+	for _, layer := range []bool{false, true} {
+		for _, operation := range []string{"entry", "source", "dangling"} {
+			t.Run(fmt.Sprintf("layer=%t/%s", layer, operation), func(t *testing.T) {
+				c := NewCache(t.TempDir())
+				require.NoError(t, c.ensureFormat())
+				put := func(source string) error { return c.Put("sha256:abc", source) }
+				has := func() bool { return c.Has("sha256:abc") }
+				entry := c.pathFor("sha256:abc")
+				if layer {
+					lc := c.LayerCache()
+					_, err := lc.TempDir()
+					require.NoError(t, err)
+					put = func(source string) error { return lc.Put(testDiffID, source) }
+					has = func() bool { return lc.Has(testDiffID) }
+					entry = lc.pathFor(testDiffID)
+				}
+				target := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(target, "keep"), []byte("target"), 0o600))
+				if operation == "source" {
+					source := filepath.Join(t.TempDir(), "link")
+					require.NoError(t, os.Symlink(target, source))
+					require.NoError(t, put(source))
+					require.NoFileExists(t, source)
+					require.True(t, has())
+				} else {
+					linkTarget := target
+					if operation == "dangling" {
+						linkTarget = filepath.Join(target, "missing")
+					}
+					require.NoError(t, os.Symlink(linkTarget, entry))
+					require.Equal(t, operation == "entry", has())
+					source := t.TempDir()
+					require.NoError(t, os.WriteFile(filepath.Join(source, "new"), nil, 0o600))
+					if operation == "dangling" {
+						require.Error(t, put(source))
+						require.FileExists(t, filepath.Join(source, "new"))
+					} else {
+						require.NoError(t, put(source))
+						require.NoDirExists(t, source)
+					}
+				}
+				require.FileExists(t, filepath.Join(target, "keep"))
+				link, err := os.Readlink(entry)
+				require.NoError(t, err)
+				if operation != "dangling" {
+					require.Equal(t, target, link)
+					if !layer {
+						for _, cfg := range []*OCIConfig{
+							{Cmd: []string{"fresh"}, Env: []string{"VERSION=1"}},
+							{Cmd: []string{"updated"}, Env: []string{"VERSION=2"}},
+						} {
+							c.StoreRef("example.com/img:1", "sha256:abc", cfg)
+							cached := c.LookupRef("example.com/img:1")
+							require.NotNil(t, cached)
+							require.Equal(t, entry, cached.Path)
+							require.True(t, cached.FromCache)
+							require.Equal(t, cfg, cached.Config)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCache_ReadsLeaveMissingStorageAbsent(t *testing.T) {
+	t.Parallel()
+	for _, parentExists := range []bool{false, true} {
+		for _, operation := range []string{"Get", "Has", "LookupRef", "LayerGet", "LayerHas", "LayerSize", "StandaloneGet", "StandaloneHas", "StandaloneSize", "LayerEvict", "StandaloneEvict"} {
+			t.Run(fmt.Sprintf("parentExists=%t/%s", parentExists, operation), func(t *testing.T) {
+				base := filepath.Join(t.TempDir(), "cache")
+				c := NewCache(base)
+				if parentExists {
+					require.NoError(t, c.ensureFormat())
+				}
+				lc := c.LayerCache()
+				if strings.HasPrefix(operation, "Standalone") {
+					lc = NewLayerCache(lc.baseDir)
+				}
+				switch operation {
+				case "Get":
+					path, hit := c.Get("sha256:abc")
+					require.Empty(t, path)
+					require.False(t, hit)
+				case "Has":
+					require.False(t, c.Has("sha256:abc"))
+				case "LookupRef":
+					require.Nil(t, c.LookupRef("example.com/img:1"))
+				case "LayerGet", "StandaloneGet":
+					path, hit := lc.Get(testDiffID)
+					require.Empty(t, path)
+					require.False(t, hit)
+				case "LayerHas", "StandaloneHas":
+					require.False(t, lc.Has(testDiffID))
+				case "LayerEvict", "StandaloneEvict":
+					removed, err := lc.Evict(time.Hour)
+					require.NoError(t, err)
+					require.Zero(t, removed)
+				case "LayerSize", "StandaloneSize":
+					size, err := lc.Size()
+					require.NoError(t, err)
+					require.Zero(t, size)
+				}
+				require.NoDirExists(t, lc.baseDir)
+				if !parentExists {
+					require.NoDirExists(t, base)
+				}
+			})
+		}
+	}
+}
+
+func TestCache_PrivateNestedWritableDirectories(t *testing.T) {
+	t.Parallel()
+	private := t.TempDir()
+	require.NoError(t, os.Chmod(private, 0o700))
+	base := filepath.Join(private, "nested", "cache")
+	require.NoError(t, os.MkdirAll(base, 0o700))
+	for _, dir := range []string{filepath.Dir(base), base} {
+		require.NoError(t, os.Chmod(dir, 0o775))
+	}
+	c := NewCache(base)
+	for _, layer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("layer=%t", layer), func(t *testing.T) {
+			source := filepath.Join(private, fmt.Sprintf("source-%t", layer))
+			require.NoError(t, os.Mkdir(source, 0o700))
+			require.NoError(t, os.Chmod(source, 0o775))
+			require.NoError(t, os.WriteFile(filepath.Join(source, "keep"), []byte("data"), 0o600))
+			var path string
+			var hit bool
+			if layer {
+				lc := c.LayerCache()
+				require.NoError(t, lc.Put(testDiffID, source+"///"))
+				path, hit = lc.Get(testDiffID)
+			} else {
+				require.NoError(t, c.Put("sha256:abc", source+"///"))
+				path, hit = c.Get("sha256:abc")
+			}
+			require.True(t, hit)
+			require.FileExists(t, filepath.Join(path, "keep"))
+			info, err := os.Stat(path)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o775), info.Mode().Perm())
+		})
+	}
 }
 
 func TestCache_UnsafeBoundary(t *testing.T) {

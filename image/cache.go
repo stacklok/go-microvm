@@ -28,8 +28,8 @@ type Cache struct {
 	baseDir string
 }
 
-// NewCache creates a new cache rooted at baseDir. The directory is created
-// lazily when an operation first initializes the cache.
+// NewCache creates a new cache rooted at baseDir. Missing directories are
+// created lazily by writes or TempDir; reads may migrate an existing cache.
 func NewCache(baseDir string) *Cache {
 	return &Cache{baseDir: baseDir}
 }
@@ -58,12 +58,12 @@ func (c *Cache) LayerCache() *LayerCache {
 // On a hit, the entry's modification time is updated so that Evict does
 // not remove frequently used entries.
 func (c *Cache) Get(digest string) (string, bool) {
-	if err := c.ensureFormat(); err != nil {
+	if err := c.prepareRead(); err != nil {
 		return "", false
 	}
 	dir := c.pathFor(digest)
 
-	info, err := os.Lstat(dir)
+	info, err := statCacheDir(dir)
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
@@ -90,7 +90,7 @@ func (c *Cache) Put(digest string, rootfsPath string) error {
 		return fmt.Errorf("initialize cache: %w", err)
 	}
 
-	info, err := os.Lstat(rootfsPath)
+	info, err := statCacheDir(rootfsPath)
 	if err != nil {
 		return fmt.Errorf("stat rootfs source: %w", err)
 	}
@@ -100,8 +100,8 @@ func (c *Cache) Put(digest string, rootfsPath string) error {
 	dst := c.pathFor(digest)
 
 	// If the destination already exists, another concurrent pull may have
-	// beaten us. Only real directories count as valid duplicates.
-	if info, err := os.Lstat(dst); err == nil {
+	// beaten us. Validate duplicates using the same policy as Get.
+	if info, err := statCacheDir(dst); err == nil {
 		if !info.IsDir() {
 			return fmt.Errorf("cached rootfs is not a real directory: %s", dst)
 		}
@@ -483,7 +483,7 @@ func (c *Cache) LookupRef(imageRef string) *RootFS {
 	if c == nil {
 		return nil
 	}
-	if err := c.ensureFormat(); err != nil {
+	if err := c.prepareRead(); err != nil {
 		return nil
 	}
 
@@ -577,7 +577,7 @@ func (c *Cache) putConfig(digest string, cfg *OCIConfig) {
 		return
 	}
 	dir := c.pathFor(digest)
-	info, err := os.Lstat(dir)
+	info, err := statCacheDir(dir)
 	if err != nil || !info.IsDir() {
 		return
 	}
@@ -598,6 +598,38 @@ const (
 	cacheFormatFile = "format"
 	cacheFormatLock = ".format.lock"
 )
+
+// statCacheDir preserves directory-symlink compatibility unless extraction
+// retains host special bits. Trim trailing separators, not other components:
+// Lstat("link/") follows the link, while Clean could change symlink/.. semantics.
+func statCacheDir(path string) (os.FileInfo, error) {
+	if !pathutil.KeepsSpecialBits() {
+		return os.Stat(path)
+	}
+	trimmed := strings.TrimRight(path, string(os.PathSeparator))
+	if trimmed == "" && path != "" {
+		trimmed = string(os.PathSeparator)
+	}
+	return os.Lstat(trimmed)
+}
+
+// existingCacheDir checks existence without creating storage. Validate before
+// Stat so invalid paths still fail closed, including for error-returning reads.
+func existingCacheDir(path string) error {
+	if err := pathutil.ValidatePrivatePath(path); err != nil {
+		return err
+	}
+	_, err := os.Stat(path)
+	return err
+}
+
+// prepareRead leaves missing caches absent, but still migrates existing caches.
+func (c *Cache) prepareRead() error {
+	if err := existingCacheDir(c.baseDir); err != nil {
+		return err
+	}
+	return c.ensureFormat()
+}
 
 // ensureFormat discards the cache's entries (unpacked rootfs, refs and
 // extracted layers) when the cache was written in an older format, then
