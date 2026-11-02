@@ -156,6 +156,7 @@ type config struct {
 	env                   []string // KEY=VALUE entries merged into the init environment
 	rootfsPath            string   // pre-built rootfs directory; skips OCI image pull when set
 	rootfsHooks           []RootFSHook
+	rootfsShare           string // virtio-fs tag of the read-only cached rootfs; empty = clone it
 	netProvider           net.Provider
 	firewallRules         []firewall.Rule
 	firewallDefaultAction firewall.Action
@@ -297,6 +298,20 @@ func WithEnv(env ...string) Option {
 // the provided path.
 func WithRootFSPath(path string) Option {
 	return optionFunc(func(c *config) { c.rootfsPath = path })
+}
+
+// WithRootFSShare boots the VM without copying the cached image rootfs.
+// Run creates an empty writable root directory in the data directory, where
+// rootfs hooks, the guest VM config and the backend's .krun_config.json are
+// written, and shares the cached rootfs read-only over virtio-fs under tag.
+//
+// The guest init, set with [WithInitOverride] and written by a rootfs hook,
+// must assemble the root file system itself, for example as an overlay with
+// the share as its lower layer. The image must come from the image cache, and
+// the caller must keep its cache entry while the VM runs. Cannot be combined
+// with [WithRootFSPath].
+func WithRootFSShare(tag string) Option {
+	return optionFunc(func(c *config) { c.rootfsShare = tag })
 }
 
 // WithRootFSHook adds hooks that modify the extracted rootfs before VM boot.

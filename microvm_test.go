@@ -542,6 +542,108 @@ func TestRun_FreshCacheEntry_IsolatedFromRootFSHooks(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "hook marker must not exist in shared cache: %v", err)
 }
 
+func TestRun_RootFSShare_SharesCachedRootfsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cache := image.NewCache(t.TempDir())
+	fakeImg, err := random.Image(256, 1)
+	require.NoError(t, err)
+	digest, err := fakeImg.Digest()
+	require.NoError(t, err)
+
+	const imageRef = "example.com/test:latest"
+	const markerName = "rootfs-hook-marker"
+	userMount := VirtioFSMount{Tag: "work", HostPath: t.TempDir()}
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+	var hookEntries []os.DirEntry
+
+	vm, err := Run(context.Background(), imageRef,
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithImageCache(cache),
+		WithImageFetcher(&mockImageFetcher{img: fakeImg}),
+		WithNetProvider(&mockNetProvider{sockPath: "/tmp/fake.sock"}),
+		WithBackend(backend),
+		WithVirtioFS(userMount),
+		WithRootFSShare("rootfs"),
+		WithRootFSHook(func(rootfsPath string, cfg *image.OCIConfig) error {
+			if cfg == nil {
+				return fmt.Errorf("missing OCI config")
+			}
+			entries, err := os.ReadDir(rootfsPath)
+			if err != nil {
+				return err
+			}
+			hookEntries = entries
+			return os.WriteFile(filepath.Join(rootfsPath, markerName), []byte("x"), 0o644)
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, vm.Stop(context.Background()))
+	})
+
+	cachePath, ok := cache.Get(digest.String())
+	require.True(t, ok)
+
+	workingPath := vm.RootFSPath()
+	assert.Equal(t, filepath.Join(dataDir, "rootfs-work"), workingPath)
+	assert.Equal(t, workingPath, backend.lastConfig.RootFSPath)
+	assert.Empty(t, hookEntries, "the root must start empty")
+	_, err = os.Stat(filepath.Join(workingPath, markerName))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(cachePath, markerName))
+	assert.True(t, os.IsNotExist(err), "hook marker must not exist in shared cache: %v", err)
+
+	assert.Equal(t, []hypervisor.FilesystemMount{
+		{Tag: "work", HostPath: userMount.HostPath},
+		{Tag: "rootfs", HostPath: cachePath, ReadOnly: true},
+	}, backend.lastConfig.FilesystemMounts)
+
+	require.NoError(t, vm.Remove(context.Background()))
+	_, err = os.Stat(cachePath)
+	assert.NoError(t, err, "removing the VM must keep the cache entry")
+}
+
+func TestRun_RootFSShare_Validation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{
+			name: "pre-built rootfs",
+			opts: []Option{WithRootFSPath(t.TempDir())},
+			want: "cannot be combined with a pre-built rootfs path",
+		},
+		{
+			name: "tag collision",
+			opts: []Option{WithVirtioFS(VirtioFSMount{Tag: "rootfs", HostPath: t.TempDir()})},
+			want: `tag "rootfs" is already used`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+			opts := append([]Option{
+				WithDataDir(t.TempDir()),
+				WithPreflightChecker(preflight.NewEmpty()),
+				WithBackend(backend),
+				WithRootFSShare("rootfs"),
+			}, tt.opts...)
+			_, err := Run(context.Background(), "example.com/test:latest", opts...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.Zero(t, backend.startCalls)
+		})
+	}
+}
+
 func TestRun_RootfsHookError(t *testing.T) {
 	t.Parallel()
 
