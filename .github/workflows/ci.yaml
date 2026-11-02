@@ -169,7 +169,7 @@ jobs:
   # Homebrew/tap changes break a PR instead of a tag push.
   package-macos:
     name: Package (macOS arm64)
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
