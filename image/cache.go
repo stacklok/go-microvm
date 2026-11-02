@@ -4,6 +4,7 @@
 package image
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
+
+	"github.com/stacklok/go-microvm/internal/pathutil"
 )
 
 // Cache provides content-addressable caching of extracted rootfs directories.
@@ -24,7 +29,7 @@ type Cache struct {
 }
 
 // NewCache creates a new cache rooted at baseDir. The directory is created
-// lazily when the first entry is stored.
+// lazily when an operation first initializes the cache.
 func NewCache(baseDir string) *Cache {
 	return &Cache{baseDir: baseDir}
 }
@@ -37,20 +42,15 @@ func (c *Cache) BaseDir() string {
 	return c.baseDir
 }
 
-// LayerCache returns the per-layer cache, creating the layers/ subdirectory
-// lazily. Returns nil if the receiver is nil.
-//
-// Layers left by an older cache format are discarded first, so callers that
-// check the layer cache before pulling (e.g. to skip fetching cached layers)
-// never rely on entries the pull would then discard.
+// LayerCache returns a parent-aware per-layer cache. Returns nil for a nil
+// receiver. Each operation retries parent validation: bool methods miss on
+// failure, error-returning methods report it. Retained handles therefore fail
+// closed after a format/privacy failure and recover once it is repaired.
 func (c *Cache) LayerCache() *LayerCache {
 	if c == nil {
 		return nil
 	}
-	// A failure leaves stale entries in place; PullWithFetcher checks the
-	// format again and reports the error.
-	_ = c.ensureFormat()
-	return NewLayerCache(filepath.Join(c.baseDir, "layers"))
+	return &LayerCache{baseDir: filepath.Join(c.baseDir, "layers"), parent: c}
 }
 
 // Get returns the path to a cached rootfs for the given digest, and true
@@ -58,9 +58,12 @@ func (c *Cache) LayerCache() *LayerCache {
 // On a hit, the entry's modification time is updated so that Evict does
 // not remove frequently used entries.
 func (c *Cache) Get(digest string) (string, bool) {
+	if err := c.ensureFormat(); err != nil {
+		return "", false
+	}
 	dir := c.pathFor(digest)
 
-	info, err := os.Stat(dir)
+	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
@@ -83,17 +86,29 @@ func (c *Cache) Has(digest string) bool {
 // successful Put, rootfsPath should no longer be used directly;
 // callers should use the path returned by Get instead.
 func (c *Cache) Put(digest string, rootfsPath string) error {
-	if err := os.MkdirAll(c.baseDir, 0o700); err != nil {
-		return fmt.Errorf("create cache dir: %w", err)
+	if err := c.ensureFormat(); err != nil {
+		return fmt.Errorf("initialize cache: %w", err)
 	}
 
+	info, err := os.Lstat(rootfsPath)
+	if err != nil {
+		return fmt.Errorf("stat rootfs source: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("rootfs source is not a real directory: %s", rootfsPath)
+	}
 	dst := c.pathFor(digest)
 
 	// If the destination already exists, another concurrent pull may have
-	// beaten us. Remove the duplicate we just extracted.
-	if _, err := os.Stat(dst); err == nil {
+	// beaten us. Only real directories count as valid duplicates.
+	if info, err := os.Lstat(dst); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("cached rootfs is not a real directory: %s", dst)
+		}
 		_ = os.RemoveAll(rootfsPath)
 		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat cached rootfs: %w", err)
 	}
 
 	if err := os.Rename(rootfsPath, dst); err != nil {
@@ -107,16 +122,20 @@ func (c *Cache) Put(digest string, rootfsPath string) error {
 // This ensures os.Rename in Put stays on the same filesystem, avoiding
 // cross-device link errors (e.g. /tmp on tmpfs vs cache on a different mount).
 func (c *Cache) TempDir() (string, error) {
-	if err := os.MkdirAll(c.baseDir, 0o700); err != nil {
-		return "", fmt.Errorf("create cache dir: %w", err)
+	if err := c.ensureFormat(); err != nil {
+		return "", fmt.Errorf("initialize cache: %w", err)
 	}
 	return os.MkdirTemp(c.baseDir, "tmp-rootfs-*")
 }
 
-// Evict removes cached entries whose modification time is older than maxAge.
-// Stale temporary directories (tmp-*) from interrupted extractions are also
-// cleaned if they are older than maxAge. Returns the number of entries removed.
+// Evict removes old rootfs entries and owned extraction/migration temporaries.
+// Metadata, arbitrary siblings and the layers container are retained. Maintenance
+// (Evict, GC and Purge) requires quiescent callers, including other processes.
+// Returns the number of entries removed.
 func (c *Cache) Evict(maxAge time.Duration) (int, error) {
+	if err := pathutil.ValidatePrivatePath(c.baseDir); err != nil {
+		return 0, err
+	}
 	entries, err := os.ReadDir(c.baseDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -129,14 +148,13 @@ func (c *Cache) Evict(maxAge time.Duration) (int, error) {
 	removed := 0
 
 	for _, entry := range entries {
-		// Only rootfs entries and leftovers age out here: refs/, chains/,
-		// snapshots/ and layers/ are pruned by their own rules below.
 		name := entry.Name()
-		isTmp := strings.HasPrefix(name, "tmp-")
-		if !isRootfsEntry(name) && !isTmp {
+		isTmp := strings.HasPrefix(name, "tmp-rootfs-") || strings.HasPrefix(name, "tmp-stale-") || strings.HasPrefix(name, "tmp-delete-")
+		ownedDir := entry.IsDir() && (isRootfsEntry(name) || isTmp)
+		ownedFile := entry.Type().IsRegular() && strings.HasPrefix(name, "tmp-format-")
+		if !ownedDir && !ownedFile {
 			continue
 		}
-
 		info, err := entry.Info()
 		if err != nil {
 			continue
@@ -162,8 +180,8 @@ func (c *Cache) Evict(maxAge time.Duration) (int, error) {
 	}
 	removed += snapRemoved
 
-	// Also evict from the per-layer cache.
-	lc := c.LayerCache()
+	// Maintenance must not migrate the parent or age the layers container.
+	lc := NewLayerCache(filepath.Join(c.baseDir, "layers"))
 	layerRemoved, err := lc.Evict(maxAge)
 	if err != nil {
 		return removed, fmt.Errorf("evict layer cache: %w", err)
@@ -196,6 +214,9 @@ func (c *Cache) List() ([]CacheEntry, error) {
 	if c == nil {
 		return nil, nil
 	}
+	if err := pathutil.ValidatePrivatePath(c.baseDir); err != nil {
+		return nil, err
+	}
 
 	entries, err := os.ReadDir(c.baseDir)
 	if err != nil {
@@ -212,8 +233,8 @@ func (c *Cache) List() ([]CacheEntry, error) {
 	for _, entry := range entries {
 		name := entry.Name()
 
-		// Only consider rootfs entries (sha256-*), skip refs/, layers/, tmp-*.
-		if !isRootfsEntry(name) {
+		// Only consider real rootfs directories, not symlink entries.
+		if !entry.IsDir() || !isRootfsEntry(name) {
 			continue
 		}
 
@@ -250,6 +271,9 @@ func (c *Cache) List() ([]CacheEntry, error) {
 func (c *Cache) GC() (int, error) {
 	if c == nil {
 		return 0, nil
+	}
+	if err := pathutil.ValidatePrivatePath(c.baseDir); err != nil {
+		return 0, err
 	}
 
 	entries, err := os.ReadDir(c.baseDir)
@@ -295,10 +319,14 @@ func (c *Cache) GC() (int, error) {
 }
 
 // Purge removes the entire cache directory including all rootfs entries,
-// the ref index, and the layer cache.
+// the ref index, and the layer cache. Requires quiescent callers; do not unlink
+// the stable migration lock while another process is using the cache.
 func (c *Cache) Purge() error {
 	if c == nil {
 		return nil
+	}
+	if err := pathutil.ValidatePrivatePath(c.baseDir); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(c.baseDir); err != nil {
 		return fmt.Errorf("remove cache dir: %w", err)
@@ -487,6 +515,9 @@ func (c *Cache) StoreRef(imageRef, digest string, cfg *OCIConfig) {
 	if c == nil {
 		return
 	}
+	if err := pathutil.ValidatePrivatePath(c.baseDir); err != nil {
+		return
+	}
 	c.putRef(imageRef, digest)
 	c.putConfig(digest, cfg)
 }
@@ -546,7 +577,8 @@ func (c *Cache) putConfig(digest string, cfg *OCIConfig) {
 		return
 	}
 	dir := c.pathFor(digest)
-	if _, err := os.Stat(dir); err != nil {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
 		return
 	}
 	data, err := json.Marshal(cfg)
@@ -564,6 +596,7 @@ func (c *Cache) putConfig(digest string, cfg *OCIConfig) {
 const (
 	cacheFormat     = "2"
 	cacheFormatFile = "format"
+	cacheFormatLock = ".format.lock"
 )
 
 // ensureFormat discards the cache's entries (unpacked rootfs, refs and
@@ -571,17 +604,30 @@ const (
 // records the current format. Pending tmp-* entries of concurrent pulls and
 // files the caller keeps beside the cache, such as lock files, are left alone.
 func (c *Cache) ensureFormat() error {
+	if err := pathutil.EnsurePrivateDir(c.baseDir); err != nil {
+		return fmt.Errorf("private cache boundary: %w", err)
+	}
+	if current, err := c.currentFormat(); err != nil || current {
+		return err
+	}
+
+	// Serialize only migration/publication, never extraction. The lock inode
+	// remains stable across migrations and eviction, including distinct Caches.
+	lock := flock.New(filepath.Join(c.baseDir, cacheFormatLock))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	locked, err := lock.TryLockContext(ctx, 10*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("lock cache format: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("lock cache format: timed out")
+	}
+	defer lock.Unlock() //nolint:errcheck // best-effort unlock
+	if current, err := c.currentFormat(); err != nil || current {
+		return err
+	}
 	formatPath := filepath.Join(c.baseDir, cacheFormatFile)
-	data, err := os.ReadFile(formatPath)
-	if err == nil && string(data) == cacheFormat {
-		return nil
-	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read cache format: %w", err)
-	}
-	if err := os.MkdirAll(c.baseDir, 0o700); err != nil {
-		return fmt.Errorf("create cache dir: %w", err)
-	}
 
 	entries, err := os.ReadDir(c.baseDir)
 	if err != nil {
@@ -592,8 +638,8 @@ func (c *Cache) ensureFormat() error {
 		if !isFormatEntry(name) {
 			continue
 		}
-		// Rename before removing so a concurrent clone of the entry sees
-		// it whole or not at all.
+		// Move stale entries aside before deleting them. Migration does not
+		// provide snapshot semantics for readers already using old entries.
 		stale, err := os.MkdirTemp(c.baseDir, "tmp-stale-*")
 		if err != nil {
 			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
@@ -623,6 +669,15 @@ func (c *Cache) ensureFormat() error {
 		return fmt.Errorf("write cache format: %w", werr)
 	}
 	return nil
+}
+
+// currentFormat only reads the marker; it never initializes or migrates.
+func (c *Cache) currentFormat() (bool, error) {
+	data, err := os.ReadFile(filepath.Join(c.baseDir, cacheFormatFile))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("read cache format: %w", err)
+	}
+	return err == nil && string(data) == cacheFormat, nil
 }
 
 // isFormatEntry reports whether name is a cache entry whose content depends

@@ -276,6 +276,87 @@ func TestCloneDir(t *testing.T) {
 	})
 }
 
+func TestCloneDir_PrivateContainer(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	require.NoError(t, os.Chmod(src, 0o755))
+	base := t.TempDir()
+	dst := filepath.Join(base, "new", "parents", "clone")
+	require.NoError(t, rootfs.CloneDir(src, dst))
+	for _, path := range []string{filepath.Join(base, "new"), filepath.Dir(dst)} {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	}
+	info, err := os.Stat(dst)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+
+	// Existing permissive descendants of a private ancestor stay unchanged.
+	public := filepath.Join(base, "public")
+	require.NoError(t, os.Mkdir(public, 0o755))
+	require.NoError(t, rootfs.CloneDir(src, filepath.Join(public, "clone")))
+	info, err = os.Stat(public)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+}
+
+func TestCloneDir_RejectsUnsafeContainer(t *testing.T) {
+	if !pathutil.KeepsSpecialBits() {
+		t.Skip("host special bits require Linux nonroot")
+	}
+	outside, err := os.MkdirTemp("/tmp", "unsafe-clone-test-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	require.NoError(t, os.Chmod(outside, 0o755))
+	src := t.TempDir() // Intentionally no special files: policy is conservative.
+	for _, parent := range []string{outside, filepath.Join(t.TempDir(), "escape")} {
+		if parent != outside {
+			require.NoError(t, os.Symlink(outside, parent))
+		}
+		dst := filepath.Join(parent, "clone")
+		require.Error(t, rootfs.CloneDir(src, dst))
+		require.NoDirExists(t, dst)
+	}
+	info, err := os.Stat(outside)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+}
+
+func TestCloneDir_RejectsRawParentComponents(t *testing.T) {
+	if !pathutil.KeepsSpecialBits() {
+		t.Skip("host special bits require Linux nonroot")
+	}
+	public, err := os.MkdirTemp("/tmp", "clone-parent-test-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(public) })
+	require.NoError(t, os.Chmod(public, 0o755))
+	private := t.TempDir()
+	require.NoError(t, os.Chmod(private, 0o700))
+	for _, dir := range []string{public, private} {
+		require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+	}
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "inert"), []byte("fixture"), 0o600))
+	for _, dirs := range [][2]string{{private, public}, {public, private}} {
+		link := filepath.Join(dirs[0], "link")
+		require.NoError(t, os.Symlink(filepath.Join(dirs[1], "sub"), link))
+		// Dir/Join would erase '..' and check a different parent than Mkdir.
+		require.Error(t, rootfs.CloneDir(src, link+"/../clone"))
+	}
+	for _, dir := range []string{public, private} {
+		require.NoDirExists(t, filepath.Join(dir, "clone"))
+		info, err := os.Stat(dir)
+		require.NoError(t, err)
+		want := os.FileMode(0o700)
+		if dir == public {
+			want = 0o755
+		}
+		require.Equal(t, want, info.Mode().Perm())
+	}
+	require.FileExists(t, filepath.Join(src, "inert"))
+}
+
 func TestCloneDir_SpecialModeBits(t *testing.T) {
 	t.Parallel()
 
