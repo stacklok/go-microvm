@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/stacklok/go-microvm/internal/pathutil"
+
 	"github.com/stacklok/go-microvm/internal/xattr"
 )
 
@@ -28,6 +30,10 @@ import (
 // dstDir must not already exist; it is created by CloneDir. If cloning fails
 // after creating dstDir, CloneDir removes that destination before returning.
 // Parent directories created to contain dstDir are preserved.
+//
+// On Linux, files owned by the (non-root) process keep their setuid and
+// setgid bits, so place dstDir below a directory other host users cannot
+// enter.
 func CloneDir(srcDir, dstDir string) (retErr error) {
 	// Guard: ensure srcDir is a real directory, not a symlink.
 	srcInfo, err := os.Lstat(srcDir)
@@ -136,6 +142,11 @@ func CloneDir(srcDir, dstDir string) (retErr error) {
 		if err := bestEffortLchown(path, dstPath); err != nil {
 			return fmt.Errorf("copy ownership for file %s: %w", relPath, err)
 		}
+		// chown clears setuid and setgid; restore the bits cloneFile kept
+		// while the file still belongs to us.
+		if err := restoreSpecialBits(path, dstPath); err != nil {
+			return fmt.Errorf("restore mode of file %s: %w", relPath, err)
+		}
 		return nil
 	})
 	if walkErr != nil {
@@ -204,7 +215,8 @@ func cloneSymlink(src, dst, rootDir string) error {
 }
 
 // copyFile performs a regular file copy from src to dst, preserving permission
-// bits. Setuid/setgid/sticky bits are stripped for security.
+// bits. Setuid and setgid are kept only when the process is not root (see
+// pathutil.FileMode); sticky bits are stripped.
 func copyFile(src, dst string) error {
 	sf, err := os.Open(src)
 	if err != nil {
@@ -217,12 +229,11 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("stat source: %w", err)
 	}
 
-	// Strip setuid/setgid/sticky — only preserve rwx permissions.
-	mode := info.Mode().Perm()
+	mode := pathutil.FileMode(info.Mode())
 
 	// Create with owner-write to allow the copy to succeed even for
 	// read-only source files; restore the original mode after close.
-	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o200)
+	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm()|0o200) //nolint:gosec // dst is inside the clone destination
 	if err != nil {
 		return fmt.Errorf("creating destination: %w", err)
 	}
@@ -254,4 +265,14 @@ func bestEffortLchown(src, dst string) error {
 	}
 	_ = os.Lchown(dst, uid, gid)
 	return xattr.CopyOverrideStat(src, dst)
+}
+
+// restoreSpecialBits re-applies the setuid and setgid bits that
+// pathutil.FileMode keeps for src, after cloning or chown cleared them.
+func restoreSpecialBits(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("lstat source: %w", err)
+	}
+	return pathutil.RestoreSpecialBits(dst, pathutil.FileMode(info.Mode()))
 }

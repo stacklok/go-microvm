@@ -10,6 +10,8 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/stacklok/go-microvm/internal/pathutil"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -38,13 +40,16 @@ func tryFiclone(src, dst string) error {
 		return err
 	}
 
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode())
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode().Perm()) //nolint:gosec // dst is inside the clone destination
 	if err != nil {
 		return err
 	}
 	defer func() { _ = dstFile.Close() }()
 
-	return unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd()))
+	if err := unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd())); err != nil {
+		return err
+	}
+	return dstFile.Chmod(pathutil.FileMode(srcInfo.Mode()))
 }
 
 // fileOwner extracts uid/gid from file info using Linux syscall.Stat_t.

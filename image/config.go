@@ -30,6 +30,11 @@ type KrunConfig struct {
 }
 
 // RootFS represents an extracted rootfs ready for libkrun.
+//
+// On Linux hosts files in the rootfs may keep setuid and setgid bits, so
+// Path always sits below a directory other host users cannot
+// enter: the cache directory, or a private temporary directory when no
+// cache is used. Remove filepath.Dir(Path) to clean up an uncached rootfs.
 type RootFS struct {
 	Path      string     // Filesystem path to the extracted rootfs directory
 	Config    *OCIConfig // Parsed OCI image configuration
