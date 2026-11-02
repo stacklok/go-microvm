@@ -4,6 +4,7 @@
 package pathutil
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,13 +74,20 @@ func TestEnsurePrivateDir(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = os.RemoveAll(outside) })
 		require.NoError(t, os.Chmod(outside, 0o755))
-		require.Error(t, ensurePrivateDir(outside))
+		err = ensurePrivateDir(outside)
+		require.ErrorContains(t, err, fmt.Sprintf("storage directory %q", outside))
+		require.ErrorContains(t, err, fmt.Sprintf("owned by UID %d (0700)", os.Geteuid()))
+		require.ErrorContains(t, err, "if this directory is yours and does not need shared access, set its permissions to 0700")
+		require.ErrorContains(t, err, "otherwise choose a private storage location")
 		info, err := os.Stat(outside)
 		require.NoError(t, err)
 		require.Equal(t, os.FileMode(0o755), info.Mode().Perm())
 		link := filepath.Join(t.TempDir(), "escape")
 		require.NoError(t, os.Symlink(outside, link))
-		require.Error(t, ensurePrivateDir(link))
+		err = ensurePrivateDir(link)
+		require.ErrorContains(t, err, fmt.Sprintf("storage directory %q", link))
+		require.NoError(t, os.Chmod(outside, 0o700))
+		require.NoError(t, ensurePrivateDir(link))
 		require.NoError(t, os.Chmod(outside, 0o777))
 		require.Error(t, ensurePrivateDir(filepath.Join(outside, "new")))
 		_, err = os.Stat(filepath.Join(outside, "new"))

@@ -72,7 +72,7 @@ func ensurePrivateDir(path string) error {
 		return err
 	}
 	if !private {
-		return fmt.Errorf("directory %s needs a private effective-path ancestor (0700)", path)
+		return fmt.Errorf("storage directory %q needs a private effective-path ancestor owned by UID %d (0700); if this directory is yours and does not need shared access, set its permissions to 0700; otherwise choose a private storage location", path, os.Geteuid())
 	}
 	return nil
 }
