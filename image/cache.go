@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -38,10 +39,17 @@ func (c *Cache) BaseDir() string {
 
 // LayerCache returns the per-layer cache, creating the layers/ subdirectory
 // lazily. Returns nil if the receiver is nil.
+//
+// Layers left by an older cache format are discarded first, so callers that
+// check the layer cache before pulling (e.g. to skip fetching cached layers)
+// never rely on entries the pull would then discard.
 func (c *Cache) LayerCache() *LayerCache {
 	if c == nil {
 		return nil
 	}
+	// A failure leaves stale entries in place; PullWithFetcher checks the
+	// format again and reports the error.
+	_ = c.ensureFormat()
 	return NewLayerCache(filepath.Join(c.baseDir, "layers"))
 }
 
@@ -416,9 +424,13 @@ const (
 
 // LookupRef checks whether the cache has a valid entry for the given image
 // reference. On a hit it returns a fully populated RootFS without any
-// network or daemon I/O. Returns nil on any miss or error.
+// network or daemon I/O. Returns nil on any miss or error, including a cache
+// written by an older format, whose entries are discarded.
 func (c *Cache) LookupRef(imageRef string) *RootFS {
 	if c == nil {
+		return nil
+	}
+	if err := c.ensureFormat(); err != nil {
 		return nil
 	}
 
@@ -517,4 +529,79 @@ func (c *Cache) putConfig(digest string, cfg *OCIConfig) {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(dir, configFile), data, 0o600)
+}
+
+// cacheFormat identifies what extraction stores in the cache. Bump it when
+// extraction changes the content of cached rootfs or layer entries, so
+// entries written by older versions are discarded instead of reused.
+//
+// Format 2 keeps setuid and setgid bits for unprivileged extraction.
+const (
+	cacheFormat     = "2"
+	cacheFormatFile = "format"
+)
+
+// ensureFormat discards the cache's entries (unpacked rootfs, refs and
+// extracted layers) when the cache was written in an older format, then
+// records the current format. Pending tmp-* entries of concurrent pulls and
+// files the caller keeps beside the cache, such as lock files, are left alone.
+func (c *Cache) ensureFormat() error {
+	formatPath := filepath.Join(c.baseDir, cacheFormatFile)
+	data, err := os.ReadFile(formatPath)
+	if err == nil && string(data) == cacheFormat {
+		return nil
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read cache format: %w", err)
+	}
+	if err := os.MkdirAll(c.baseDir, 0o700); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(c.baseDir)
+	if err != nil {
+		return fmt.Errorf("read cache dir: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isFormatEntry(name) {
+			continue
+		}
+		// Rename before removing so a concurrent clone of the entry sees
+		// it whole or not at all.
+		stale, err := os.MkdirTemp(c.baseDir, "tmp-stale-*")
+		if err != nil {
+			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
+		}
+		if err := os.Rename(filepath.Join(c.baseDir, name), filepath.Join(stale, name)); err != nil {
+			_ = os.Remove(stale)
+			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
+		}
+		if err := os.RemoveAll(stale); err != nil {
+			return fmt.Errorf("discard stale cache entry %s: %w", name, err)
+		}
+	}
+
+	tmp, err := os.CreateTemp(c.baseDir, "tmp-format-*")
+	if err != nil {
+		return fmt.Errorf("write cache format: %w", err)
+	}
+	_, werr := tmp.WriteString(cacheFormat)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), formatPath)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write cache format: %w", werr)
+	}
+	return nil
+}
+
+// isFormatEntry reports whether name is a cache entry whose content depends
+// on the cache format.
+func isFormatEntry(name string) bool {
+	return isRootfsEntry(name) || name == refDir || name == "layers"
 }
