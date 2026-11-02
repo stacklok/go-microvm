@@ -235,6 +235,7 @@ func TestCache_Get_TouchesMtime(t *testing.T) {
 	c := NewCache(cacheDir)
 
 	// Create a cache entry and backdate it.
+	require.NoError(t, c.ensureFormat())
 	digest := "sha256:touchtest"
 	entryDir := filepath.Join(cacheDir, "sha256-touchtest")
 	require.NoError(t, os.MkdirAll(entryDir, 0o700))
@@ -667,12 +668,12 @@ func TestCache_EnsureFormat(t *testing.T) {
 		}
 		return out
 	}
-	assert.ElementsMatch(t, []string{cacheFormatFile, "tmp-rootfs-1", ".lock", ".save-1"}, names())
+	assert.ElementsMatch(t, []string{cacheFormatFile, cacheFormatLock, "tmp-rootfs-1", ".lock", ".save-1"}, names())
 
 	// Once current, entries are kept.
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "sha256-def"), 0o700))
 	require.NoError(t, cache.ensureFormat())
-	assert.ElementsMatch(t, []string{cacheFormatFile, "sha256-def", "tmp-rootfs-1", ".lock", ".save-1"}, names())
+	assert.ElementsMatch(t, []string{cacheFormatFile, cacheFormatLock, "sha256-def", "tmp-rootfs-1", ".lock", ".save-1"}, names())
 }
 
 func TestCache_LookupAndLayerCacheDiscardOldFormat(t *testing.T) {

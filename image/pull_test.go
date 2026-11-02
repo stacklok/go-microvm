@@ -1467,6 +1467,55 @@ func assertSpecialModeBits(t *testing.T, dir string) {
 	}
 }
 
+func TestPullWithFetcher_LayerRootGroupWritable(t *testing.T) {
+	t.Parallel()
+	for _, warm := range []bool{false, true} {
+		t.Run(fmt.Sprintf("warm=%t", warm), func(t *testing.T) {
+			entries := []tarEntry{
+				{name: "./", typeflag: tar.TypeDir, mode: 0o775},
+				{name: "nested/", typeflag: tar.TypeDir, mode: 0o775},
+				{name: "nested/file", typeflag: tar.TypeReg, mode: 0o644, content: "layer content"},
+			}
+			layer := createLayerFromEntries(t, entries)
+			baseImage := createImageFromLayers(t, layer)
+			observed := &failingUncompressedLayer{Layer: layer, err: errors.New("warm layer must not be extracted")}
+			img := imageWithLayers{Image: baseImage, layers: []v1.Layer{observed}}
+			private := t.TempDir()
+			require.NoError(t, os.Chmod(private, 0o700))
+			cache := NewCache(filepath.Join(private, "cache"))
+			lc := cache.LayerCache()
+			diffID, err := layer.DiffID()
+			require.NoError(t, err)
+			if warm {
+				source, err := lc.TempDir()
+				require.NoError(t, err)
+				require.NoError(t, extractTar(context.Background(), createTarBuffer(t, entries), source))
+				require.NoError(t, lc.Put(diffID, source))
+				observed.failures.Store(1)
+			}
+			result, err := PullWithFetcher(context.Background(), "example.com/test:writable-layer", cache, &mockFetcher{img: img})
+			require.NoError(t, err)
+			require.True(t, result.FromCache)
+			wantAccesses := int32(1)
+			if warm {
+				wantAccesses = 0
+			}
+			require.Equal(t, wantAccesses, observed.accesses.Load(), "must use layered extraction, not flat fallback")
+			path, hit := lc.Get(diffID)
+			require.True(t, hit)
+			info, err := os.Stat(path)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o775), info.Mode().Perm())
+			data, err := os.ReadFile(filepath.Join(result.Path, "nested", "file"))
+			require.NoError(t, err)
+			require.Equal(t, "layer content", string(data))
+			info, err = os.Stat(filepath.Join(result.Path, "nested"))
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o775), info.Mode().Perm())
+		})
+	}
+}
+
 func TestPullWithFetcher_NilCachePrivateParent(t *testing.T) {
 	t.Parallel()
 

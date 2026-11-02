@@ -32,9 +32,13 @@ import (
 // Parent directories created to contain dstDir are preserved.
 //
 // On Linux, files owned by the (non-root) process keep their setuid and
-// setgid bits, so place dstDir below a directory other host users cannot
-// enter.
+// setgid bits. A private effective-path ancestor of dstDir is required even
+// when the source currently has no such files (see pathutil.EnsurePrivateDir).
+// In that mode dstDir must not contain raw '..' components.
 func CloneDir(srcDir, dstDir string) (retErr error) {
+	if err := pathutil.ValidatePrivatePath(dstDir); err != nil {
+		return fmt.Errorf("validate destination path: %w", err)
+	}
 	// Guard: ensure srcDir is a real directory, not a symlink.
 	srcInfo, err := os.Lstat(srcDir)
 	if err != nil {
@@ -54,11 +58,11 @@ func CloneDir(srcDir, dstDir string) (retErr error) {
 	}
 
 	// Create the root destination directory. Ensure owner-write so we can
-	// populate it; permissions are restored after the walk. Create parent
-	// directories as before, but use Mkdir for the destination so an existing
+	// populate it; permissions are restored after the walk. Create private
+	// parent directories, but use Mkdir for the destination so an existing
 	// path is always rejected rather than reused.
 	srcPerm := srcStat.Mode().Perm()
-	if err := os.MkdirAll(filepath.Dir(dstDir), srcPerm|0o700); err != nil {
+	if err := pathutil.EnsurePrivateDir(filepath.Dir(dstDir)); err != nil {
 		return fmt.Errorf("create destination parent dir: %w", err)
 	}
 	if err := os.Mkdir(dstDir, srcPerm|0o700); err != nil {

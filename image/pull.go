@@ -224,6 +224,12 @@ func PullWithFetcher(ctx context.Context, imageRef string, cache *Cache, fetcher
 		if cachedPath, ok := cache.Get(digestStr); ok {
 			rootfsPath = cachedPath
 			fromCache = true
+		} else {
+			err := fmt.Errorf("cached rootfs unavailable after publication: %s", digestStr)
+			cacheSpan.RecordError(err)
+			cacheSpan.SetStatus(codes.Error, err.Error())
+			cacheSpan.End()
+			return nil, err
 		}
 		// Record ref→digest mapping and OCI config for next-run fast path.
 		cache.StoreRef(ref.String(), digestStr, ociCfg)
