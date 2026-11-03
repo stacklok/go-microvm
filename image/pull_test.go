@@ -428,6 +428,40 @@ func TestExtractTar_PreservesOwnershipBestEffort(t *testing.T) {
 	}
 }
 
+func TestExtractTar_NonRootKeepsPrimaryGroup(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("ownership is restored when running as root")
+	}
+	groups, err := os.Getgroups()
+	require.NoError(t, err)
+	other := -1
+	for _, g := range groups {
+		if g != os.Getgid() {
+			other = g
+			break
+		}
+	}
+	if other < 0 {
+		t.Skip("user has no supplementary group to test with")
+	}
+
+	buf := createTarBuffer(t, []tarEntry{
+		{name: "home/", typeflag: tar.TypeDir, mode: 0o755, uid: os.Getuid(), gid: other},
+		{name: "home/file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "x", uid: os.Getuid(), gid: other},
+	})
+	dst := t.TempDir()
+	require.NoError(t, extractTar(context.Background(), buf, dst))
+
+	for _, name := range []string{"home", "home/file.txt"} {
+		info, err := os.Lstat(filepath.Join(dst, name))
+		require.NoError(t, err)
+		stat := info.Sys().(*syscall.Stat_t)
+		assert.Equal(t, uint32(os.Getgid()), stat.Gid, name)
+	}
+}
+
 // mockFetcher is a test double for ImageFetcher.
 type mockFetcher struct {
 	img v1.Image
