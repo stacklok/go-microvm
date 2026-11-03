@@ -556,3 +556,24 @@ func TestToRunnerVirtioFS_SimplifiedOwnership(t *testing.T) {
 		{Tag: "data", HostPath: "/tmp/data", ReadOnly: true},
 	}, got)
 }
+
+func TestBackend_Start_WithProcessName(t *testing.T) {
+	t.Parallel()
+
+	proc := &mockProcessHandle{pid: 79, alive: true}
+	spawner := &captureSpawner{proc: proc}
+
+	b := NewBackend(
+		WithProcessName("my-vm-runner"),
+		WithSpawner(spawner),
+	)
+
+	cfg := hypervisor.VMConfig{
+		RootFSPath: t.TempDir(),
+		DataDir:    t.TempDir(),
+	}
+
+	_, err := b.Start(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "my-vm-runner", spawner.captured.ProcessName)
+}

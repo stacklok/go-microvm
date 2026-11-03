@@ -74,7 +74,13 @@ type Backend struct {
 	firmware      extract.Source
 	cacheDir      string
 	userNamespace *runner.UserNamespaceConfig
+	processName   string
 }
+
+// WithProcessName sets argv[0] of the runner process, the command name shown
+// by tools such as ps. The runner binary is still executed from its path.
+// Use it to tell several VMs apart on one host.
+func WithProcessName(name string) Option { return func(b *Backend) { b.processName = name } }
 
 // NewBackend creates a libkrun backend with the given options.
 func NewBackend(opts ...Option) *Backend {
@@ -185,6 +191,7 @@ func (b *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyperviso
 		RunnerPath:    runnerPath,
 		VMLogPath:     filepath.Join(cfg.DataDir, "vm.log"),
 		UserNamespace: b.userNamespace,
+		ProcessName:   b.processName,
 	}
 
 	spawner := b.spawner

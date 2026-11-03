@@ -8,8 +8,13 @@ package runner
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,4 +124,36 @@ func TestProcess_IsAlive_RunnerPathMismatch(t *testing.T) {
 	}
 
 	assert.False(t, p.IsAlive())
+}
+
+func TestRunnerCommand_ProcessNameVisibleInProc(t *testing.T) {
+	t.Parallel()
+
+	sleep, err := exec.LookPath("sleep")
+	require.NoError(t, err)
+	sleep, err = filepath.EvalSymlinks(sleep)
+	require.NoError(t, err)
+
+	cmd := runnerCommand(sleep, "test-vm-runner", []byte("30"))
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	// Start can return before the child has finished execve; wait until the
+	// new argv is visible.
+	path := filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "cmdline")
+	var args []string
+	require.Eventually(t, func() bool {
+		cmdline, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		args = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+		return len(args) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"test-vm-runner", "30"}, args)
+	// Process identity checks use /proc/<pid>/exe, which still names the binary.
+	assert.True(t, isExpectedProcess(cmd.Process.Pid, sleep))
 }

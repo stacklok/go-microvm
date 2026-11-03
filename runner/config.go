@@ -59,6 +59,10 @@ type Config struct {
 	// RunnerPath is the explicit path to the go-microvm-runner binary.
 	// Not serialized to JSON; used by Spawn to locate the binary.
 	RunnerPath string `json:"-"`
+	// ProcessName replaces argv[0] of the runner process, which tools such
+	// as ps show as the command name. Empty keeps the runner path.
+	// Not serialized to JSON; applied by SpawnProcess before exec.
+	ProcessName string `json:"-"`
 	// VMLogPath is the path to the file where runner stdout/stderr is written.
 	// Not serialized to JSON; used by Spawn to redirect output.
 	VMLogPath string `json:"-"`
