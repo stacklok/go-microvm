@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/internal/testutil"
 	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
@@ -708,6 +709,87 @@ func TestRun_RootFSShare_PreservesExistingStorage(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "disk data", string(contents))
 			assert.DirExists(t, cached.Path)
+		})
+	}
+}
+
+func TestRun_RootFSShare_PrivateParent(t *testing.T) {
+	t.Parallel()
+
+	for _, public := range []bool{false, true} {
+		t.Run(fmt.Sprintf("public=%t", public), func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			if public {
+				// No private t.TempDir ancestor may mask the public effective path.
+				var err error
+				parent, err = os.MkdirTemp("/tmp", "rootfs-share-*")
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = os.RemoveAll(parent) })
+			}
+			dataDir := filepath.Join(parent, "data")
+			require.NoError(t, os.Mkdir(dataDir, 0o755))
+			require.NoError(t, os.Chmod(parent, 0o755))
+			if !public {
+				require.NoError(t, os.Chmod(parent, 0o700))
+			}
+			require.NoError(t, os.Chmod(dataDir, 0o755))
+			link := filepath.Join(t.TempDir(), "data-link")
+			require.NoError(t, os.Symlink(dataDir, link))
+			fakeImg, err := random.Image(256, 1)
+			require.NoError(t, err)
+			backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+			hookCalled := false
+			vm, err := Run(context.Background(), "test:latest",
+				WithDataDir(link), WithRootFSShare("rootfs"), WithImageCache(image.NewCache(t.TempDir())),
+				WithImageFetcher(&mockImageFetcher{img: fakeImg}), WithBackend(backend),
+				WithPreflightChecker(preflight.NewEmpty()),
+				WithNetProvider(&mockNetProvider{sockPath: "/tmp/fake.sock"}),
+				WithRootFSHook(func(string, *image.OCIConfig) error { hookCalled = true; return nil }),
+			)
+			if public && pathutil.KeepsSpecialBits() {
+				require.ErrorContains(t, err, "private effective-path ancestor")
+				assert.False(t, hookCalled)
+				assert.Zero(t, backend.startCalls)
+				assert.NoDirExists(t, filepath.Join(dataDir, "rootfs-work"))
+			} else {
+				require.NoError(t, err)
+				assert.True(t, hookCalled)
+				require.NoError(t, vm.Stop(context.Background()))
+			}
+			info, err := os.Stat(dataDir)
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "caller parent must not be chmodded")
+		})
+	}
+}
+
+func TestRun_RootFSShare_RawDataDirBeforeCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, rawParent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("raw-parent=%t", rawParent), func(t *testing.T) {
+			t.Parallel()
+			dataDir := ""
+			if rawParent {
+				if !pathutil.KeepsSpecialBits() {
+					t.Skip("raw parent components are permitted on this host")
+				}
+				base := t.TempDir()
+				require.NoError(t, os.Mkdir(filepath.Join(base, "child"), 0o700))
+				dataDir = base + "/child/.."
+			}
+			cleanupCalled := false
+			_, err := Run(context.Background(), "test:latest",
+				WithDataDir(dataDir), WithRootFSShare("rootfs"), WithCleanDataDir(),
+				WithPreflightChecker(preflight.NewEmpty()),
+				WithImageFetcher(&mockImageFetcher{err: fmt.Errorf("unexpected fetch")}),
+				optionFunc(func(c *config) {
+					c.removeAll = func(string) error { cleanupCalled = true; return nil }
+				}),
+			)
+			require.ErrorContains(t, err, "validate data dir")
+			assert.False(t, cleanupCalled)
 		})
 	}
 }

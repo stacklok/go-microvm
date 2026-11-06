@@ -40,6 +40,7 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
@@ -69,13 +70,13 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		attribute.Int("microvm.memory_mib", int(cfg.memory)),
 	)
 
+	if err := validateRootFSShare(cfg); err != nil {
+		return nil, err
+	}
 	if err := validateDisks(cfg); err != nil {
 		return nil, err
 	}
 	if err := validateEnv(cfg.env); err != nil {
-		return nil, err
-	}
-	if err := validateRootFSShare(cfg); err != nil {
 		return nil, err
 	}
 	for _, m := range cfg.virtioFS {
@@ -686,6 +687,9 @@ func validateRootFSShare(cfg *config) error {
 	if cfg.rootfsShare == "" {
 		return nil
 	}
+	if err := pathutil.ValidatePrivatePath(cfg.dataDir); err != nil {
+		return fmt.Errorf("validate data dir: %w", err)
+	}
 	if cfg.rootfsPath != "" {
 		return errors.New("rootfs share cannot be combined with a pre-built rootfs path")
 	}
@@ -700,6 +704,9 @@ func validateRootFSShare(cfg *config) error {
 // emptyRootDir creates a new empty root directory the guest's unprivileged
 // users can traverse. Existing destinations are never reused or removed.
 func emptyRootDir(dir string) (retErr error) {
+	if err := pathutil.EnsurePrivateDir(filepath.Dir(dir)); err != nil {
+		return fmt.Errorf("create destination parent dir: %w", err)
+	}
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return err
 	}
