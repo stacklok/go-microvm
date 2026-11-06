@@ -965,17 +965,12 @@ func extractSymlink(hdr *tar.Header, target, rootDir string) error {
 	return nil
 }
 
-// restoreOwnership reports whether extraction restores the uid/gid of tar
-// entries. Only root can do so faithfully. A non-root user can still move a
-// file to any of its own supplementary groups, which would leave a rootfs whose
-// group ownership depends on the host user's group list instead of the image.
-var restoreOwnership = os.Geteuid() == 0
-
 // bestEffortLchown attempts to set uid/gid on a path without following symlinks.
-// It does nothing unless running as root (see restoreOwnership), silently
+// It skips ownership changes when not running as root, since a non-root user
+// could change group ownership to one of its supplementary groups. It silently
 // ignores EPERM and logs other errors at debug level.
 func bestEffortLchown(path string, uid, gid int) {
-	if !restoreOwnership {
+	if os.Geteuid() != 0 {
 		return
 	}
 	if err := os.Lchown(path, uid, gid); err != nil {
