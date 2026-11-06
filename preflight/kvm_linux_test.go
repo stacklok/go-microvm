@@ -125,3 +125,12 @@ func TestCheckKVM_Success(t *testing.T) {
 	err = k.check(context.Background())
 	assert.NoError(t, err)
 }
+
+func TestHypervisorCheck_ReturnsCheck(t *testing.T) {
+	t.Parallel()
+
+	check := HypervisorCheck()
+	assert.Equal(t, "kvm", check.Name)
+	assert.True(t, check.Required)
+	assert.NotNil(t, check.Run)
+}
