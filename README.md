@@ -307,6 +307,7 @@ func main() {
 | `WithInitOverride(cmd...)` | Replace OCI ENTRYPOINT/CMD | OCI config |
 | `WithEnv(env...)` | Add or replace `KEY=VALUE` entries in the init environment (e.g. `KRUN_INIT_PID1=1` to run the workload as PID 1) | OCI config env |
 | `WithRootFSPath(path)` | Use pre-built rootfs directory, skip OCI image pull | none |
+| `WithRootFSShare(tag)` | Boot from an empty root and share the cached image rootfs read-only under `tag` instead of copying it; the guest init assembles the root | copy |
 | `WithRootFSHook(...)` | Modify rootfs before boot | none |
 | `WithPostBoot(...)` | Run logic after VM process starts | none |
 | `WithNetProvider(p)` | Replace default runner-side networking with a custom provider | runner-side vnet |

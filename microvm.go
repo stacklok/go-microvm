@@ -17,6 +17,7 @@ package microvm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -39,6 +40,7 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
+	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
@@ -68,6 +70,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		attribute.Int("microvm.memory_mib", int(cfg.memory)),
 	)
 
+	if err := validateRootFSShare(cfg); err != nil {
+		return nil, err
+	}
 	if err := validateDisks(cfg); err != nil {
 		return nil, err
 	}
@@ -165,11 +170,33 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		span.End()
 	}
 
-	// 2b. COW-clone cached rootfs so hooks and PrepareRootFS never
-	// modify the shared cache in-place. The default libkrun backend
-	// writes .krun_config.json into the rootfs, so we must always
-	// clone — not just when hooks are present.
-	if rootfs.FromCache {
+	// 2b. Share the cached rootfs read-only and boot from an empty root,
+	// or COW-clone it, so hooks and PrepareRootFS never modify the shared
+	// cache in-place. The default libkrun backend writes .krun_config.json
+	// into the rootfs, so we must always do one of them — not just when
+	// hooks are present.
+	mounts := cfg.virtioFS
+	if cfg.rootfsShare != "" {
+		_, span := tracer.Start(ctx, "microvm.RootfsShare")
+		if !rootfs.FromCache {
+			err := errors.New("rootfs share needs an image from the image cache")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, err
+		}
+		workDir := filepath.Join(cfg.dataDir, "rootfs-work")
+		if err := emptyRootDir(workDir); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, fmt.Errorf("create rootfs: %w", err)
+		}
+		mounts = append(append([]VirtioFSMount(nil), cfg.virtioFS...),
+			VirtioFSMount{Tag: cfg.rootfsShare, HostPath: rootfs.Path, ReadOnly: true})
+		rootfs = &image.RootFS{Path: workDir, Config: rootfs.Config}
+		span.End()
+	} else if rootfs.FromCache {
 		_, span := tracer.Start(ctx, "microvm.RootfsClone")
 		workDir := filepath.Join(cfg.dataDir, "rootfs-work")
 		if err := rootfspkg.CloneDir(rootfs.Path, workDir); err != nil {
@@ -298,7 +325,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		NumVCPUs:         cfg.cpus,
 		RAMMiB:           cfg.memory,
 		PortForwards:     toHypervisorPorts(cfg.ports),
-		FilesystemMounts: toHypervisorMounts(cfg.virtioFS),
+		FilesystemMounts: toHypervisorMounts(mounts),
 		Disks:            toHypervisorDisks(cfg.disks),
 		VsockPorts:       toHypervisorVsockPorts(cfg.vsockPorts),
 		InitConfig:       initCfg,
@@ -652,6 +679,49 @@ func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 		}
 	}
 	return out
+}
+
+// validateRootFSShare checks the rootfs share option before any host state
+// is changed.
+func validateRootFSShare(cfg *config) error {
+	if cfg.rootfsShare == "" {
+		return nil
+	}
+	if err := pathutil.ValidatePrivatePath(cfg.dataDir); err != nil {
+		return fmt.Errorf("validate data dir: %w", err)
+	}
+	if cfg.rootfsPath != "" {
+		return errors.New("rootfs share cannot be combined with a pre-built rootfs path")
+	}
+	for _, m := range cfg.virtioFS {
+		if m.Tag == cfg.rootfsShare {
+			return fmt.Errorf("rootfs share tag %q is already used by a virtiofs mount", m.Tag)
+		}
+	}
+	return nil
+}
+
+// emptyRootDir creates a new empty root directory the guest's unprivileged
+// users can traverse. Existing destinations are never reused or removed.
+func emptyRootDir(dir string) (retErr error) {
+	if err := pathutil.EnsurePrivateDir(filepath.Dir(dir)); err != nil {
+		return fmt.Errorf("create destination parent dir: %w", err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			if err := os.Remove(dir); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("clean up failed root directory: %w", err))
+			}
+		}
+	}()
+	// Mkdir is subject to the umask.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return err
+	}
+	return xattr.SetOverrideStat(dir, 0, 0, os.ModeDir|0o755)
 }
 
 // validateDisks checks disk options before any host state is changed.
