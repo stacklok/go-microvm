@@ -715,5 +715,6 @@ func (c *Cache) currentFormat() (bool, error) {
 // isFormatEntry reports whether name is a cache entry whose content depends
 // on the cache format.
 func isFormatEntry(name string) bool {
-	return isRootfsEntry(name) || name == refDir || name == "layers"
+	return isRootfsEntry(name) || name == refDir || name == "layers" ||
+		name == snapshotDir || name == chainDir
 }
