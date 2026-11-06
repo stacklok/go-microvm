@@ -16,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hypervisor"
@@ -546,6 +547,9 @@ func TestRun_RootFSShare_SharesCachedRootfsReadOnly(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
+	staleFile := filepath.Join(dataDir, "rootfs-work", "stale")
+	require.NoError(t, os.MkdirAll(filepath.Dir(staleFile), 0o755))
+	require.NoError(t, os.WriteFile(staleFile, []byte("stale"), 0o600))
 	cache := image.NewCache(t.TempDir())
 	fakeImg, err := random.Image(256, 1)
 	require.NoError(t, err)
@@ -567,6 +571,7 @@ func TestRun_RootFSShare_SharesCachedRootfsReadOnly(t *testing.T) {
 		WithBackend(backend),
 		WithVirtioFS(userMount),
 		WithRootFSShare("rootfs"),
+		WithCleanDataDir(),
 		WithRootFSHook(func(rootfsPath string, cfg *image.OCIConfig) error {
 			if cfg == nil {
 				return fmt.Errorf("missing OCI config")
@@ -604,6 +609,107 @@ func TestRun_RootFSShare_SharesCachedRootfsReadOnly(t *testing.T) {
 	require.NoError(t, vm.Remove(context.Background()))
 	_, err = os.Stat(cachePath)
 	assert.NoError(t, err, "removing the VM must keep the cache entry")
+}
+
+func TestEmptyRootDir_PreservesExistingEntries(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []string{"directory", "file", "symlink", "dangling symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "rootfs-work")
+			target := filepath.Join(t.TempDir(), "target")
+			require.NoError(t, os.WriteFile(target, []byte("keep"), 0o600))
+			switch kind {
+			case "directory":
+				require.NoError(t, os.Mkdir(dir, 0o700))
+			case "file":
+				require.NoError(t, os.WriteFile(dir, []byte("keep"), 0o600))
+			case "symlink":
+				require.NoError(t, os.Symlink(target, dir))
+			case "dangling symlink":
+				require.NoError(t, os.Symlink(target+"-missing", dir))
+			}
+			before, err := os.Lstat(dir)
+			require.NoError(t, err)
+			require.ErrorIs(t, emptyRootDir(dir), os.ErrExist)
+			after, err := os.Lstat(dir)
+			require.NoError(t, err)
+			assert.True(t, os.SameFile(before, after))
+			assert.Equal(t, before.Mode(), after.Mode())
+			contents, err := os.ReadFile(target)
+			require.NoError(t, err)
+			assert.Equal(t, "keep", string(contents))
+			if kind == "file" {
+				contents, err = os.ReadFile(dir)
+				require.NoError(t, err)
+				assert.Equal(t, "keep", string(contents))
+			}
+		})
+	}
+}
+
+func TestEmptyRootDir_GuestPermissions(t *testing.T) {
+	oldMask := syscall.Umask(0o077)
+	defer syscall.Umask(oldMask)
+
+	dir := filepath.Join(t.TempDir(), "rootfs-work")
+	require.NoError(t, emptyRootDir(dir))
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+	buf := make([]byte, 256)
+	n, err := unix.Getxattr(dir, "user.containers.override_stat", buf)
+	if err == unix.ENOTSUP {
+		t.Skip("filesystem does not support xattrs")
+	}
+	require.NoError(t, err)
+	assert.Equal(t, "0:0:040755", string(buf[:n]))
+}
+
+func TestRun_RootFSShare_PreservesExistingStorage(t *testing.T) {
+	t.Parallel()
+
+	for _, clean := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clean=%t", clean), func(t *testing.T) {
+			t.Parallel()
+			dataDir := t.TempDir()
+			workDir := filepath.Join(dataDir, "rootfs-work")
+			cache := image.NewCache(filepath.Join(workDir, "custom-cache"))
+			fakeImg, err := random.Image(256, 1)
+			require.NoError(t, err)
+			cached, err := image.PullWithFetcher(context.Background(), "test:latest", cache,
+				&mockImageFetcher{img: fakeImg})
+			require.NoError(t, err)
+			disk := filepath.Join(workDir, "disk.raw")
+			require.NoError(t, os.WriteFile(disk, []byte("disk data"), 0o600))
+			backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+			hookCalled := false
+			opts := []Option{
+				WithDataDir(dataDir), WithImageCache(cache), WithRootFSShare("rootfs"),
+				WithDisks(Disk{ID: "data", HostPath: disk}),
+				WithPreflightChecker(preflight.NewEmpty()), WithBackend(backend),
+				WithImageFetcher(&mockImageFetcher{err: fmt.Errorf("unexpected cache miss")}),
+				WithRootFSHook(func(string, *image.OCIConfig) error { hookCalled = true; return nil }),
+			}
+			if clean {
+				opts = append(opts, WithCleanDataDir())
+			}
+			_, err = Run(context.Background(), "test:latest", opts...)
+			require.Error(t, err)
+			if clean {
+				assert.Contains(t, err.Error(), "disk")
+			} else {
+				assert.ErrorIs(t, err, os.ErrExist)
+			}
+			assert.False(t, hookCalled)
+			assert.Zero(t, backend.startCalls)
+			contents, err := os.ReadFile(disk)
+			require.NoError(t, err)
+			assert.Equal(t, "disk data", string(contents))
+			assert.DirExists(t, cached.Path)
+		})
+	}
 }
 
 func TestRun_RootFSShare_Validation(t *testing.T) {

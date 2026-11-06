@@ -697,15 +697,19 @@ func validateRootFSShare(cfg *config) error {
 	return nil
 }
 
-// emptyRootDir replaces dir with an empty root directory the guest's
-// unprivileged users can traverse.
-func emptyRootDir(dir string) error {
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
+// emptyRootDir creates a new empty root directory the guest's unprivileged
+// users can traverse. Existing destinations are never reused or removed.
+func emptyRootDir(dir string) (retErr error) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return err
 	}
+	defer func() {
+		if retErr != nil {
+			if err := os.Remove(dir); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("clean up failed root directory: %w", err))
+			}
+		}
+	}()
 	// Mkdir is subject to the umask.
 	if err := os.Chmod(dir, 0o755); err != nil {
 		return err
