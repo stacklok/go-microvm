@@ -207,6 +207,44 @@ func TestCopyFileToDir_ReplacesReadOnlyFile(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
 }
 
+func TestApplyLayerToDir_ReplacesSymlinkWithFile(t *testing.T) {
+	t.Parallel()
+
+	// A lower layer ships busybox with usr/bin/env as a symlink to it.
+	dst := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dst, "bin"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dst, "usr/bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dst, "bin/busybox"), []byte("busybox"), 0o755))
+	require.NoError(t, os.Symlink("/bin/busybox", filepath.Join(dst, "usr/bin/env")))
+
+	// The next layer installs coreutils, whose env is a real file.
+	layer := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(layer, "usr/bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(layer, "usr/bin/env"), []byte("coreutils"), 0o755))
+
+	require.NoError(t, applyLayerToDir(layer, dst))
+
+	info, err := os.Lstat(filepath.Join(dst, "usr/bin/env"))
+	require.NoError(t, err)
+	assert.True(t, info.Mode().IsRegular(), "the symlink is replaced by the file")
+	assert.Equal(t, "coreutils", readFile(t, filepath.Join(dst, "usr/bin/env")))
+	assert.Equal(t, "busybox", readFile(t, filepath.Join(dst, "bin/busybox")), "nothing is written through the symlink")
+}
+
+func TestCopyFileToDir_RefusesDirectory(t *testing.T) {
+	t.Parallel()
+
+	src := filepath.Join(t.TempDir(), "new")
+	require.NoError(t, os.WriteFile(src, []byte("new"), 0o600))
+	root := t.TempDir()
+	target := filepath.Join(root, "dir")
+	require.NoError(t, os.Mkdir(target, 0o755))
+
+	err := copyFileToDir(src, target, root, 0o644)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to overwrite directory with file")
+}
+
 func overrideStat(t *testing.T, path string) string {
 	t.Helper()
 	buf := make([]byte, 256)
