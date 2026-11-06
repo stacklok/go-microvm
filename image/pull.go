@@ -867,8 +867,7 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, target, rootDir string) er
 		mode = info.Mode()
 	}
 
-	// Best-effort ownership preservation from tar headers.
-	// When running as non-root, Lchown will fail with EPERM — that's fine.
+	// Best-effort ownership preservation from tar headers, as root only.
 	bestEffortLchown(target, hdr.Uid, hdr.Gid)
 	if err := pathutil.RestoreSpecialBits(target, mode); err != nil {
 		return err
@@ -967,8 +966,13 @@ func extractSymlink(hdr *tar.Header, target, rootDir string) error {
 }
 
 // bestEffortLchown attempts to set uid/gid on a path without following symlinks.
-// It silently ignores EPERM (non-root can't chown) and logs other errors at debug level.
+// It skips ownership changes when not running as root, since a non-root user
+// could change group ownership to one of its supplementary groups. It silently
+// ignores EPERM and logs other errors at debug level.
 func bestEffortLchown(path string, uid, gid int) {
+	if os.Geteuid() != 0 {
+		return
+	}
 	if err := os.Lchown(path, uid, gid); err != nil {
 		if !os.IsPermission(err) {
 			slog.Debug("lchown failed", "path", path, "uid", uid, "gid", gid, "err", err)
