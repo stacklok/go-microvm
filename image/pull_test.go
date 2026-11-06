@@ -428,7 +428,7 @@ func TestExtractTar_PreservesOwnershipBestEffort(t *testing.T) {
 	}
 }
 
-func TestExtractTar_NonRootKeepsPrimaryGroup(t *testing.T) {
+func TestExtractTar_NonRootPreservesCreatedGroups(t *testing.T) {
 	t.Parallel()
 
 	if os.Geteuid() == 0 {
@@ -436,29 +436,52 @@ func TestExtractTar_NonRootKeepsPrimaryGroup(t *testing.T) {
 	}
 	groups, err := os.Getgroups()
 	require.NoError(t, err)
-	other := -1
-	for _, g := range groups {
-		if g != os.Getgid() {
-			other = g
-			break
+	candidateGroups := append([]int{os.Getegid()}, groups...)
+
+	dst := t.TempDir()
+	controlDir := filepath.Join(dst, "control")
+	require.NoError(t, os.Mkdir(controlDir, 0o755))
+	require.NoError(t, os.Chmod(controlDir, 0o755))
+	controlDirInfo, err := os.Lstat(controlDir)
+	require.NoError(t, err)
+	controlFile := filepath.Join(controlDir, "file.txt")
+	require.NoError(t, os.WriteFile(controlFile, []byte("x"), 0o644))
+	controlFileInfo, err := os.Lstat(controlFile)
+	require.NoError(t, err)
+
+	controlDirGID := controlDirInfo.Sys().(*syscall.Stat_t).Gid
+	controlFileGID := controlFileInfo.Sys().(*syscall.Stat_t).Gid
+	alternateGroup := func(baseline uint32) (int, bool) {
+		for _, gid := range candidateGroups {
+			if uint32(gid) != baseline {
+				return gid, true
+			}
 		}
+		return 0, false
 	}
-	if other < 0 {
-		t.Skip("user has no supplementary group to test with")
+	dirGID, hasDirGID := alternateGroup(controlDirGID)
+	fileGID, hasFileGID := alternateGroup(controlFileGID)
+	if !hasDirGID || !hasFileGID {
+		t.Skip("no permitted alternate group differs from the created group")
 	}
 
 	buf := createTarBuffer(t, []tarEntry{
-		{name: "home/", typeflag: tar.TypeDir, mode: 0o755, uid: os.Getuid(), gid: other},
-		{name: "home/file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "x", uid: os.Getuid(), gid: other},
+		{name: "home/", typeflag: tar.TypeDir, mode: 0o755, uid: os.Geteuid(), gid: dirGID},
+		{name: "home/file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "x", uid: os.Geteuid(), gid: fileGID},
 	})
-	dst := t.TempDir()
 	require.NoError(t, extractTar(context.Background(), buf, dst))
 
-	for _, name := range []string{"home", "home/file.txt"} {
-		info, err := os.Lstat(filepath.Join(dst, name))
+	for _, entry := range []struct {
+		name string
+		gid  uint32
+	}{
+		{name: "home", gid: controlDirGID},
+		{name: "home/file.txt", gid: controlFileGID},
+	} {
+		info, err := os.Lstat(filepath.Join(dst, entry.name))
 		require.NoError(t, err)
 		stat := info.Sys().(*syscall.Stat_t)
-		assert.Equal(t, uint32(os.Getgid()), stat.Gid, name)
+		assert.Equal(t, entry.gid, stat.Gid, entry.name)
 	}
 }
 
