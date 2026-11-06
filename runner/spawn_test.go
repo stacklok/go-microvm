@@ -390,3 +390,25 @@ func TestProcess_killTarget_PanicsOnPID1(t *testing.T) {
 	p := &Process{pid: 1}
 	assert.Panics(t, func() { p.killTarget() }, "killTarget with PID 1 should panic")
 }
+
+func TestRunnerCommand_ProcessName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		processName string
+		wantArg0    string
+	}{
+		{name: "empty keeps runner path", processName: "", wantArg0: "/opt/runner"},
+		{name: "custom name", processName: "my-vm-runner", wantArg0: "my-vm-runner"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := runnerCommand("/opt/runner", tt.processName, []byte(`{"a":1}`))
+			assert.Equal(t, "/opt/runner", cmd.Path)
+			assert.Equal(t, []string{tt.wantArg0, `{"a":1}`}, cmd.Args)
+		})
+	}
+}

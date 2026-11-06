@@ -112,7 +112,7 @@ func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
 	// may have a timeout that we do not want to propagate to the VM process.
 	// The runner lifecycle is managed explicitly via Stop().
 	_ = ctx // acknowledged but intentionally unused for exec.Command
-	cmd := exec.Command(runnerPath, string(configJSON))
+	cmd := runnerCommand(runnerPath, cfg.ProcessName, configJSON)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true, // Create new session (detach from terminal)
 	}
@@ -167,6 +167,16 @@ func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
 	}()
 
 	return proc, nil
+}
+
+// runnerCommand builds the runner command. A non-empty processName replaces
+// argv[0]; the binary is still executed from runnerPath.
+func runnerCommand(runnerPath, processName string, configJSON []byte) *exec.Cmd {
+	cmd := exec.Command(runnerPath, string(configJSON))
+	if processName != "" {
+		cmd.Args[0] = processName
+	}
+	return cmd
 }
 
 // Stop sends SIGTERM to the runner process and waits for it to exit.
