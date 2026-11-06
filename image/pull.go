@@ -579,18 +579,23 @@ func copyFileToDir(src, target, rootDir string, mode os.FileMode) error {
 		return fmt.Errorf("create parent directory: %w", err)
 	}
 
-	if err := validateNoSymlinkLeaf(target); err != nil {
-		return err
-	}
-
 	mode |= 0o400 // Ensure at least owner-readable.
 
-	// A file from a lower layer is replaced, not overwritten: the clone
-	// below needs a free name, and the old file may be read-only.
-	if existing, err := os.Lstat(target); err == nil && existing.Mode().IsRegular() {
+	// An entry from a lower layer is replaced, not overwritten: the clone
+	// below needs a free name, and the old file may be read-only. A lower
+	// layer's symlink is replaced as well, as when coreutils installs
+	// usr/bin/env over the busybox symlink; removing the link leaves the
+	// file it points to untouched, so nothing is written through it.
+	existing, err := os.Lstat(target)
+	switch {
+	case err == nil && existing.IsDir():
+		return fmt.Errorf("refusing to overwrite directory with file: %s", target)
+	case err == nil:
 		if err := os.Remove(target); err != nil {
-			return fmt.Errorf("replace existing file: %w", err)
+			return fmt.Errorf("replace existing entry: %w", err)
 		}
+	case !os.IsNotExist(err):
+		return fmt.Errorf("stat target %s: %w", target, err)
 	}
 	// Clone the file where the file system supports it: the layer and the
 	// rootfs then share data blocks and nothing is copied.
