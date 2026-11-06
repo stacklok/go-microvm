@@ -25,17 +25,26 @@ func newHVFChecker() *hvfChecker {
 
 // registerPlatformChecks adds macOS-specific preflight checks.
 func registerPlatformChecks(c *checker) {
-	hvf := newHVFChecker()
-	c.Register(Check{
-		Name:        "hvf",
-		Description: "Verify Hypervisor.framework is available",
-		Run:         hvf.check,
-		Required:    true,
-	})
+	c.Register(HypervisorCheck())
 
 	// Add resource checks as non-required (advisory) defaults.
 	c.Register(DiskSpaceCheck("", 2.0))
 	c.Register(ResourceCheck(1, 1.0))
+}
+
+// HypervisorCheck returns the required preflight Check for the platform
+// hypervisor. On macOS it verifies that Hypervisor.framework is available.
+// It lets callers that replace the default checker via
+// microvm.WithPreflightChecker keep the hypervisor check without the other
+// platform defaults.
+func HypervisorCheck() Check {
+	hvf := newHVFChecker()
+	return Check{
+		Name:        "hvf",
+		Description: "Verify Hypervisor.framework is available",
+		Run:         hvf.check,
+		Required:    true,
+	}
 }
 
 // check verifies that Hypervisor.framework is available by reading the

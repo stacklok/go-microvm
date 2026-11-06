@@ -663,6 +663,15 @@ To replace the entire preflight checker (e.g., when the caller manages its own):
 microvm.WithPreflightChecker(preflight.NewEmpty())
 ```
 
+To keep only the hypervisor check (KVM on Linux, HVF on macOS) and choose the
+rest yourself, register `preflight.HypervisorCheck()` on an empty checker:
+```go
+checker := preflight.NewEmpty()
+checker.Register(preflight.HypervisorCheck())
+checker.Register(preflight.DiskSpaceCheck(dataDir, 5.0))
+microvm.WithPreflightChecker(checker)
+```
+
 ## Guest-Side Packages
 
 The `guest/` directory contains Linux-only packages (`//go:build linux`) that
