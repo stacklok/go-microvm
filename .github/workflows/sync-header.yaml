@@ -10,37 +10,53 @@ on:
       - "versions.env"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   sync-header:
     name: Sync libkrun.h
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # Only run for Renovate bumps to LIBKRUN_VERSION (not LIBKRUNFW-only
     # bumps, which don't change the header).
-    if: github.actor == 'renovate[bot]'
+    if: >-
+      github.actor == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           # Full history to detect what changed in versions.env
           fetch-depth: 0
+          ref: ${{ github.head_ref }}
 
       - name: Check if LIBKRUN_VERSION changed in this PR
         id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          if git diff "$base"..HEAD -- versions.env | grep -qE '^\-LIBKRUN_VERSION=|^\+LIBKRUN_VERSION='; then
+          if [[ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]]; then
+            echo "PR branch has moved — skipping stale run"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff "$BASE_SHA"...HEAD -- versions.env | grep -qE '^\-LIBKRUN_VERSION=|^\+LIBKRUN_VERSION='; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Source pinned version
+      - name: Read pinned version
         if: steps.changed.outputs.changed == 'true'
         run: |
-          source versions.env
-          echo "LIBKRUN_VERSION=${LIBKRUN_VERSION}" >> "$GITHUB_ENV"
+          version="$(awk '/^LIBKRUN_VERSION=/ { n++; value=substr($0, index($0, "=") + 1) } END { if (n != 1) exit 1; print value }' versions.env)"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid LIBKRUN_VERSION" >&2
+            exit 1
+          fi
+          printf 'LIBKRUN_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
 
       - name: Fetch and update vendored header
         if: steps.changed.outputs.changed == 'true'
