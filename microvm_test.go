@@ -180,6 +180,32 @@ func TestBuildVMConfig(t *testing.T) {
 		vc := buildVMConfig(cfg)
 		assert.Equal(t, uint32(512), vc.TmpSizeMiB)
 	})
+
+	t.Run("hyperv backend configures 9p mounts and hv_sock network port", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.backend = &namedMockBackend{name: "hyperv"}
+		cfg.virtioFS = []VirtioFSMount{
+			{Tag: "workspace", HostPath: "/src"},
+			{Tag: "data", HostPath: "/data", ReadOnly: true},
+		}
+		vc := buildVMConfig(cfg)
+		assert.Equal(t, uint32(2048), vc.HVSocketNetPort)
+		require.Len(t, vc.VirtioFSMounts, 2)
+		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "workspace", FSType: "9p"}, vc.VirtioFSMounts[0])
+		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "data", FSType: "9p", ReadOnly: true}, vc.VirtioFSMounts[1])
+	})
+
+	t.Run("hyperv backend auto-wires hosted network provider and rejects rootfs share", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.backend = &namedMockBackend{name: "hyperv"}
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider)
+
+		cfg.rootfsShare = "rootfs"
+		require.ErrorContains(t, validateRootFSShare(cfg), "not supported by the hyperv backend")
+	})
 }
 
 // --- Mock types for Run() tests ---
@@ -205,6 +231,13 @@ type mockBackend struct {
 }
 
 func (m *mockBackend) Name() string { return "mock" }
+
+type namedMockBackend struct {
+	mockBackend
+	name string
+}
+
+func (m *namedMockBackend) Name() string { return m.name }
 
 func (m *mockBackend) PrepareRootFS(_ context.Context, rootfsPath string, _ hypervisor.InitConfig) (string, error) {
 	if m.prepareErr != nil {

@@ -140,6 +140,22 @@ func TestBuildComputeSystemDoc_Defaults(t *testing.T) {
 	assert.Nil(t, doc.VirtualMachine.Devices.HvSocket)
 }
 
+func TestBuildComputeSystemDoc_CustomNetEndpointGUID(t *testing.T) {
+	t.Parallel()
+
+	customGUID := VsockPortToServiceGUID(2049)
+	doc, err := BuildComputeSystemDoc(hypervisor.VMConfig{
+		RootFSPath: "rootfs.vhd",
+		NetEndpoint: hypervisor.NetEndpoint{
+			Type: hypervisor.NetEndpointHVSocket,
+			Path: customGUID,
+		},
+	}, "vmlinux", "")
+	require.NoError(t, err)
+	require.NotNil(t, doc.VirtualMachine.Devices.HvSocket)
+	assert.Contains(t, doc.VirtualMachine.Devices.HvSocket.HvSocketConfig.ServiceTable, customGUID)
+}
+
 func TestBackend_StartAndLifecycle(t *testing.T) {
 	t.Parallel()
 

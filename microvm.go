@@ -370,7 +370,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		if pid, pidErr := pidFromID(handle.ID()); pidErr == nil {
 			ls.State.PID = pid
 			ls.State.PIDStartTime = time.Now().UTC()
-		} else {
+		} else if backend.Name() != "hyperv" {
 			slog.Warn("could not persist VM PID", "id", handle.ID(), "error", pidErr)
 		}
 		ls.State.Image = imageRef
@@ -422,9 +422,19 @@ func wireDefaultProvider(cfg *config) {
 	firewallConfigured := cfg.egressPolicy != nil ||
 		len(cfg.firewallRules) > 0 ||
 		cfg.firewallDefaultAction != firewall.Allow
-	if firewallConfigured && cfg.netProvider == nil {
+	if (firewallConfigured || isHyperVBackend(cfg)) && cfg.netProvider == nil {
 		cfg.netProvider = hosted.NewProvider()
 	}
+}
+
+func isHyperVBackend(cfg *config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.backend != nil {
+		return cfg.backend.Name() == "hyperv"
+	}
+	return runtime.GOOS == "windows"
 }
 
 func cleanDataDir(cfg *config) error {
@@ -661,6 +671,12 @@ func buildVMConfig(cfg *config) vmconfig.Config {
 	vc.DisableSSH = cfg.disableSSH
 	vc.HVSocketNetPort = defaultGuestNetworkPort()
 	fsType := defaultGuestMountFSType()
+	if isHyperVBackend(cfg) {
+		fsType = "9p"
+		if vc.HVSocketNetPort == 0 {
+			vc.HVSocketNetPort = 2048
+		}
+	}
 	for _, m := range cfg.virtioFS {
 		if m.ReadOnly || fsType == "9p" {
 			vc.VirtioFSMounts = append(vc.VirtioFSMounts, vmconfig.VirtioFSMountInfo{
@@ -691,6 +707,9 @@ func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 func validateRootFSShare(cfg *config) error {
 	if cfg.rootfsShare == "" {
 		return nil
+	}
+	if isHyperVBackend(cfg) {
+		return errors.New("rootfs share is not supported by the hyperv backend")
 	}
 	if err := pathutil.ValidatePrivatePath(cfg.dataDir); err != nil {
 		return fmt.Errorf("validate data dir: %w", err)

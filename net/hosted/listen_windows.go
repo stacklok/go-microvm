@@ -16,25 +16,30 @@ import (
 	"github.com/stacklok/go-microvm/hypervisor"
 )
 
-const hvSocketNetPort = 2048
+const (
+	hvSocketNetPortBase  = 2048
+	hvSocketNetPortCount = 64
+)
 
 func defaultListener(logDir string) (net.Listener, hypervisor.NetEndpoint, func(), error) {
-	serviceID, err := hvsock.GUIDFromString(fmt.Sprintf("%08x-facb-11e6-bd58-64006a7986d3", hvSocketNetPort))
-	if err != nil {
-		return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf("create Hyper-V service ID: %w", err)
-	}
-
-	listener, err := hvsock.Listen(hvsock.Addr{VMID: hvsock.GUIDWildcard, ServiceID: serviceID})
-	if err == nil {
-		endpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointHVSocket, Path: serviceID.String()}
-		return listener, endpoint, func() {}, nil
+	for offset := range uint32(hvSocketNetPortCount) {
+		port := uint32(hvSocketNetPortBase) + offset
+		serviceID, err := hvsock.GUIDFromString(fmt.Sprintf("%08x-facb-11e6-bd58-64006a7986d3", port))
+		if err != nil {
+			return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf("create Hyper-V service ID: %w", err)
+		}
+		listener, err := hvsock.Listen(hvsock.Addr{VMID: hvsock.GUIDWildcard, ServiceID: serviceID})
+		if err == nil {
+			endpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointHVSocket, Path: serviceID.String()}
+			return listener, endpoint, func() {}, nil
+		}
 	}
 
 	sockPath := filepath.Join(logDir, socketName)
 	if removeErr := os.Remove(sockPath); removeErr != nil && !os.IsNotExist(removeErr) {
 		return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf("remove stale fallback socket: %w", removeErr)
 	}
-	listener, err = net.Listen("unix", sockPath)
+	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf("listen on fallback unix socket: %w", err)
 	}

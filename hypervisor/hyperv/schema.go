@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/stacklok/go-microvm/hypervisor"
 )
@@ -195,7 +196,7 @@ func BuildComputeSystemDoc(
 
 	serviceTable := make(map[string]HvSocketServiceConfig, len(cfg.VsockPorts)+1)
 	if cfg.NetEndpoint.Type == hypervisor.NetEndpointHVSocket {
-		serviceTable[VsockPortToServiceGUID(DefaultNetVsockPort)] = HvSocketServiceConfig{}
+		serviceTable[netEndpointServiceGUID(cfg.NetEndpoint.Path)] = HvSocketServiceConfig{}
 	}
 	for _, port := range cfg.VsockPorts {
 		serviceTable[VsockPortToServiceGUID(port.Port)] = HvSocketServiceConfig{}
@@ -234,4 +235,15 @@ func BuildComputeSystemDoc(
 		},
 		ShouldTerminateOnLastHandleClosed: true,
 	}, nil
+}
+
+func netEndpointServiceGUID(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if len(trimmed) == 36 && strings.Count(trimmed, "-") == 4 {
+		return strings.ToLower(trimmed)
+	}
+	if port, err := strconv.ParseUint(trimmed, 10, 32); err == nil && port > 0 {
+		return VsockPortToServiceGUID(uint32(port))
+	}
+	return VsockPortToServiceGUID(DefaultNetVsockPort)
 }

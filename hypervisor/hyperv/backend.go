@@ -4,21 +4,17 @@
 package hyperv
 
 import (
-	"archive/tar"
 	"context"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/stacklok/go-microvm/extract"
 	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/image/vhd"
 )
 
 const (
@@ -77,7 +73,11 @@ var _ hypervisor.Backend = (*Backend)(nil)
 
 // NewBackend creates a Hyper-V backend with the given options.
 func NewBackend(opts ...Option) *Backend {
-	backend := &Backend{vhdBuilder: buildVHD}
+	backend := &Backend{
+		vhdBuilder: func(ctx context.Context, rootfsDir, outVHDPath string) error {
+			return vhd.BuildFromDir(ctx, rootfsDir, outVHDPath)
+		},
+	}
 	for _, option := range opts {
 		option(backend)
 	}
@@ -98,14 +98,8 @@ func (backend *Backend) PrepareRootFS(
 	}
 
 	outputPath := filepath.Join(rootfsPath, rootVHDName)
-	temporaryPath := outputPath + ".tmp"
-	if err := backend.vhdBuilder(ctx, rootfsPath, temporaryPath); err != nil {
-		_ = os.Remove(temporaryPath)
+	if err := backend.vhdBuilder(ctx, rootfsPath, outputPath); err != nil {
 		return "", fmt.Errorf("build rootfs VHD: %w", err)
-	}
-	if err := os.Rename(temporaryPath, outputPath); err != nil {
-		_ = os.Remove(temporaryPath)
-		return "", fmt.Errorf("install rootfs VHD: %w", err)
 	}
 	return outputPath, nil
 }
@@ -206,107 +200,4 @@ func optionalRegularFile(path string) string {
 		return ""
 	}
 	return path
-}
-
-func buildVHD(ctx context.Context, rootfsDir, outVHDPath string) error {
-	output, err := os.OpenFile(outVHDPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("create output VHD: %w", err)
-	}
-	defer func() { _ = output.Close() }()
-
-	reader, writer := io.Pipe()
-	tarErr := make(chan error, 1)
-	go func() {
-		err := writeRootFSTar(ctx, writer, rootfsDir)
-		_ = writer.CloseWithError(err)
-		tarErr <- err
-	}()
-
-	convertErr := tar2ext4.Convert(reader, output, tar2ext4.AppendVhdFooter)
-	if err := reader.Close(); err != nil && convertErr == nil {
-		convertErr = err
-	}
-	archiveErr := <-tarErr
-	if archiveErr != nil {
-		return fmt.Errorf("archive rootfs: %w", archiveErr)
-	}
-	if convertErr != nil {
-		return fmt.Errorf("convert rootfs archive: %w", convertErr)
-	}
-	if err := output.Sync(); err != nil {
-		return fmt.Errorf("sync output VHD: %w", err)
-	}
-	return nil
-}
-
-func writeRootFSTar(ctx context.Context, destination io.Writer, rootfsDir string) error {
-	archive := tar.NewWriter(destination)
-	err := filepath.WalkDir(rootfsDir, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		relativePath, err := filepath.Rel(rootfsDir, path)
-		if err != nil {
-			return fmt.Errorf("resolve archive path: %w", err)
-		}
-		if relativePath == "." {
-			return nil
-		}
-		archivePath := filepath.ToSlash(relativePath)
-		if archivePath == rootVHDName || archivePath == rootVHDName+".tmp" {
-			return nil
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		linkTarget := ""
-		if info.Mode()&os.ModeSymlink != 0 {
-			linkTarget, err = os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("read symlink %s: %w", path, err)
-			}
-		}
-		header, err := tar.FileInfoHeader(info, linkTarget)
-		if err != nil {
-			return fmt.Errorf("create tar header for %s: %w", path, err)
-		}
-		header.Name = archivePath
-		if info.IsDir() && !strings.HasSuffix(header.Name, "/") {
-			header.Name += "/"
-		}
-		if err := archive.WriteHeader(header); err != nil {
-			return fmt.Errorf("write tar header for %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-
-		file, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-		_, copyErr := io.Copy(archive, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return fmt.Errorf("archive %s: %w", path, copyErr)
-		}
-		if closeErr != nil {
-			return fmt.Errorf("close %s: %w", path, closeErr)
-		}
-		return nil
-	})
-	if err != nil {
-		_ = archive.Close()
-		return err
-	}
-	if err := archive.Close(); err != nil {
-		return fmt.Errorf("close rootfs archive: %w", err)
-	}
-	return nil
 }
