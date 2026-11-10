@@ -8,13 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 
+	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/internal/logbridge"
 	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/egress"
@@ -24,13 +23,28 @@ import (
 
 const socketName = "hosted-net.sock"
 
+type listenerFactory func(logDir string) (net.Listener, hypervisor.NetEndpoint, func(), error)
+
+// Option configures a hosted network provider.
+type Option func(*Provider)
+
+// WithListenerFactory replaces the platform listener factory.
+func WithListenerFactory(fn func(string) (net.Listener, hypervisor.NetEndpoint, func(), error)) Option {
+	return func(provider *Provider) {
+		provider.listenerFactory = fn
+	}
+}
+
 // Provider runs a gvisor-tap-vsock VirtualNetwork in the caller's process
-// and exposes a Unix socket for go-microvm-runner to connect to.
+// and exposes a platform network endpoint for the VM to connect to.
 type Provider struct {
 	mu              sync.Mutex
 	vn              *virtualnetwork.VirtualNetwork
 	listener        net.Listener
 	sockPath        string
+	endpoint        hypervisor.NetEndpoint
+	listenerFactory listenerFactory
+	listenerCleanup func()
 	relay           *firewall.Relay
 	bgCtx           context.Context
 	cancel          context.CancelFunc
@@ -41,10 +55,19 @@ type Provider struct {
 
 // NewProvider creates a new hosted network provider.
 func NewProvider() *Provider {
-	return &Provider{}
+	return NewProviderWithOptions()
 }
 
-// Start launches the virtual network and begins listening on a Unix socket.
+// NewProviderWithOptions creates a hosted provider with optional overrides.
+func NewProviderWithOptions(opts ...Option) *Provider {
+	provider := &Provider{listenerFactory: defaultListener}
+	for _, opt := range opts {
+		opt(provider)
+	}
+	return provider
+}
+
+// Start launches the virtual network and begins listening for VM connections.
 // It satisfies the [net.Provider] interface.
 func (p *Provider) Start(ctx context.Context, cfg propnet.Config) error {
 	p.mu.Lock()
@@ -85,19 +108,14 @@ func (p *Provider) Start(ctx context.Context, cfg propnet.Config) error {
 		return fmt.Errorf("start services: %w", err)
 	}
 
-	// Prepare the Unix socket path.
-	p.sockPath = filepath.Join(cfg.LogDir, socketName)
-
-	// Remove stale socket if present.
-	if err := os.Remove(p.sockPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale socket: %w", err)
-	}
-
-	listener, err := net.Listen("unix", p.sockPath)
+	listener, endpoint, cleanup, err := p.listenerFactory(cfg.LogDir)
 	if err != nil {
-		return fmt.Errorf("listen on unix socket: %w", err)
+		return fmt.Errorf("create network listener: %w", err)
 	}
 	p.listener = listener
+	p.endpoint = endpoint
+	p.sockPath = endpoint.Path
+	p.listenerCleanup = cleanup
 
 	// Set up firewall relay (with optional egress policy).
 	bgCtx, cancel := context.WithCancel(ctx)
@@ -119,11 +137,18 @@ func (p *Provider) Start(ctx context.Context, cfg propnet.Config) error {
 	return nil
 }
 
-// SocketPath returns the path to the Unix socket for go-microvm-runner.
+// SocketPath returns the legacy path representation of the network endpoint.
 func (p *Provider) SocketPath() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.sockPath
+}
+
+// Endpoint returns the transport endpoint exposed by the provider.
+func (p *Provider) Endpoint() hypervisor.NetEndpoint {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.endpoint
 }
 
 // Stop terminates the provider and cleans up resources.
@@ -132,7 +157,7 @@ func (p *Provider) Stop() {
 	services := p.snapshotAndClearServices()
 	cancel := p.cancel
 	listener := p.listener
-	sockPath := p.sockPath
+	cleanup := p.listenerCleanup
 	p.mu.Unlock()
 
 	// Shut down HTTP services outside the lock so Shutdown's blocking
@@ -150,9 +175,8 @@ func (p *Provider) Stop() {
 	// Wait for the accept loop to finish.
 	p.wg.Wait()
 
-	// Clean up the socket file.
-	if sockPath != "" {
-		_ = os.Remove(sockPath)
+	if cleanup != nil {
+		cleanup()
 	}
 }
 

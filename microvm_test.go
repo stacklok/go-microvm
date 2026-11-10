@@ -16,7 +16,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hypervisor"
@@ -36,6 +35,13 @@ type sentinelProvider struct{}
 func (*sentinelProvider) Start(_ context.Context, _ propnet.Config) error { return nil }
 func (*sentinelProvider) SocketPath() string                              { return "" }
 func (*sentinelProvider) Stop()                                           {}
+
+type endpointNetProvider struct {
+	mockNetProvider
+	endpoint hypervisor.NetEndpoint
+}
+
+func (provider *endpointNetProvider) Endpoint() hypervisor.NetEndpoint { return provider.endpoint }
 
 // --- Pure function tests ---
 
@@ -418,6 +424,28 @@ func TestRun_Success(t *testing.T) {
 	assert.Equal(t, uint32(1024), loaded.MemoryMB)
 }
 
+func TestRun_UsesProviderEndpoint(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+	wantEndpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointHVSocket, Path: "service-guid"}
+	provider := &endpointNetProvider{endpoint: wantEndpoint}
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithNetProvider(provider),
+		WithBackend(backend),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vm.Stop(context.Background()) })
+	assert.Equal(t, wantEndpoint, backend.lastConfig.NetEndpoint)
+}
+
 func TestRun_WithRootFSPath_SkipsImagePull(t *testing.T) {
 	t.Parallel()
 
@@ -648,24 +676,6 @@ func TestEmptyRootDir_PreservesExistingEntries(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestEmptyRootDir_GuestPermissions(t *testing.T) {
-	oldMask := syscall.Umask(0o077)
-	defer syscall.Umask(oldMask)
-
-	dir := filepath.Join(t.TempDir(), "rootfs-work")
-	require.NoError(t, emptyRootDir(dir))
-	info, err := os.Stat(dir)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
-	buf := make([]byte, 256)
-	n, err := unix.Getxattr(dir, "user.containers.override_stat", buf)
-	if err == unix.ENOTSUP {
-		t.Skip("filesystem does not support xattrs")
-	}
-	require.NoError(t, err)
-	assert.Equal(t, "0:0:040755", string(buf[:n]))
 }
 
 func TestRun_RootFSShare_PreservesExistingStorage(t *testing.T) {

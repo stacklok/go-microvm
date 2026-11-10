@@ -21,7 +21,8 @@ type Config struct {
 	TmpSizeMiB uint32 `json:"tmp_size_mib,omitempty"`
 	// VirtioFSMounts describes virtiofs mounts the host configured for the VM.
 	// The guest init uses this to determine mount-time options (e.g. read-only).
-	VirtioFSMounts []VirtioFSMountInfo `json:"virtiofs_mounts,omitempty"`
+	VirtioFSMounts  []VirtioFSMountInfo `json:"virtiofs_mounts,omitempty"`
+	HVSocketNetPort uint32              `json:"hvsocket_net_port,omitempty"`
 	// DisableSSH, when true, tells the guest init to skip starting the
 	// in-guest SSH server. Set by the host via
 	// [github.com/stacklok/go-microvm.WithoutSSH] when the host↔guest
@@ -32,7 +33,8 @@ type Config struct {
 // VirtioFSMountInfo carries mount metadata from the host to the guest init.
 type VirtioFSMountInfo struct {
 	// Tag is the virtiofs tag identifying this mount.
-	Tag string `json:"tag"`
+	Tag    string `json:"tag"`
+	FSType string `json:"fs_type,omitempty"`
 	// ReadOnly indicates the mount should be read-only inside the guest.
 	ReadOnly bool `json:"read_only,omitempty"`
 }

@@ -91,18 +91,28 @@ func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
 // mount point is chowned to uid:gid. When readOnly is true the mount is
 // performed with MS_RDONLY so the guest cannot write to it.
 func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries int, readOnly bool) error {
+	return WorkspaceWithFSType(logger, mountPoint, tag, "virtiofs", uid, gid, maxRetries, readOnly)
+}
+
+// WorkspaceWithFSType mounts a virtiofs or 9p share at the given mount point.
+func WorkspaceWithFSType(
+	logger *slog.Logger,
+	mountPoint string,
+	tag string,
+	fstype string,
+	uid int,
+	gid int,
+	maxRetries int,
+	readOnly bool,
+) error {
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
 		return fmt.Errorf("creating workspace mount point %s: %w", mountPoint, err)
 	}
-
-	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
-	if readOnly {
-		flags |= syscall.MS_RDONLY
-	}
+	entry := workspaceMountEntry(mountPoint, tag, fstype, readOnly)
 
 	var lastErr error
 	for i := range maxRetries {
-		lastErr = syscall.Mount(tag, mountPoint, "virtiofs", flags, "")
+		lastErr = syscall.Mount(entry.source, entry.target, entry.fstype, entry.flags, entry.data)
 		if lastErr == nil {
 			// Skip chown on read-only mounts: chown returns EROFS on a
 			// filesystem mounted with MS_RDONLY. Ownership is cosmetic
@@ -117,7 +127,7 @@ func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries
 			}
 			return nil
 		}
-		logger.Warn("virtiofs mount failed, retrying",
+		logger.Warn("workspace mount failed, retrying",
 			"tag", tag,
 			"attempt", i+1,
 			"max", maxRetries,
@@ -126,5 +136,23 @@ func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return fmt.Errorf("mounting virtiofs tag %q on %s after %d retries: %w", tag, mountPoint, maxRetries, lastErr)
+	return fmt.Errorf("mounting %s tag %q on %s after %d retries: %w", fstype, tag, mountPoint, maxRetries, lastErr)
+}
+
+func workspaceMountEntry(mountPoint, tag, fstype string, readOnly bool) mountEntry {
+	if fstype == "" {
+		fstype = "virtiofs"
+	}
+	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
+	data := ""
+	if fstype == "9p" {
+		data = "trans=virtio,version=9p2000.L,msize=524288"
+	}
+	if readOnly {
+		flags |= syscall.MS_RDONLY
+		if data != "" {
+			data += ",ro"
+		}
+	}
+	return mountEntry{source: tag, target: mountPoint, fstype: fstype, flags: flags, data: data}
 }

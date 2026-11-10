@@ -38,10 +38,10 @@ import (
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hooks"
 	"github.com/stacklok/go-microvm/hypervisor"
-	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/internal/xattr"
+	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
 	rootfspkg "github.com/stacklok/go-microvm/rootfs"
@@ -226,7 +226,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		// Only written when non-default values are configured, keeping the
 		// file absent for callers that rely on built-in defaults.
 		guestVMCfg := buildVMConfig(cfg)
-		if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 || guestVMCfg.DisableSSH {
+		if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 || guestVMCfg.DisableSSH || guestVMCfg.HVSocketNetPort > 0 {
 			vmCfgHook := hooks.InjectVMConfig(guestVMCfg)
 			if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
 				span.RecordError(err)
@@ -241,7 +241,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	// 4. Prepare rootfs via backend.
 	backend := cfg.backend
 	if backend == nil {
-		backend = libkrun.NewBackend()
+		backend = defaultBackend()
 	}
 	initCfg := buildInitConfig(rootfs.Config, cfg)
 	var preparedPath string
@@ -316,7 +316,9 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	_, vmSpawnSpan := tracer.Start(ctx, "microvm.VMSpawn")
 	slog.Debug("starting VM")
 	var netEndpoint hypervisor.NetEndpoint
-	if netSocket != "" {
+	if endpointProvider, ok := cfg.netProvider.(propnet.EndpointProvider); ok {
+		netEndpoint = endpointProvider.Endpoint()
+	} else if netSocket != "" {
 		netEndpoint = hypervisor.NetEndpoint{Type: hypervisor.NetEndpointUnixSocket, Path: netSocket}
 	}
 	vmCfg := hypervisor.VMConfig{
@@ -657,11 +659,14 @@ func buildVMConfig(cfg *config) vmconfig.Config {
 	var vc vmconfig.Config
 	vc.TmpSizeMiB = cfg.tmpSizeMiB
 	vc.DisableSSH = cfg.disableSSH
+	vc.HVSocketNetPort = defaultGuestNetworkPort()
+	fsType := defaultGuestMountFSType()
 	for _, m := range cfg.virtioFS {
-		if m.ReadOnly {
+		if m.ReadOnly || fsType == "9p" {
 			vc.VirtioFSMounts = append(vc.VirtioFSMounts, vmconfig.VirtioFSMountInfo{
 				Tag:      m.Tag,
-				ReadOnly: true,
+				FSType:   fsType,
+				ReadOnly: m.ReadOnly,
 			})
 		}
 	}

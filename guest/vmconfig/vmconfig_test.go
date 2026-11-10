@@ -33,11 +33,11 @@ func TestReadFrom(t *testing.T) {
 		},
 		{
 			name:    "virtiofs mounts with read-only",
-			content: strPtr(`{"virtiofs_mounts":[{"tag":"workspace","read_only":true},{"tag":"data"}]}`),
+			content: strPtr(`{"virtiofs_mounts":[{"tag":"workspace","fs_type":"9p","read_only":true},{"tag":"data"}],"hvsocket_net_port":2048}`),
 			want: Config{VirtioFSMounts: []VirtioFSMountInfo{
-				{Tag: "workspace", ReadOnly: true},
+				{Tag: "workspace", FSType: "9p", ReadOnly: true},
 				{Tag: "data"},
-			}},
+			}, HVSocketNetPort: 2048},
 		},
 		{
 			name:    "empty JSON object",

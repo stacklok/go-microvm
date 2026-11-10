@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/stacklok/go-microvm/internal/pathutil"
 
@@ -565,11 +564,11 @@ func copyOwnership(src, dst string) error {
 	if err != nil {
 		return nil
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
+	uid, gid, ok := fileOwner(info)
 	if !ok {
 		return nil
 	}
-	bestEffortLchown(dst, int(stat.Uid), int(stat.Gid))
+	bestEffortLchown(dst, uid, gid)
 	return xattr.CopyOverrideStat(src, dst)
 }
 

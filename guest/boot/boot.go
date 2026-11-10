@@ -6,6 +6,7 @@
 package boot
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -51,17 +52,33 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 	}
 
 	// 2. Network configuration.
+	var stopRelay func()
+	if cfg.hvSocketNetPort > 0 {
+		stopRelay, err = netcfg.StartHVSocketTAP(context.Background(), logger, cfg.hvSocketNetPort, "eth0")
+		if err != nil {
+			return nil, fmt.Errorf("starting Hyper-V socket network relay: %w", err)
+		}
+		defer func() {
+			if err != nil {
+				stopRelay()
+			}
+		}()
+	}
 	logger.Info("configuring network")
 	if err := netcfg.Configure(logger); err != nil {
+		if stopRelay != nil {
+			stopRelay()
+		}
 		return nil, fmt.Errorf("network setup: %w", err)
 	}
 
 	// 3. Workspace mount (non-fatal — VM is still useful without it).
 	logger.Info("mounting workspace")
-	if err := mount.Workspace(
+	if err := mount.WorkspaceWithFSType(
 		logger,
 		cfg.workspaceMountPoint,
 		cfg.workspaceTag,
+		cfg.workspaceFSType,
 		cfg.workspaceUID,
 		cfg.workspaceGID,
 		cfg.mountRetries,
@@ -124,7 +141,13 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 
 	logger.Info("sandbox init ready")
 
-	return shutdown, nil
+	sshShutdown := shutdown
+	return func() {
+		sshShutdown()
+		if stopRelay != nil {
+			stopRelay()
+		}
+	}, nil
 }
 
 // lockdownRoot sets /root/ to mode 0700 so the sandbox user cannot read

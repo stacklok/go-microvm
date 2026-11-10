@@ -20,6 +20,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 1000, cfg.workspaceUID)
 	assert.Equal(t, 1000, cfg.workspaceGID)
 	assert.False(t, cfg.workspaceReadOnly)
+	assert.Equal(t, "virtiofs", cfg.workspaceFSType)
 	assert.Equal(t, 5, cfg.mountRetries)
 	assert.Equal(t, 22, cfg.sshPort)
 	assert.Equal(t, "/home/sandbox/.ssh/authorized_keys", cfg.sshKeysPath)
@@ -30,6 +31,20 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, uint32(1000), cfg.userUID)
 	assert.Equal(t, uint32(1000), cfg.userGID)
 	assert.True(t, cfg.lockdownRoot)
+}
+
+func TestWithWorkspaceFSType(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	WithWorkspaceFSType("9p").apply(cfg)
+	assert.Equal(t, "9p", cfg.workspaceFSType)
+}
+
+func TestWithHVSocketNetwork(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	WithHVSocketNetwork(2048).apply(cfg)
+	assert.Equal(t, uint32(2048), cfg.hvSocketNetPort)
 }
 
 func TestWithWorkspaceReadOnly(t *testing.T) {

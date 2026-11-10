@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/image"
@@ -118,7 +117,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 // between the caller's validation and this open. Creates the file if absent,
 // truncates if present. Parent directories must already exist.
 func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|openNoFollowFlag, perm)
 	if err != nil {
 		return err
 	}

@@ -40,10 +40,7 @@ type processDeps struct {
 }
 
 func newProcessDeps() processDeps {
-	return processDeps{
-		kill:        func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
-		findProcess: os.FindProcess,
-	}
+	return platformProcessDeps()
 }
 
 // runnerFinder locates the go-microvm-runner binary with injectable lookups.
@@ -75,17 +72,6 @@ type Process struct {
 // PID returns the process ID (implements ProcessHandle).
 func (p *Process) PID() int { return p.pid }
 
-// killTarget returns the negative PID for process-group-wide signals.
-// Because the runner starts with Setsid: true, its PGID == PID,
-// so kill(-pid, sig) targets the entire process group.
-// Panics if pid <= 1 to prevent kill(0) (own group) or kill(-1) (all processes).
-func (p *Process) killTarget() int {
-	if p.pid <= 1 {
-		panic(fmt.Sprintf("killTarget called with unsafe pid %d", p.pid))
-	}
-	return -p.pid
-}
-
 // Spawn starts the go-microvm-runner binary as a detached subprocess.
 // Deprecated: Use SpawnProcess or DefaultSpawner instead.
 func Spawn(ctx context.Context, cfg Config) (*Process, error) {
@@ -113,9 +99,7 @@ func SpawnProcess(ctx context.Context, cfg Config) (*Process, error) {
 	// The runner lifecycle is managed explicitly via Stop().
 	_ = ctx // acknowledged but intentionally unused for exec.Command
 	cmd := runnerCommand(runnerPath, cfg.ProcessName, configJSON)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // Create new session (detach from terminal)
-	}
+	configureRunnerCommand(cmd)
 	applyUserNamespace(cmd, cfg.UserNamespace)
 
 	// Set library search path for bundled libraries if available.
@@ -244,7 +228,7 @@ func (p *Process) IsAlive() bool {
 	if err != nil {
 		return false
 	}
-	if process.Signal(syscall.Signal(0)) != nil {
+	if !processIsAlive(process) {
 		return false
 	}
 	// If we know the runner path, verify the PID still belongs to it.
@@ -291,11 +275,6 @@ func libPathEnvVar() string {
 		return "DYLD_LIBRARY_PATH"
 	}
 	return "LD_LIBRARY_PATH"
-}
-
-// isNoSuchProcess returns true if the error indicates the process does not exist.
-func isNoSuchProcess(err error) bool {
-	return errors.Is(err, syscall.ESRCH)
 }
 
 // isPermissionError returns true if the error indicates a permission denial
