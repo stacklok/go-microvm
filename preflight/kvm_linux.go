@@ -29,13 +29,7 @@ func newKVMChecker() *kvmChecker {
 
 // registerPlatformChecks adds Linux-specific preflight checks.
 func registerPlatformChecks(c *checker) {
-	kvm := newKVMChecker()
-	c.Register(Check{
-		Name:        "kvm",
-		Description: "Verify KVM is available and accessible",
-		Run:         kvm.check,
-		Required:    true,
-	})
+	c.Register(HypervisorCheck())
 
 	// CAP_CHOWN check — without it, extracted rootfs ownership will be wrong.
 	chown := newChownChecker()
@@ -49,6 +43,21 @@ func registerPlatformChecks(c *checker) {
 	// Add resource checks as non-required (advisory) defaults.
 	c.Register(DiskSpaceCheck("", 2.0))
 	c.Register(ResourceCheck(1, 1.0))
+}
+
+// HypervisorCheck returns the required preflight Check for the platform
+// hypervisor. On Linux it verifies that /dev/kvm is available and accessible.
+// It lets callers that replace the default checker via
+// microvm.WithPreflightChecker keep the hypervisor check without the other
+// platform defaults.
+func HypervisorCheck() Check {
+	kvm := newKVMChecker()
+	return Check{
+		Name:        "kvm",
+		Description: "Verify KVM is available and accessible",
+		Run:         kvm.check,
+		Required:    true,
+	}
 }
 
 // check verifies that /dev/kvm exists, is a character device, and is

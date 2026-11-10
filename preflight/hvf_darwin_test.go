@@ -71,3 +71,12 @@ func TestRegisterPlatformChecks_Darwin(t *testing.T) {
 	assert.Equal(t, "resources", c.checks[2].Name)
 	assert.False(t, c.checks[2].Required)
 }
+
+func TestHypervisorCheck_ReturnsCheck(t *testing.T) {
+	t.Parallel()
+
+	check := HypervisorCheck()
+	assert.Equal(t, "hvf", check.Name)
+	assert.True(t, check.Required)
+	assert.NotNil(t, check.Run)
+}
