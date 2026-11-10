@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/internal/testutil"
 	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
@@ -68,6 +69,24 @@ func TestVirtualNetworkNilBeforeStart(t *testing.T) {
 
 	p := NewProvider()
 	assert.Nil(t, p.VirtualNetwork(), "VirtualNetwork should be nil before Start")
+}
+
+func TestProviderCustomListenerEndpoint(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	cleaned := false
+	wantEndpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointHVSocket, Path: "service-guid"}
+	provider := NewProviderWithOptions(WithListenerFactory(func(string) (net.Listener, hypervisor.NetEndpoint, func(), error) {
+		return listener, wantEndpoint, func() { cleaned = true }, nil
+	}))
+
+	require.NoError(t, provider.Start(context.Background(), propnet.Config{}))
+	assert.Equal(t, wantEndpoint, provider.Endpoint())
+	assert.Equal(t, wantEndpoint.Path, provider.SocketPath())
+	provider.Stop()
+	assert.True(t, cleaned)
 }
 
 func TestStaleSocketRemoval(t *testing.T) {

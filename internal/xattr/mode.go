@@ -6,6 +6,8 @@ package xattr
 import (
 	"errors"
 	"os"
+	"strconv"
+	"strings"
 )
 
 const overrideKey = "user.containers.override_stat"
@@ -49,4 +51,19 @@ func goFileModeToPosix(m os.FileMode) uint32 {
 	}
 
 	return mode
+}
+
+// ParseOverrideStat parses a "uid:gid:0mode" override_stat payload.
+func ParseOverrideStat(raw string) (int, int, int64, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	uid, uidErr := strconv.ParseUint(parts[0], 10, 32)
+	gid, gidErr := strconv.ParseUint(parts[1], 10, 32)
+	mode, modeErr := strconv.ParseUint(parts[2], 8, 32)
+	if uidErr != nil || gidErr != nil || modeErr != nil || mode > 0o177777 {
+		return 0, 0, 0, false
+	}
+	return int(uid), int(gid), int64(mode), true
 }

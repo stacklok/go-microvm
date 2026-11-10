@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/stacklok/go-microvm/internal/pathutil"
 
@@ -561,15 +560,11 @@ func applyLayerToDir(layerDir, dst string) error {
 
 // copyOwnership copies the uid/gid from src to dst using best-effort lchown.
 func copyOwnership(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return nil
+	if info, err := os.Lstat(src); err == nil {
+		if uid, gid, ok := fileOwner(info); ok {
+			bestEffortLchown(dst, uid, gid)
+		}
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return nil
-	}
-	bestEffortLchown(dst, int(stat.Uid), int(stat.Gid))
 	return xattr.CopyOverrideStat(src, dst)
 }
 

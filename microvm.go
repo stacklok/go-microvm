@@ -38,10 +38,10 @@ import (
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hooks"
 	"github.com/stacklok/go-microvm/hypervisor"
-	"github.com/stacklok/go-microvm/hypervisor/libkrun"
 	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/internal/pathutil"
 	"github.com/stacklok/go-microvm/internal/xattr"
+	propnet "github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/net/hosted"
 	rootfspkg "github.com/stacklok/go-microvm/rootfs"
@@ -222,48 +222,10 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 			}
 		}
 
-		// 3b. Inject VM config for the guest init (e.g. /tmp size, mount flags).
-		// Only written when non-default values are configured, keeping the
-		// file absent for callers that rely on built-in defaults.
-		guestVMCfg := buildVMConfig(cfg)
-		if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 || guestVMCfg.DisableSSH {
-			vmCfgHook := hooks.InjectVMConfig(guestVMCfg)
-			if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-				span.End()
-				return nil, fmt.Errorf("inject vm config: %w", err)
-			}
-		}
 		span.End()
 	}
 
-	// 4. Prepare rootfs via backend.
-	backend := cfg.backend
-	if backend == nil {
-		backend = libkrun.NewBackend()
-	}
-	initCfg := buildInitConfig(rootfs.Config, cfg)
-	var preparedPath string
-	{
-		_, span := tracer.Start(ctx, "microvm.BackendPrepare")
-		var err error
-		preparedPath, err = backend.PrepareRootFS(ctx, rootfs.Path, initCfg)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			span.End()
-			return nil, fmt.Errorf("prepare rootfs: %w", err)
-		}
-		if !isWithin(rootfs.Path, preparedPath) && preparedPath != rootfs.Path {
-			span.End()
-			return nil, fmt.Errorf("backend returned rootfs path outside original: %s", preparedPath)
-		}
-		span.End()
-	}
-
-	// 5. Prepare ownership overrides before starting networking.
-
+	// 4. Prepare ownership overrides before starting networking.
 	_, xattrSpan := tracer.Start(ctx, "microvm.VirtioFSOverrideStat")
 	for _, m := range cfg.virtioFS {
 		if m.OverrideUID == 0 {
@@ -289,15 +251,16 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 	xattrSpan.End()
 
-	// 6. Start networking.
-	//
-	// Default path: port forwards are passed to the runner, which creates
-	// an in-process VirtualNetwork (gvisor-tap-vsock) alongside the VM.
-	// This ensures networking lives as long as the runner process.
-	//
-	// Custom provider path: if WithNetProvider() was used, start the
-	// external provider and pass its socket path to the runner instead.
+	// 5. Start networking before injecting guest VM config so dynamic
+	// Hyper-V socket ports are reflected in /etc/go-microvm.json before
+	// rootfs VHD creation.
 	var netSocket string
+	netStarted := false
+	defer func() {
+		if netStarted {
+			cfg.netProvider.Stop()
+		}
+	}()
 	if cfg.netProvider != nil {
 		_, span := tracer.Start(ctx, "microvm.NetworkStart")
 		slog.Debug("starting custom network provider")
@@ -308,15 +271,53 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 			span.End()
 			return nil, fmt.Errorf("networking: %w", err)
 		}
+		netStarted = true
 		netSocket = cfg.netProvider.SocketPath()
 		span.End()
 	}
 
-	// 7. Start VM via backend.
+	// 5b. Inject VM config for the guest init (e.g. /tmp size, mount flags,
+	// bound Hyper-V socket network port).
+	{
+		guestVMCfg := buildVMConfig(cfg)
+		if guestVMCfg.TmpSizeMiB > 0 || len(guestVMCfg.VirtioFSMounts) > 0 || guestVMCfg.DisableSSH || guestVMCfg.HVSocketNetPort > 0 {
+			vmCfgHook := hooks.InjectVMConfig(guestVMCfg)
+			if err := vmCfgHook(rootfs.Path, rootfs.Config); err != nil {
+				return nil, fmt.Errorf("inject vm config: %w", err)
+			}
+		}
+	}
+
+	// 6. Prepare rootfs via backend.
+	backend := cfg.backend
+	if backend == nil {
+		backend = defaultBackend()
+	}
+	initCfg := buildInitConfig(rootfs.Config, cfg)
+	var preparedPath string
+	{
+		_, span := tracer.Start(ctx, "microvm.BackendPrepare")
+		var err error
+		preparedPath, err = backend.PrepareRootFS(ctx, rootfs.Path, initCfg)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, fmt.Errorf("prepare rootfs: %w", err)
+		}
+		if !isWithin(rootfs.Path, preparedPath) && preparedPath != rootfs.Path {
+			span.End()
+			return nil, fmt.Errorf("backend returned rootfs path outside original: %s", preparedPath)
+		}
+		span.End()
+	}
+	// 6. Start VM via backend.
 	_, vmSpawnSpan := tracer.Start(ctx, "microvm.VMSpawn")
 	slog.Debug("starting VM")
 	var netEndpoint hypervisor.NetEndpoint
-	if netSocket != "" {
+	if endpointProvider, ok := cfg.netProvider.(propnet.EndpointProvider); ok {
+		netEndpoint = endpointProvider.Endpoint()
+	} else if netSocket != "" {
 		netEndpoint = hypervisor.NetEndpoint{Type: hypervisor.NetEndpointUnixSocket, Path: netSocket}
 	}
 	vmCfg := hypervisor.VMConfig{
@@ -336,16 +337,13 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	}
 	handle, err := backend.Start(ctx, vmCfg)
 	if err != nil {
-		if cfg.netProvider != nil {
-			cfg.netProvider.Stop()
-		}
 		vmSpawnSpan.RecordError(err)
 		vmSpawnSpan.SetStatus(codes.Error, err.Error())
 		vmSpawnSpan.End()
 		return nil, fmt.Errorf("spawn vm: %w", err)
 	}
+	netStarted = false
 	vmSpawnSpan.End()
-
 	vm := &VM{
 		name:       cfg.name,
 		handle:     handle,
@@ -368,7 +366,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 		if pid, pidErr := pidFromID(handle.ID()); pidErr == nil {
 			ls.State.PID = pid
 			ls.State.PIDStartTime = time.Now().UTC()
-		} else {
+		} else if backend.Name() != "hyperv" {
 			slog.Warn("could not persist VM PID", "id", handle.ID(), "error", pidErr)
 		}
 		ls.State.Image = imageRef
@@ -420,9 +418,19 @@ func wireDefaultProvider(cfg *config) {
 	firewallConfigured := cfg.egressPolicy != nil ||
 		len(cfg.firewallRules) > 0 ||
 		cfg.firewallDefaultAction != firewall.Allow
-	if firewallConfigured && cfg.netProvider == nil {
+	if (firewallConfigured || isHyperVBackend(cfg)) && cfg.netProvider == nil {
 		cfg.netProvider = hosted.NewProvider()
 	}
+}
+
+func isHyperVBackend(cfg *config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.backend != nil {
+		return cfg.backend.Name() == "hyperv"
+	}
+	return runtime.GOOS == "windows"
 }
 
 func cleanDataDir(cfg *config) error {
@@ -657,15 +665,45 @@ func buildVMConfig(cfg *config) vmconfig.Config {
 	var vc vmconfig.Config
 	vc.TmpSizeMiB = cfg.tmpSizeMiB
 	vc.DisableSSH = cfg.disableSSH
+	vc.HVSocketNetPort = defaultGuestNetworkPort()
+	fsType := defaultGuestMountFSType()
+	if isHyperVBackend(cfg) {
+		fsType = "9p"
+		if endpointProvider, ok := cfg.netProvider.(propnet.EndpointProvider); ok {
+			if port := parseHVSocketEndpointPort(endpointProvider.Endpoint()); port > 0 {
+				vc.HVSocketNetPort = port
+			}
+		}
+		if vc.HVSocketNetPort == 0 {
+			vc.HVSocketNetPort = 2048
+		}
+	}
 	for _, m := range cfg.virtioFS {
-		if m.ReadOnly {
+		if m.ReadOnly || fsType == "9p" {
 			vc.VirtioFSMounts = append(vc.VirtioFSMounts, vmconfig.VirtioFSMountInfo{
 				Tag:      m.Tag,
-				ReadOnly: true,
+				FSType:   fsType,
+				ReadOnly: m.ReadOnly,
 			})
 		}
 	}
 	return vc
+}
+
+func parseHVSocketEndpointPort(endpoint hypervisor.NetEndpoint) uint32 {
+	if endpoint.Type != hypervisor.NetEndpointHVSocket {
+		return 0
+	}
+	trimmed := strings.TrimSpace(endpoint.Path)
+	if len(trimmed) == 36 && strings.Count(trimmed, "-") == 4 {
+		if port, err := strconv.ParseUint(trimmed[:8], 16, 32); err == nil && port > 0 {
+			return uint32(port)
+		}
+	}
+	if port, err := strconv.ParseUint(trimmed, 10, 32); err == nil && port > 0 {
+		return uint32(port)
+	}
+	return 0
 }
 
 func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
@@ -686,6 +724,9 @@ func toHypervisorMounts(mounts []VirtioFSMount) []hypervisor.FilesystemMount {
 func validateRootFSShare(cfg *config) error {
 	if cfg.rootfsShare == "" {
 		return nil
+	}
+	if isHyperVBackend(cfg) {
+		return errors.New("rootfs share is not supported by the hyperv backend")
 	}
 	if err := pathutil.ValidatePrivatePath(cfg.dataDir); err != nil {
 		return fmt.Errorf("validate data dir: %w", err)

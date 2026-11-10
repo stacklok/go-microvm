@@ -259,15 +259,11 @@ func copyFile(src, dst string) error {
 // following symlinks. Lchown failures are ignored (non-root can't chown), but
 // unsafe override_stat permission restoration failures are returned.
 func bestEffortLchown(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return nil
+	if info, err := os.Lstat(src); err == nil {
+		if uid, gid := fileOwner(info); uid >= 0 && gid >= 0 {
+			_ = os.Lchown(dst, uid, gid)
+		}
 	}
-	uid, gid := fileOwner(info)
-	if uid < 0 || gid < 0 {
-		return nil
-	}
-	_ = os.Lchown(dst, uid, gid)
 	return xattr.CopyOverrideStat(src, dst)
 }
 

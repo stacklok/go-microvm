@@ -59,3 +59,13 @@ func CopyOverrideStat(src, dst string) error {
 	}
 	return nil
 }
+
+// GetOverrideStat reads and parses the user.containers.override_stat xattr on path.
+func GetOverrideStat(path string) (int, int, int64, bool) {
+	buf := make([]byte, 256)
+	n, err := unix.Lgetxattr(path, overrideKey, buf)
+	if err != nil || n == 0 {
+		return 0, 0, 0, false
+	}
+	return ParseOverrideStat(string(buf[:n]))
+}

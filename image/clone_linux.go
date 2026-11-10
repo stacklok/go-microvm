@@ -7,6 +7,7 @@ package image
 
 import (
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -39,3 +40,11 @@ func cloneFile(src, dst string) (retErr error) {
 // cloneTree is not available on Linux: there is no directory clone, so
 // composed rootfs snapshots are not kept.
 func cloneTree(_, _ string) error { return errCloneTreeUnsupported }
+
+func fileOwner(info os.FileInfo) (int, int, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return int(stat.Uid), int(stat.Gid), true
+}

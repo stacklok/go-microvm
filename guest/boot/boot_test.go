@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stacklok/go-microvm/guest/vmconfig"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -20,6 +22,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 1000, cfg.workspaceUID)
 	assert.Equal(t, 1000, cfg.workspaceGID)
 	assert.False(t, cfg.workspaceReadOnly)
+	assert.Equal(t, "virtiofs", cfg.workspaceFSType)
 	assert.Equal(t, 5, cfg.mountRetries)
 	assert.Equal(t, 22, cfg.sshPort)
 	assert.Equal(t, "/home/sandbox/.ssh/authorized_keys", cfg.sshKeysPath)
@@ -30,6 +33,38 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, uint32(1000), cfg.userUID)
 	assert.Equal(t, uint32(1000), cfg.userGID)
 	assert.True(t, cfg.lockdownRoot)
+}
+
+func TestWithWorkspaceFSType(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	WithWorkspaceFSType("9p").apply(cfg)
+	assert.Equal(t, "9p", cfg.workspaceFSType)
+}
+
+func TestWithHVSocketNetwork(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	WithHVSocketNetwork(2048).apply(cfg)
+	assert.Equal(t, uint32(2048), cfg.hvSocketNetPort)
+}
+
+func TestApplyVMConfig(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	applyVMConfig(cfg, vmconfig.Config{
+		TmpSizeMiB:      512,
+		HVSocketNetPort: 2049,
+		DisableSSH:      true,
+		VirtioFSMounts: []vmconfig.VirtioFSMountInfo{
+			{Tag: "workspace", FSType: "9p", ReadOnly: true},
+		},
+	})
+	assert.Equal(t, uint32(512), cfg.tmpSizeMiB)
+	assert.Equal(t, uint32(2049), cfg.hvSocketNetPort)
+	assert.True(t, cfg.disableSSH)
+	assert.Equal(t, "9p", cfg.workspaceFSType)
+	assert.True(t, cfg.workspaceReadOnly)
 }
 
 func TestWithWorkspaceReadOnly(t *testing.T) {

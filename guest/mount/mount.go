@@ -12,9 +12,15 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-const defaultTmpSizeMiB = 256
+const (
+	defaultTmpSizeMiB     = 256
+	defaultPlan9VsockPort = 564
+	defaultPlan9Msize     = 524288
+)
 
 type mountEntry struct {
 	source string
@@ -91,18 +97,28 @@ func Essential(logger *slog.Logger, tmpSizeMiB uint32) error {
 // mount point is chowned to uid:gid. When readOnly is true the mount is
 // performed with MS_RDONLY so the guest cannot write to it.
 func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries int, readOnly bool) error {
+	return WorkspaceWithFSType(logger, mountPoint, tag, "virtiofs", uid, gid, maxRetries, readOnly)
+}
+
+// WorkspaceWithFSType mounts a virtiofs or 9p share at the given mount point.
+func WorkspaceWithFSType(
+	logger *slog.Logger,
+	mountPoint string,
+	tag string,
+	fstype string,
+	uid int,
+	gid int,
+	maxRetries int,
+	readOnly bool,
+) error {
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
 		return fmt.Errorf("creating workspace mount point %s: %w", mountPoint, err)
 	}
-
-	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
-	if readOnly {
-		flags |= syscall.MS_RDONLY
-	}
+	entry := workspaceMountEntry(mountPoint, tag, fstype, readOnly)
 
 	var lastErr error
 	for i := range maxRetries {
-		lastErr = syscall.Mount(tag, mountPoint, "virtiofs", flags, "")
+		lastErr = mountWorkspaceOnce(entry, readOnly)
 		if lastErr == nil {
 			// Skip chown on read-only mounts: chown returns EROFS on a
 			// filesystem mounted with MS_RDONLY. Ownership is cosmetic
@@ -117,7 +133,7 @@ func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries
 			}
 			return nil
 		}
-		logger.Warn("virtiofs mount failed, retrying",
+		logger.Warn("workspace mount failed, retrying",
 			"tag", tag,
 			"attempt", i+1,
 			"max", maxRetries,
@@ -126,5 +142,59 @@ func Workspace(logger *slog.Logger, mountPoint, tag string, uid, gid, maxRetries
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return fmt.Errorf("mounting virtiofs tag %q on %s after %d retries: %w", tag, mountPoint, maxRetries, lastErr)
+	return fmt.Errorf("mounting %s tag %q on %s after %d retries: %w", fstype, tag, mountPoint, maxRetries, lastErr)
+}
+
+func mountWorkspaceOnce(entry mountEntry, readOnly bool) error {
+	if entry.fstype == "9p" {
+		if err := mountPlan9OverVsock(entry.target, entry.source, readOnly); err == nil {
+			return nil
+		}
+	}
+	return syscall.Mount(entry.source, entry.target, entry.fstype, entry.flags, entry.data)
+}
+
+func mountPlan9OverVsock(mountPoint, tag string, readOnly bool) error {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: defaultPlan9VsockPort}); err != nil {
+		return err
+	}
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, defaultPlan9Msize)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, defaultPlan9Msize)
+
+	entry := plan9VsockMountEntry(mountPoint, tag, fd, readOnly)
+	return syscall.Mount(entry.source, entry.target, entry.fstype, entry.flags, entry.data)
+}
+
+func plan9VsockMountEntry(mountPoint, tag string, fd int, readOnly bool) mountEntry {
+	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
+	data := fmt.Sprintf("trans=fd,rfdno=%d,wfdno=%d,msize=%d,version=9p2000.L,aname=%s", fd, fd, defaultPlan9Msize, tag)
+	if readOnly {
+		flags |= syscall.MS_RDONLY
+		data += ",noload,ro"
+	}
+	return mountEntry{source: tag, target: mountPoint, fstype: "9p", flags: flags, data: data}
+}
+
+func workspaceMountEntry(mountPoint, tag, fstype string, readOnly bool) mountEntry {
+	if fstype == "" {
+		fstype = "virtiofs"
+	}
+	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
+	data := ""
+	if fstype == "9p" {
+		data = "trans=virtio,version=9p2000.L,msize=524288"
+	}
+	if readOnly {
+		flags |= syscall.MS_RDONLY
+		if data != "" {
+			data += ",ro"
+		}
+	}
+	return mountEntry{source: tag, target: mountPoint, fstype: fstype, flags: flags, data: data}
 }

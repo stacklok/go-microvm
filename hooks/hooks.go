@@ -5,6 +5,7 @@ package hooks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/image"
@@ -90,10 +90,12 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 		if err := image.MkdirAllNoSymlink(rootfsPath, sshDir, 0o700); err != nil {
 			return fmt.Errorf("create .ssh dir: %w", err)
 		}
+		if err := xattr.SetOverrideStat(sshDir, cfg.uid, cfg.gid, os.ModeDir|0o700); err != nil {
+			return fmt.Errorf("set override_stat on .ssh dir: %w", err)
+		}
 		if err := cfg.chown(sshDir, cfg.uid, cfg.gid); err != nil {
 			return fmt.Errorf("chown .ssh dir: %w", err)
 		}
-
 		akGuest := sshDirGuest + "/authorized_keys"
 		akPath, err := pathutil.Contains(rootfsPath, akGuest)
 		if err != nil {
@@ -118,7 +120,7 @@ func InjectAuthorizedKeys(pubKey string, opts ...KeyOption) func(string, *image.
 // between the caller's validation and this open. Creates the file if absent,
 // truncates if present. Parent directories must already exist.
 func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
+	f, err := openFileNoFollow(path, perm)
 	if err != nil {
 		return err
 	}
@@ -126,7 +128,10 @@ func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 		_ = f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return xattr.SetOverrideStat(path, 0, 0, perm)
 }
 
 // InjectFile returns a RootFSHook that writes content to the specified guest
@@ -222,10 +227,10 @@ func shellEscape(s string) string {
 // Lchown is used instead of Chown to avoid following symlinks in the rootfs.
 func BestEffortLchown(path string, uid, gid int) error {
 	if err := os.Lchown(path, uid, gid); err != nil {
-		if !os.IsPermission(err) {
+		if !os.IsPermission(err) && !errors.Is(err, errors.ErrUnsupported) {
 			return fmt.Errorf("lchown %s: %w", path, err)
 		}
-		slog.Debug("lchown permission denied; relying on xattr + guest fixup",
+		slog.Debug("lchown permission denied or unsupported; relying on xattr + guest fixup",
 			"path", path, "uid", uid, "gid", gid)
 	}
 	if err := xattr.SetOverrideStatFromPath(path, uid, gid); err != nil {

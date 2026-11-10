@@ -11,7 +11,6 @@ import (
 
 	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/image"
-	"github.com/stacklok/go-microvm/internal/procutil"
 	"github.com/stacklok/go-microvm/net"
 	"github.com/stacklok/go-microvm/net/firewall"
 	"github.com/stacklok/go-microvm/preflight"
@@ -184,34 +183,21 @@ type config struct {
 func defaultConfig() *config {
 	dataDir := defaultDataDir()
 	return &config{
-		name:        "microvm",
-		cpus:        1,
-		memory:      512,
-		ports:       nil,
-		netProvider: nil, // lazy-initialized in Run() if not set by WithNetProvider
-		preflight:   preflight.Default(),
-		imageCache:  image.NewCache(filepath.Join(dataDir, "cache")),
-		dataDir:     dataDir,
-		removeAll:   forceRemoveAll,
-		stat:        os.Stat,
-		killProcess: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
-		processAlive: func(pid int) bool {
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				return false
-			}
-			return proc.Signal(syscall.Signal(0)) == nil
-		},
-		processIsExpected: func(pid int) bool {
-			return procutil.IsExpectedProcess(pid, runnerBinaryName)
-		},
+		name:              "microvm",
+		cpus:              1,
+		memory:            512,
+		ports:             nil,
+		netProvider:       nil, // lazy-initialized in Run() if not set by WithNetProvider
+		preflight:         preflight.Default(),
+		imageCache:        image.NewCache(filepath.Join(dataDir, "cache")),
+		dataDir:           dataDir,
+		removeAll:         forceRemoveAll,
+		stat:              os.Stat,
+		killProcess:       defaultKillProcess,
+		processAlive:      defaultProcessAlive,
+		processIsExpected: defaultProcessIsExpected,
 	}
 }
-
-// runnerBinaryName is the base name of the runner executable — used by
-// the default processIsExpected check to distinguish the go-microvm
-// runner from an unrelated process that happens to be at the same PID.
-const runnerBinaryName = "go-microvm-runner"
 
 func defaultDataDir() string {
 	if dir := os.Getenv("GO_MICROVM_DATA_DIR"); dir != "" {

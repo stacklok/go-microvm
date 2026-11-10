@@ -6,6 +6,7 @@
 package boot
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/stacklok/go-microvm/guest/harden"
 	"github.com/stacklok/go-microvm/guest/mount"
 	"github.com/stacklok/go-microvm/guest/netcfg"
+	"github.com/stacklok/go-microvm/guest/vmconfig"
 )
 
 // Run executes the full guest boot sequence and returns a shutdown function.
@@ -40,6 +42,9 @@ import (
 // When SSH is not brought up, the returned shutdown function is a no-op.
 func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 	cfg := defaultConfig()
+	if vmc, readErr := vmconfig.Read(); readErr == nil {
+		applyVMConfig(cfg, vmc)
+	}
 	for _, o := range opts {
 		o.apply(cfg)
 	}
@@ -51,17 +56,33 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 	}
 
 	// 2. Network configuration.
+	var stopRelay func()
+	if cfg.hvSocketNetPort > 0 {
+		stopRelay, err = netcfg.StartHVSocketTAP(context.Background(), logger, cfg.hvSocketNetPort, "eth0")
+		if err != nil {
+			return nil, fmt.Errorf("starting Hyper-V socket network relay: %w", err)
+		}
+		defer func() {
+			if err != nil {
+				stopRelay()
+			}
+		}()
+	}
 	logger.Info("configuring network")
 	if err := netcfg.Configure(logger); err != nil {
+		if stopRelay != nil {
+			stopRelay()
+		}
 		return nil, fmt.Errorf("network setup: %w", err)
 	}
 
 	// 3. Workspace mount (non-fatal — VM is still useful without it).
 	logger.Info("mounting workspace")
-	if err := mount.Workspace(
+	if err := mount.WorkspaceWithFSType(
 		logger,
 		cfg.workspaceMountPoint,
 		cfg.workspaceTag,
+		cfg.workspaceFSType,
 		cfg.workspaceUID,
 		cfg.workspaceGID,
 		cfg.mountRetries,
@@ -124,7 +145,13 @@ func Run(logger *slog.Logger, opts ...Option) (shutdown func(), err error) {
 
 	logger.Info("sandbox init ready")
 
-	return shutdown, nil
+	sshShutdown := shutdown
+	return func() {
+		sshShutdown()
+		if stopRelay != nil {
+			stopRelay()
+		}
+	}, nil
 }
 
 // lockdownRoot sets /root/ to mode 0700 so the sandbox user cannot read
@@ -133,5 +160,26 @@ func lockdownRoot(logger *slog.Logger) {
 	logger.Info("locking down /root permissions")
 	if err := os.Chmod("/root", 0o700); err != nil {
 		logger.Warn("failed to chmod /root", "error", err)
+	}
+}
+
+func applyVMConfig(cfg *config, vmc vmconfig.Config) {
+	if vmc.TmpSizeMiB > 0 {
+		cfg.tmpSizeMiB = vmc.TmpSizeMiB
+	}
+	if vmc.DisableSSH {
+		cfg.disableSSH = true
+	}
+	if vmc.HVSocketNetPort > 0 {
+		cfg.hvSocketNetPort = vmc.HVSocketNetPort
+	}
+	for _, m := range vmc.VirtioFSMounts {
+		if m.Tag == cfg.workspaceTag {
+			if m.FSType != "" {
+				cfg.workspaceFSType = m.FSType
+			}
+			cfg.workspaceReadOnly = m.ReadOnly
+			break
+		}
 	}
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 
 	"github.com/stacklok/go-microvm/guest/vmconfig"
 	"github.com/stacklok/go-microvm/hypervisor"
@@ -36,6 +35,13 @@ type sentinelProvider struct{}
 func (*sentinelProvider) Start(_ context.Context, _ propnet.Config) error { return nil }
 func (*sentinelProvider) SocketPath() string                              { return "" }
 func (*sentinelProvider) Stop()                                           {}
+
+type endpointNetProvider struct {
+	mockNetProvider
+	endpoint hypervisor.NetEndpoint
+}
+
+func (provider *endpointNetProvider) Endpoint() hypervisor.NetEndpoint { return provider.endpoint }
 
 // --- Pure function tests ---
 
@@ -174,6 +180,41 @@ func TestBuildVMConfig(t *testing.T) {
 		vc := buildVMConfig(cfg)
 		assert.Equal(t, uint32(512), vc.TmpSizeMiB)
 	})
+
+	t.Run("hyperv backend configures 9p mounts and hv_sock network port", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.backend = &namedMockBackend{name: "hyperv"}
+		cfg.virtioFS = []VirtioFSMount{
+			{Tag: "workspace", HostPath: "/src"},
+			{Tag: "data", HostPath: "/data", ReadOnly: true},
+		}
+		vc := buildVMConfig(cfg)
+		assert.Equal(t, uint32(2048), vc.HVSocketNetPort)
+		require.Len(t, vc.VirtioFSMounts, 2)
+		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "workspace", FSType: "9p"}, vc.VirtioFSMounts[0])
+		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "data", FSType: "9p", ReadOnly: true}, vc.VirtioFSMounts[1])
+
+		cfg.netProvider = &endpointNetProvider{
+			endpoint: hypervisor.NetEndpoint{
+				Type: hypervisor.NetEndpointHVSocket,
+				Path: "00000801-facb-11e6-bd58-64006a7986d3",
+			},
+		}
+		vc = buildVMConfig(cfg)
+		assert.Equal(t, uint32(2049), vc.HVSocketNetPort)
+	})
+
+	t.Run("hyperv backend auto-wires hosted network provider and rejects rootfs share", func(t *testing.T) {
+		t.Parallel()
+		cfg := defaultConfig()
+		cfg.backend = &namedMockBackend{name: "hyperv"}
+		wireDefaultProvider(cfg)
+		assert.NotNil(t, cfg.netProvider)
+
+		cfg.rootfsShare = "rootfs"
+		require.ErrorContains(t, validateRootFSShare(cfg), "not supported by the hyperv backend")
+	})
 }
 
 // --- Mock types for Run() tests ---
@@ -199,6 +240,13 @@ type mockBackend struct {
 }
 
 func (m *mockBackend) Name() string { return "mock" }
+
+type namedMockBackend struct {
+	mockBackend
+	name string
+}
+
+func (m *namedMockBackend) Name() string { return m.name }
 
 func (m *mockBackend) PrepareRootFS(_ context.Context, rootfsPath string, _ hypervisor.InitConfig) (string, error) {
 	if m.prepareErr != nil {
@@ -416,6 +464,28 @@ func TestRun_Success(t *testing.T) {
 	assert.Equal(t, "test:latest", loaded.Image)
 	assert.Equal(t, uint32(2), loaded.CPUs)
 	assert.Equal(t, uint32(1024), loaded.MemoryMB)
+}
+
+func TestRun_UsesProviderEndpoint(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	rootfsDir := filepath.Join(dataDir, "rootfs")
+	require.NoError(t, os.MkdirAll(rootfsDir, 0o755))
+	wantEndpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointHVSocket, Path: "service-guid"}
+	provider := &endpointNetProvider{endpoint: wantEndpoint}
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+
+	vm, err := Run(context.Background(), "test:latest",
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithRootFSPath(rootfsDir),
+		WithNetProvider(provider),
+		WithBackend(backend),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vm.Stop(context.Background()) })
+	assert.Equal(t, wantEndpoint, backend.lastConfig.NetEndpoint)
 }
 
 func TestRun_WithRootFSPath_SkipsImagePull(t *testing.T) {
@@ -648,24 +718,6 @@ func TestEmptyRootDir_PreservesExistingEntries(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestEmptyRootDir_GuestPermissions(t *testing.T) {
-	oldMask := syscall.Umask(0o077)
-	defer syscall.Umask(oldMask)
-
-	dir := filepath.Join(t.TempDir(), "rootfs-work")
-	require.NoError(t, emptyRootDir(dir))
-	info, err := os.Stat(dir)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
-	buf := make([]byte, 256)
-	n, err := unix.Getxattr(dir, "user.containers.override_stat", buf)
-	if err == unix.ENOTSUP {
-		t.Skip("filesystem does not support xattrs")
-	}
-	require.NoError(t, err)
-	assert.Equal(t, "0:0:040755", string(buf[:n]))
 }
 
 func TestRun_RootFSShare_PreservesExistingStorage(t *testing.T) {

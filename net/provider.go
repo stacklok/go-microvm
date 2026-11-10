@@ -6,6 +6,7 @@ package net
 import (
 	"context"
 
+	"github.com/stacklok/go-microvm/hypervisor"
 	"github.com/stacklok/go-microvm/net/firewall"
 )
 
@@ -66,4 +67,11 @@ type Provider interface {
 
 	// Stop terminates the network provider and cleans up resources.
 	Stop()
+}
+
+// EndpointProvider is an optional extension to Provider for backends that
+// use non-Unix-socket network transports (e.g. Hyper-V sockets on Windows).
+type EndpointProvider interface {
+	Provider
+	Endpoint() hypervisor.NetEndpoint
 }

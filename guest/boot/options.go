@@ -21,6 +21,8 @@ type config struct {
 	workspaceUID        int
 	workspaceGID        int
 	workspaceReadOnly   bool
+	workspaceFSType     string
+	hvSocketNetPort     uint32
 	mountRetries        int
 	sshPort             int
 	sshKeysPath         string
@@ -44,6 +46,7 @@ func defaultConfig() *config {
 		workspaceTag:        "workspace",
 		workspaceUID:        1000,
 		workspaceGID:        1000,
+		workspaceFSType:     "virtiofs",
 		mountRetries:        5,
 		sshPort:             22,
 		sshKeysPath:         "/home/sandbox/.ssh/authorized_keys",
@@ -56,6 +59,16 @@ func defaultConfig() *config {
 		userGID:             1000,
 		lockdownRoot:        true,
 	}
+}
+
+// WithWorkspaceFSType selects virtiofs or 9p for the workspace mount.
+func WithWorkspaceFSType(fstype string) Option {
+	return optionFunc(func(c *config) { c.workspaceFSType = fstype })
+}
+
+// WithHVSocketNetwork starts the host-socket-to-TAP relay on the given port.
+func WithHVSocketNetwork(port uint32) Option {
+	return optionFunc(func(c *config) { c.hvSocketNetPort = port })
 }
 
 // WithWorkspace configures the virtiofs workspace mount.

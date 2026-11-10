@@ -8,6 +8,7 @@ package mount
 import (
 	"log/slog"
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +30,48 @@ func TestWorkspaceReturnsErrorForInvalidMount(t *testing.T) {
 	}
 	err := Workspace(slog.Default(), t.TempDir()+"/ws", "nonexistent-tag", 1000, 1000, 1, false)
 	assert.Error(t, err)
+}
+
+func TestWorkspaceMountEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		fstype   string
+		readOnly bool
+		wantData string
+	}{
+		{name: "virtiofs", fstype: "virtiofs"},
+		{name: "read-only virtiofs", fstype: "virtiofs", readOnly: true},
+		{name: "9p", fstype: "9p", wantData: "trans=virtio,version=9p2000.L,msize=524288"},
+		{name: "read-only 9p", fstype: "9p", readOnly: true, wantData: "trans=virtio,version=9p2000.L,msize=524288,ro"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			entry := workspaceMountEntry("/workspace", "workspace", tt.fstype, tt.readOnly)
+			assert.Equal(t, "workspace", entry.source)
+			assert.Equal(t, "/workspace", entry.target)
+			assert.Equal(t, tt.fstype, entry.fstype)
+			assert.Equal(t, tt.wantData, entry.data)
+			assert.Equal(t, tt.readOnly, entry.flags&syscall.MS_RDONLY != 0)
+		})
+	}
+
+	t.Run("plan9 vsock trans=fd entry", func(t *testing.T) {
+		t.Parallel()
+		entry := plan9VsockMountEntry("/workspace", "workspace", 7, false)
+		assert.Equal(t, "workspace", entry.source)
+		assert.Equal(t, "/workspace", entry.target)
+		assert.Equal(t, "9p", entry.fstype)
+		assert.Equal(t, "trans=fd,rfdno=7,wfdno=7,msize=524288,version=9p2000.L,aname=workspace", entry.data)
+		assert.Zero(t, entry.flags&syscall.MS_RDONLY)
+
+		roEntry := plan9VsockMountEntry("/workspace", "workspace", 7, true)
+		assert.Equal(t, "trans=fd,rfdno=7,wfdno=7,msize=524288,version=9p2000.L,aname=workspace,noload,ro", roEntry.data)
+		assert.NotZero(t, roEntry.flags&syscall.MS_RDONLY)
+	})
 }
 
 func TestEssentialMounts(t *testing.T) {
