@@ -28,7 +28,7 @@ func defaultProcessAlive(pid int) bool {
 }
 
 func defaultProcessIsExpected(pid int) bool {
-	return procutil.IsExpectedProcess(pid, "")
+	return procutil.IsExpectedProcess(pid, "go-microvm-runner")
 }
 
 func defaultGuestMountFSType() string {

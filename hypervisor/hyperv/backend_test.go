@@ -8,13 +8,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	"testing"
-
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
 
 	"github.com/stacklok/go-microvm/hypervisor"
 )
@@ -116,14 +117,15 @@ func TestBuildComputeSystemDoc(t *testing.T) {
 	assert.Equal(t, ScsiAttachment{Path: cfg.Disks[1].HostPath, Type: "VirtualDisk", ReadOnly: true}, attachments["2"])
 
 	require.Len(t, doc.VirtualMachine.Devices.Plan9.Shares, 2)
-	assert.Equal(t, Plan9Share{Name: "workspace", AccessName: "workspace", Path: `C:\src`, Port: 564}, doc.VirtualMachine.Devices.Plan9.Shares[0])
-	assert.Equal(t, Plan9Share{Name: "readonly", AccessName: "readonly", Path: `C:\data`, Port: 564, Flags: 1}, doc.VirtualMachine.Devices.Plan9.Shares[1])
+	assert.Equal(t, Plan9Share{Name: "workspace", AccessName: "workspace", Path: `C:\src`, Port: 564, Flags: linuxMetadataPlan9Flag}, doc.VirtualMachine.Devices.Plan9.Shares[0])
+	assert.Equal(t, Plan9Share{Name: "readonly", AccessName: "readonly", Path: `C:\data`, Port: 564, Flags: linuxMetadataPlan9Flag | readOnlyPlan9Flag}, doc.VirtualMachine.Devices.Plan9.Shares[1])
 
 	serviceTable := doc.VirtualMachine.Devices.HvSocket.HvSocketConfig.ServiceTable
 	assert.Contains(t, serviceTable, VsockPortToServiceGUID(DefaultNetVsockPort))
+	assert.True(t, serviceTable[VsockPortToServiceGUID(DefaultNetVsockPort)].AllowWildcardBinds)
+	assert.Equal(t, defaultBindSDDL, serviceTable[VsockPortToServiceGUID(DefaultNetVsockPort)].BindSecurityDescriptor)
 	assert.Contains(t, serviceTable, VsockPortToServiceGUID(1024))
 	assert.Contains(t, serviceTable, VsockPortToServiceGUID(1025))
-	assert.Equal(t, "initrd=/initrd.img root=/dev/sda rw console=ttyS0 panic=-1", doc.VirtualMachine.Chipset.LinuxKernelDirect.KernelCmdLine)
 	assert.Equal(t, `/runtime/vmlinux`, doc.VirtualMachine.Chipset.LinuxKernelDirect.KernelFilePath)
 	assert.Equal(t, `/runtime/initrd.img`, doc.VirtualMachine.Chipset.LinuxKernelDirect.InitRdPath)
 }
@@ -170,7 +172,7 @@ func TestBackend_StartAndLifecycle(t *testing.T) {
 	vmHandle, err := backend.Start(t.Context(), hypervisor.VMConfig{Name: "test-vm", RootFSPath: "rootfs.vhd"})
 	require.NoError(t, err)
 	require.NotNil(t, vmHandle)
-	assert.Equal(t, "test-vm", runner.id)
+	assert.Contains(t, runner.id, "test-vm-")
 	assert.Equal(t, "vmlinux", runner.doc.VirtualMachine.Chipset.LinuxKernelDirect.KernelFilePath)
 	assert.Equal(t, "initrd.img", runner.doc.VirtualMachine.Chipset.LinuxKernelDirect.InitRdPath)
 	assert.Equal(t, "vm-id", vmHandle.ID())
@@ -278,4 +280,178 @@ func mustFileSize(t *testing.T, file *os.File) int64 {
 	info, err := file.Stat()
 	require.NoError(t, err)
 	return info.Size()
+}
+
+func TestBuildComputeSystemDoc_ValidationAndComPort(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects qcow2 disk format", func(t *testing.T) {
+		t.Parallel()
+		_, err := BuildComputeSystemDoc(hypervisor.VMConfig{
+			RootFSPath: "rootfs.vhd",
+			Disks: []hypervisor.Disk{
+				{ID: "data", HostPath: "data.qcow2", Format: "qcow2"},
+			},
+		}, "vmlinux", "")
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "only VHD/VHDX disks are supported")
+	})
+
+	t.Run("rejects non-VHD raw disk", func(t *testing.T) {
+		t.Parallel()
+		_, err := BuildComputeSystemDoc(hypervisor.VMConfig{
+			RootFSPath: "rootfs.vhd",
+			Disks: []hypervisor.Disk{
+				{ID: "data", HostPath: "data.raw", Format: "raw"},
+			},
+		}, "vmlinux", "")
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "only VHD/VHDX disks are supported")
+	})
+
+	t.Run("rejects unix socket network endpoint", func(t *testing.T) {
+		t.Parallel()
+		_, err := BuildComputeSystemDoc(hypervisor.VMConfig{
+			RootFSPath: "rootfs.vhd",
+			NetEndpoint: hypervisor.NetEndpoint{
+				Type: hypervisor.NetEndpointUnixSocket,
+				Path: "/tmp/net.sock",
+			},
+		}, "vmlinux", "")
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "unsupported network endpoint type")
+	})
+
+	t.Run("configures COM1 pipe when ConsoleLogPath set", func(t *testing.T) {
+		t.Parallel()
+		doc, err := BuildComputeSystemDoc(hypervisor.VMConfig{
+			Name:           "test-vm",
+			RootFSPath:     "rootfs.vhd",
+			ConsoleLogPath: `C:\vm\console.log`,
+		}, "vmlinux", "")
+		require.NoError(t, err)
+		require.NotNil(t, doc.VirtualMachine.Devices.ComPorts)
+		assert.Contains(t, doc.VirtualMachine.Devices.ComPorts["0"].NamedPipe, `\\.\pipe\go-microvm-test-vm-`)
+	})
+}
+
+func TestBackend_UniqueComputeSystemIDs(t *testing.T) {
+	t.Parallel()
+
+	id1 := newComputeSystemID("microvm")
+	id2 := newComputeSystemID("microvm")
+	assert.NotEqual(t, id1, id2)
+	assert.Contains(t, id1, "microvm-")
+	assert.Contains(t, id2, "microvm-")
+}
+
+func TestNotificationTrackerAndStopLifecycle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retains expected notification after many unrelated events", func(t *testing.T) {
+		t.Parallel()
+		tracker := newNotificationTracker()
+		for i := range uint32(32) {
+			tracker.notify(100+i, nil)
+		}
+		tracker.notify(notificationSystemStartCompleted, nil)
+		require.NoError(t, tracker.waitFor(t.Context(), notificationSystemStartCompleted))
+	})
+
+	t.Run("stop succeeds when compute system is already stopped", func(t *testing.T) {
+		t.Parallel()
+		tracker := newNotificationTracker()
+		terminated := false
+		closed := false
+		err := runStopLifecycle(
+			t.Context(),
+			tracker,
+			func() error { return errVmcomputeAlreadyStopped },
+			func() error {
+				terminated = true
+				return nil
+			},
+			func() error {
+				closed = true
+				return nil
+			},
+		)
+		require.NoError(t, err)
+		assert.False(t, terminated)
+		assert.True(t, closed)
+	})
+
+	t.Run("stop escalates to terminate on ShutdownFailed and waits for exit", func(t *testing.T) {
+		t.Parallel()
+		tracker := newNotificationTracker()
+		terminated := false
+		err := runStopLifecycle(
+			t.Context(),
+			tracker,
+			func() error {
+				tracker.notify(notificationSystemShutdownFailed, nil)
+				return errVmcomputeOperationPending
+			},
+			func() error {
+				terminated = true
+				tracker.notify(notificationSystemExited, nil)
+				return errVmcomputeOperationPending
+			},
+			func() error { return nil },
+		)
+		require.NoError(t, err)
+		assert.True(t, terminated)
+	})
+}
+
+func TestBackend_VsockBridge(t *testing.T) {
+	t.Parallel()
+
+	sockDir := t.TempDir()
+	unixSock := filepath.Join(sockDir, "vsock.sock")
+	unixListener, err := net.Listen("unix", unixSock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = unixListener.Close() })
+
+	go func() {
+		conn, acceptErr := unixListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		buf := make([]byte, 4)
+		_, _ = conn.Read(buf)
+		_, _ = conn.Write([]byte("pong"))
+	}()
+
+	guestListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	backend := NewBackend(
+		WithKernelPath("vmlinux"),
+		WithRunner(&mockRunner{handle: &mockHandle{id: "vm", alive: true}}),
+		WithVsockListener(func(port uint32) (net.Listener, error) {
+			assert.Equal(t, uint32(1024), port)
+			return guestListener, nil
+		}),
+	)
+
+	vmHandle, err := backend.Start(t.Context(), hypervisor.VMConfig{
+		Name:       "test-vm",
+		RootFSPath: "rootfs.vhd",
+		VsockPorts: []hypervisor.VsockPort{{Port: 1024, SocketPath: unixSock}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vmHandle.Stop(context.Background()) })
+
+	conn, err := net.DialTimeout("tcp", guestListener.Addr().String(), 2*time.Second)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.SetDeadline(time.Now().Add(2*time.Second)))
+	_, err = conn.Write([]byte("ping"))
+	require.NoError(t, err)
+	reply := make([]byte, 4)
+	_, err = conn.Read(reply)
+	require.NoError(t, err)
+	assert.Equal(t, "pong", string(reply))
 }

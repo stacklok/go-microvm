@@ -12,7 +12,10 @@ import (
 
 // PrepareOwnership reports that override_stat preparation is unavailable.
 func PrepareOwnership(_ context.Context, _, _ string, _, _ uint32, _ bool) (PreparationReport, error) {
-	return PreparationReport{}, errors.New("virtiofs ownership preparation is unsupported on this platform")
+	err := errors.New("virtiofs ownership preparation is unsupported on this platform")
+	var report PreparationReport
+	report.add(err)
+	return report, err
 }
 
 // SetOverrideStatTree is a no-op on platforms without xattr support.

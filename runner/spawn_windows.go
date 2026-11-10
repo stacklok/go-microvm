@@ -22,7 +22,7 @@ func platformProcessDeps() processDeps {
 			if err != nil {
 				return fmt.Errorf("find process %d: %w", pid, err)
 			}
-			if signal == syscall.SIGKILL {
+			if signal == syscall.SIGKILL || signal == syscall.SIGTERM {
 				return process.Kill()
 			}
 			return process.Signal(signal)

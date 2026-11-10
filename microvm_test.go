@@ -194,6 +194,15 @@ func TestBuildVMConfig(t *testing.T) {
 		require.Len(t, vc.VirtioFSMounts, 2)
 		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "workspace", FSType: "9p"}, vc.VirtioFSMounts[0])
 		assert.Equal(t, vmconfig.VirtioFSMountInfo{Tag: "data", FSType: "9p", ReadOnly: true}, vc.VirtioFSMounts[1])
+
+		cfg.netProvider = &endpointNetProvider{
+			endpoint: hypervisor.NetEndpoint{
+				Type: hypervisor.NetEndpointHVSocket,
+				Path: "00000801-facb-11e6-bd58-64006a7986d3",
+			},
+		}
+		vc = buildVMConfig(cfg)
+		assert.Equal(t, uint32(2049), vc.HVSocketNetPort)
 	})
 
 	t.Run("hyperv backend auto-wires hosted network provider and rejects rootfs share", func(t *testing.T) {

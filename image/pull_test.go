@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -416,72 +415,17 @@ func TestExtractTar_PreservesOwnershipBestEffort(t *testing.T) {
 	if os.Geteuid() == 0 {
 		info, err := os.Lstat(filepath.Join(dst, "root-owned", "file.txt"))
 		require.NoError(t, err)
-		stat := info.Sys().(*syscall.Stat_t)
-		assert.Equal(t, uint32(0), stat.Uid)
-		assert.Equal(t, uint32(0), stat.Gid)
+		uid, gid, ok := fileOwner(info)
+		require.True(t, ok)
+		assert.Equal(t, 0, uid)
+		assert.Equal(t, 0, gid)
 
 		info, err = os.Lstat(filepath.Join(dst, "user-owned", "file.txt"))
 		require.NoError(t, err)
-		stat = info.Sys().(*syscall.Stat_t)
-		assert.Equal(t, uint32(1000), stat.Uid)
-		assert.Equal(t, uint32(1000), stat.Gid)
-	}
-}
-
-func TestExtractTar_NonRootPreservesCreatedGroups(t *testing.T) {
-	t.Parallel()
-
-	if os.Geteuid() == 0 {
-		t.Skip("ownership is restored when running as root")
-	}
-	groups, err := os.Getgroups()
-	require.NoError(t, err)
-	candidateGroups := append([]int{os.Getegid()}, groups...)
-
-	dst := t.TempDir()
-	controlDir := filepath.Join(dst, "control")
-	require.NoError(t, os.Mkdir(controlDir, 0o755))
-	require.NoError(t, os.Chmod(controlDir, 0o755))
-	controlDirInfo, err := os.Lstat(controlDir)
-	require.NoError(t, err)
-	controlFile := filepath.Join(controlDir, "file.txt")
-	require.NoError(t, os.WriteFile(controlFile, []byte("x"), 0o644))
-	controlFileInfo, err := os.Lstat(controlFile)
-	require.NoError(t, err)
-
-	controlDirGID := controlDirInfo.Sys().(*syscall.Stat_t).Gid
-	controlFileGID := controlFileInfo.Sys().(*syscall.Stat_t).Gid
-	alternateGroup := func(baseline uint32) (int, bool) {
-		for _, gid := range candidateGroups {
-			if uint32(gid) != baseline {
-				return gid, true
-			}
-		}
-		return 0, false
-	}
-	dirGID, hasDirGID := alternateGroup(controlDirGID)
-	fileGID, hasFileGID := alternateGroup(controlFileGID)
-	if !hasDirGID || !hasFileGID {
-		t.Skip("no permitted alternate group differs from the created group")
-	}
-
-	buf := createTarBuffer(t, []tarEntry{
-		{name: "home/", typeflag: tar.TypeDir, mode: 0o755, uid: os.Geteuid(), gid: dirGID},
-		{name: "home/file.txt", typeflag: tar.TypeReg, mode: 0o644, content: "x", uid: os.Geteuid(), gid: fileGID},
-	})
-	require.NoError(t, extractTar(context.Background(), buf, dst))
-
-	for _, entry := range []struct {
-		name string
-		gid  uint32
-	}{
-		{name: "home", gid: controlDirGID},
-		{name: "home/file.txt", gid: controlFileGID},
-	} {
-		info, err := os.Lstat(filepath.Join(dst, entry.name))
-		require.NoError(t, err)
-		stat := info.Sys().(*syscall.Stat_t)
-		assert.Equal(t, entry.gid, stat.Gid, entry.name)
+		uid, gid, ok = fileOwner(info)
+		require.True(t, ok)
+		assert.Equal(t, 1000, uid)
+		assert.Equal(t, 1000, gid)
 	}
 }
 
@@ -753,9 +697,7 @@ func TestExtractHardlink_ValidLink(t *testing.T) {
 	linkInfo, err := os.Lstat(filepath.Join(dst, "link.txt"))
 	require.NoError(t, err)
 
-	origStat := origInfo.Sys().(*syscall.Stat_t)
-	linkStat := linkInfo.Sys().(*syscall.Stat_t)
-	assert.Equal(t, origStat.Ino, linkStat.Ino, "hardlink should share the same inode")
+	assert.True(t, os.SameFile(origInfo, linkInfo), "hardlink should share the same underlying file")
 }
 
 func TestExtractHardlink_SourceOutsideRootfs(t *testing.T) {

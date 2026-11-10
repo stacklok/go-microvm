@@ -18,9 +18,12 @@ const (
 	// LinuxBootDefaultCmdLine is the kernel command line used without an initrd.
 	LinuxBootDefaultCmdLine = "root=/dev/sda rw console=ttyS0 panic=-1"
 
-	defaultOwner            = "go-microvm"
-	defaultPlan9Port  int32 = 564
-	readOnlyPlan9Flag int32 = 1
+	defaultOwner                 = "go-microvm"
+	defaultPlan9Port       int32 = 564
+	readOnlyPlan9Flag      int32 = 0x00000001
+	linuxMetadataPlan9Flag int32 = 0x00000004
+	defaultBindSDDL              = "D:P(A;;FA;;;WD)"
+	defaultConnectSDDL           = "D:P(A;;FA;;;SY)(A;;FA;;;BA)"
 )
 
 // SchemaVersion identifies an HCS schema version.
@@ -164,6 +167,12 @@ func BuildComputeSystemDoc(
 	attachments := make(map[string]ScsiAttachment, len(cfg.Disks)+1)
 	attachments["0"] = ScsiAttachment{Path: cfg.RootFSPath, Type: "VirtualDisk"}
 	for index, disk := range cfg.Disks {
+		if !isSupportedHyperVDisk(disk) {
+			return nil, fmt.Errorf(
+				"hyperv backend: disk %q (%s) has unsupported format %q; only VHD/VHDX disks are supported",
+				disk.ID, disk.HostPath, disk.Format,
+			)
+		}
 		attachments[strconv.Itoa(index+1)] = ScsiAttachment{
 			Path:     disk.HostPath,
 			Type:     "VirtualDisk",
@@ -176,12 +185,17 @@ func BuildComputeSystemDoc(
 			"0": {Attachments: attachments},
 		},
 	}
+	if cfg.ConsoleLogPath != "" {
+		devices.ComPorts = map[string]ComPort{
+			"0": {NamedPipe: consolePipeName(cfg.Name, cfg.ConsoleLogPath)},
+		}
+	}
 	if len(cfg.FilesystemMounts) > 0 {
 		shares := make([]Plan9Share, 0, len(cfg.FilesystemMounts))
 		for _, mount := range cfg.FilesystemMounts {
-			flags := int32(0)
+			flags := linuxMetadataPlan9Flag
 			if mount.ReadOnly {
-				flags = readOnlyPlan9Flag
+				flags |= readOnlyPlan9Flag
 			}
 			shares = append(shares, Plan9Share{
 				Name:       mount.Tag,
@@ -194,23 +208,34 @@ func BuildComputeSystemDoc(
 		devices.Plan9 = &Plan9{Shares: shares}
 	}
 
+	if cfg.NetEndpoint.Type != hypervisor.NetEndpointNone && cfg.NetEndpoint.Type != hypervisor.NetEndpointHVSocket {
+		return nil, fmt.Errorf(
+			"hyperv backend: unsupported network endpoint type %d (expected NetEndpointHVSocket)",
+			cfg.NetEndpoint.Type,
+		)
+	}
+
+	defaultServiceCfg := HvSocketServiceConfig{
+		AllowWildcardBinds:        true,
+		BindSecurityDescriptor:    defaultBindSDDL,
+		ConnectSecurityDescriptor: defaultConnectSDDL,
+	}
 	serviceTable := make(map[string]HvSocketServiceConfig, len(cfg.VsockPorts)+1)
 	if cfg.NetEndpoint.Type == hypervisor.NetEndpointHVSocket {
-		serviceTable[netEndpointServiceGUID(cfg.NetEndpoint.Path)] = HvSocketServiceConfig{}
+		serviceTable[netEndpointServiceGUID(cfg.NetEndpoint.Path)] = defaultServiceCfg
 	}
 	for _, port := range cfg.VsockPorts {
-		serviceTable[VsockPortToServiceGUID(port.Port)] = HvSocketServiceConfig{}
+		serviceTable[VsockPortToServiceGUID(port.Port)] = defaultServiceCfg
 	}
 	if len(serviceTable) > 0 {
 		devices.HvSocket = &HvSocket{
 			HvSocketConfig: &HvSocketSystemConfig{
-				DefaultBindSecurityDescriptor:    "D:P(A;;FA;;;SY)(A;;FA;;;BA)",
-				DefaultConnectSecurityDescriptor: "D:P(A;;FA;;;SY)(A;;FA;;;BA)",
+				DefaultBindSecurityDescriptor:    defaultBindSDDL,
+				DefaultConnectSecurityDescriptor: defaultConnectSDDL,
 				ServiceTable:                     serviceTable,
 			},
 		}
 	}
-
 	kernelCmdLine := LinuxBootDefaultCmdLine
 	if initrdPath != "" {
 		kernelCmdLine = "initrd=/" + filepath.Base(initrdPath) + " " + LinuxBootDefaultCmdLine
@@ -246,4 +271,29 @@ func netEndpointServiceGUID(path string) string {
 		return VsockPortToServiceGUID(uint32(port))
 	}
 	return VsockPortToServiceGUID(DefaultNetVsockPort)
+}
+
+func isSupportedHyperVDisk(disk hypervisor.Disk) bool {
+	switch strings.ToLower(strings.TrimSpace(disk.Format)) {
+	case "vhd", "vhdx":
+		return true
+	case "", "raw":
+		ext := strings.ToLower(filepath.Ext(disk.HostPath))
+		return ext == ".vhd" || ext == ".vhdx"
+	default:
+		return false
+	}
+}
+
+func consolePipeName(vmName, consoleLogPath string) string {
+	base := strings.TrimSpace(vmName)
+	if base == "" {
+		base = defaultOwner
+	}
+	sum := uint32(2166136261)
+	for i := range len(consoleLogPath) {
+		sum ^= uint32(consoleLogPath[i])
+		sum *= 16777619
+	}
+	return fmt.Sprintf(`\\.\pipe\go-microvm-%s-%08x-com1`, base, sum)
 }

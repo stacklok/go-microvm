@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/mdlayher/vsock"
 	"github.com/vishvananda/netlink"
@@ -63,6 +64,7 @@ func copyPacketsToStream(stream io.Writer, tap io.Reader) error {
 
 func copyStreamToPackets(stream io.Reader, tap io.Writer) error {
 	header := make([]byte, 4)
+	frame := make([]byte, maxEthernetFrameSize)
 	for {
 		if _, err := io.ReadFull(stream, header); err != nil {
 			return fmt.Errorf("read frame header: %w", err)
@@ -71,11 +73,11 @@ func copyStreamToPackets(stream io.Reader, tap io.Writer) error {
 		if size > maxEthernetFrameSize {
 			return fmt.Errorf("frame size %d exceeds maximum %d", size, maxEthernetFrameSize)
 		}
-		frame := make([]byte, size)
-		if _, err := io.ReadFull(stream, frame); err != nil {
+		payload := frame[:size]
+		if _, err := io.ReadFull(stream, payload); err != nil {
 			return fmt.Errorf("read frame payload: %w", err)
 		}
-		if err := writeFull(tap, frame); err != nil {
+		if err := writeFull(tap, payload); err != nil {
 			return fmt.Errorf("write TAP frame: %w", err)
 		}
 	}
@@ -105,11 +107,18 @@ func closeReadWriters(readWriters ...io.ReadWriter) {
 
 // DialVsockStream connects to a host vsock port.
 func DialVsockStream(port uint32) (net.Conn, error) {
-	conn, err := vsock.Dial(vsock.Host, port, nil)
-	if err != nil {
-		return nil, fmt.Errorf("dial host vsock port %d: %w", port, err)
+	var lastErr error
+	for attempt := range 20 {
+		conn, err := vsock.Dial(vsock.Host, port, nil)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if attempt < 19 {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
-	return conn, nil
+	return nil, fmt.Errorf("dial host vsock port %d: %w", port, lastErr)
 }
 
 // StartHVSocketTAP creates a TAP and starts a host-vsock frame relay.

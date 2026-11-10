@@ -5,6 +5,8 @@ package hyperv
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/stacklok/go-microvm/extract"
 	"github.com/stacklok/go-microvm/hypervisor"
+	"github.com/stacklok/go-microvm/image"
 	"github.com/stacklok/go-microvm/image/vhd"
 )
 
@@ -59,14 +62,20 @@ func WithCacheDir(dir string) Option {
 	return func(backend *Backend) { backend.cacheDir = dir }
 }
 
+// WithVsockListener sets the host listener factory for WithVsockPort bridges.
+func WithVsockListener(fn VsockListenerFunc) Option {
+	return func(backend *Backend) { backend.vsockListen = fn }
+}
+
 // Backend implements hypervisor.Backend using Hyper-V HCS v2.
 type Backend struct {
-	kernelPath string
-	initrdPath string
-	runner     Runner
-	vhdBuilder VHDBuilder
-	runtime    extract.Source
-	cacheDir   string
+	kernelPath  string
+	initrdPath  string
+	runner      Runner
+	vhdBuilder  VHDBuilder
+	runtime     extract.Source
+	cacheDir    string
+	vsockListen VsockListenerFunc
 }
 
 var _ hypervisor.Backend = (*Backend)(nil)
@@ -77,6 +86,7 @@ func NewBackend(opts ...Option) *Backend {
 		vhdBuilder: func(ctx context.Context, rootfsDir, outVHDPath string) error {
 			return vhd.BuildFromDir(ctx, rootfsDir, outVHDPath)
 		},
+		vsockListen: defaultVsockListener,
 	}
 	for _, option := range opts {
 		option(backend)
@@ -93,10 +103,14 @@ func (backend *Backend) PrepareRootFS(
 	rootfsPath string,
 	initCfg hypervisor.InitConfig,
 ) (string, error) {
-	if err := writeKrunConfig(rootfsPath, initCfg); err != nil {
+	kc := image.KrunConfig{
+		Cmd:        initCfg.Cmd,
+		Env:        initCfg.Env,
+		WorkingDir: initCfg.WorkingDir,
+	}
+	if err := kc.WriteTo(rootfsPath); err != nil {
 		return "", fmt.Errorf("write krun config: %w", err)
 	}
-
 	outputPath := filepath.Join(rootfsPath, rootVHDName)
 	if err := backend.vhdBuilder(ctx, rootfsPath, outputPath); err != nil {
 		return "", fmt.Errorf("build rootfs VHD: %w", err)
@@ -129,21 +143,40 @@ func (backend *Backend) Start(ctx context.Context, cfg hypervisor.VMConfig) (hyp
 		return nil, fmt.Errorf("build compute system document: %w", err)
 	}
 
+	bridge, err := startVsockBridges(ctx, cfg.VsockPorts, backend.vsockListen)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
 	runner := backend.runner
 	if runner == nil {
 		runner = defaultRunner{}
 	}
-	vmID := cfg.Name
-	if vmID == "" {
-		vmID = defaultOwner
-	}
+	vmID := newComputeSystemID(cfg.Name)
 	handle, err := runner.CreateAndStart(ctx, vmID, doc)
 	if err != nil {
+		if bridge != nil {
+			bridge.Close()
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("create and start compute system: %w", err)
 	}
-	return &vmHandle{handle: handle}, nil
+	return &vmHandle{handle: handle, bridge: bridge}, nil
+}
+
+func newComputeSystemID(name string) string {
+	base := name
+	if base == "" {
+		base = defaultOwner
+	}
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return base
+	}
+	return fmt.Sprintf("%s-%s", base, hex.EncodeToString(suffix[:]))
 }
 
 func (backend *Backend) validate() error {

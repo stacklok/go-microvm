@@ -4,15 +4,17 @@
 package vhd
 
 import (
+	"archive/tar"
 	"context"
-	"os"
-	"path/filepath"
-	"testing"
-
+	"errors"
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
 	"github.com/stacklok/go-microvm/internal/xattr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 func TestBuildFromDir(t *testing.T) {
@@ -43,7 +45,7 @@ func TestBuildFromDir(t *testing.T) {
 					[]byte(`{"args":["/usr/bin/tool"]}`),
 					0o644,
 				))
-				require.NoError(t, xattr.SetOverrideStat(toolPath, 123, 456, 0o4755))
+				require.NoError(t, xattr.SetOverrideStat(toolPath, 123, 456, os.ModeSetuid|0o755))
 			},
 		},
 	}
@@ -143,6 +145,44 @@ func TestBuildFromDir_CanceledContext(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 	_, statErr = os.Stat(vhdPath + ".tmp")
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestWriteTar_PreservesOverrideMetadataAndPosixSymlinks(t *testing.T) {
+	t.Parallel()
+
+	rootfsDir := t.TempDir()
+	binDir := filepath.Join(rootfsDir, "usr", "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0o755))
+	toolPath := filepath.Join(binDir, "sudo")
+	require.NoError(t, os.WriteFile(toolPath, []byte("binary"), 0o644))
+	require.NoError(t, xattr.SetOverrideStat(toolPath, 1000, 1001, os.ModeSetuid|0o755))
+	require.NoError(t, os.Symlink(`..\bin\sudo`, filepath.Join(binDir, "sudo-link")))
+
+	pr, pw := io.Pipe()
+	go func() {
+		_ = pw.CloseWithError(writeTar(t.Context(), pw, rootfsDir, "", ""))
+	}()
+
+	tr := tar.NewReader(pr)
+	headers := make(map[string]*tar.Header)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		headers[hdr.Name] = hdr
+	}
+
+	sudoHdr, ok := headers["usr/bin/sudo"]
+	require.True(t, ok)
+	assert.Equal(t, 1000, sudoHdr.Uid)
+	assert.Equal(t, 1001, sudoHdr.Gid)
+	assert.Equal(t, int64(0o4755), sudoHdr.Mode)
+
+	linkHdr, ok := headers["usr/bin/sudo-link"]
+	require.True(t, ok)
+	assert.Equal(t, "../bin/sudo", linkHdr.Linkname)
 }
 
 func assertValidVHD(t *testing.T, vhdPath string) {

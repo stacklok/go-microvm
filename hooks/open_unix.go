@@ -5,6 +5,11 @@
 
 package hooks
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+)
 
-const openNoFollowFlag = syscall.O_NOFOLLOW
+func openFileNoFollow(path string, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
+}

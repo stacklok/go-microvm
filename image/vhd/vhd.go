@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
+
+	"github.com/stacklok/go-microvm/internal/xattr"
 )
 
 const (
@@ -160,7 +162,8 @@ func writeTar(ctx context.Context, pipeWriter *io.PipeWriter, rootfsDir, outVHDP
 			if err != nil {
 				return fmt.Errorf("read symlink %q: %w", relPath, err)
 			}
-			if !filepath.IsAbs(linkTarget) && relativeSymlinkEscapes(rootfsDir, path, linkTarget) {
+			linkTarget = normalizeLinkTarget(linkTarget)
+			if !strings.HasPrefix(linkTarget, "/") && relativeSymlinkEscapes(rootfsDir, path, filepath.FromSlash(linkTarget)) {
 				return nil
 			}
 		}
@@ -206,7 +209,7 @@ func writeTar(ctx context.Context, pipeWriter *io.PipeWriter, rootfsDir, outVHDP
 }
 
 func setHeaderMetadata(path string, header *tar.Header, info fs.FileInfo, tarPath string) {
-	uid, gid, mode, ok := getOverrideStat(path)
+	uid, gid, mode, ok := xattr.GetOverrideStat(path)
 	if ok {
 		header.Uid = uid
 		header.Gid = gid
@@ -251,6 +254,10 @@ func relativeSymlinkEscapes(rootfsDir, symlinkPath, target string) bool {
 	resolved := filepath.Clean(filepath.Join(filepath.Dir(symlinkPath), target))
 	relPath, err := filepath.Rel(rootfsDir, resolved)
 	return err != nil || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator))
+}
+
+func normalizeLinkTarget(target string) string {
+	return strings.ReplaceAll(filepath.ToSlash(target), `\`, "/")
 }
 
 func samePath(left, right string) bool {

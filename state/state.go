@@ -61,6 +61,10 @@ type State struct {
 	// PID is the process ID of the VM runner, or 0 if not running.
 	PID int `json:"pid,omitempty"`
 
+	// VMID is the backend-specific identifier of the running VM (e.g. runner
+	// PID string on libkrun or compute system ID on Hyper-V).
+	VMID string `json:"vm_id,omitempty"`
+
 	// PIDStartTime records wall-clock time when PID was recorded. Used
 	// to disambiguate a recycled PID from the original runner in contexts
 	// where /proc/PID/exe comparison is unavailable (e.g. macOS) or as

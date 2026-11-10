@@ -14,7 +14,6 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 )
 
 func pullLayers(t *testing.T, cache *Cache, ref string, layers ...v1.Layer) string {
@@ -243,14 +242,6 @@ func TestCopyFileToDir_RefusesDirectory(t *testing.T) {
 	err := copyFileToDir(src, target, root, 0o644)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing to overwrite directory with file")
-}
-
-func overrideStat(t *testing.T, path string) string {
-	t.Helper()
-	buf := make([]byte, 256)
-	n, err := unix.Lgetxattr(path, "user.containers.override_stat", buf)
-	require.NoError(t, err)
-	return string(buf[:n])
 }
 
 // canCloneTree reports whether dir's file system clones directory trees,

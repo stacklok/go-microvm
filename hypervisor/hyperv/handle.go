@@ -11,10 +11,16 @@ import (
 
 type vmHandle struct {
 	handle Handle
+	bridge *vsockBridge
 }
 
 var _ hypervisor.VMHandle = (*vmHandle)(nil)
 
-func (h *vmHandle) Stop(ctx context.Context) error { return h.handle.Stop(ctx) }
-func (h *vmHandle) IsAlive() bool                  { return h.handle.IsAlive() }
-func (h *vmHandle) ID() string                     { return h.handle.ID() }
+func (h *vmHandle) Stop(ctx context.Context) error {
+	if h.bridge != nil {
+		h.bridge.Close()
+	}
+	return h.handle.Stop(ctx)
+}
+func (h *vmHandle) IsAlive() bool { return h.handle.IsAlive() }
+func (h *vmHandle) ID() string    { return h.handle.ID() }

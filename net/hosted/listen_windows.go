@@ -7,11 +7,8 @@ package hosted
 
 import (
 	"fmt"
-	"net"
-	"os"
-	"path/filepath"
-
 	"github.com/linuxkit/virtsock/pkg/hvsock"
+	"net"
 
 	"github.com/stacklok/go-microvm/hypervisor"
 )
@@ -21,7 +18,8 @@ const (
 	hvSocketNetPortCount = 64
 )
 
-func defaultListener(logDir string) (net.Listener, hypervisor.NetEndpoint, func(), error) {
+func defaultListener(_ string) (net.Listener, hypervisor.NetEndpoint, func(), error) {
+	var lastErr error
 	for offset := range uint32(hvSocketNetPortCount) {
 		port := uint32(hvSocketNetPortBase) + offset
 		serviceID, err := hvsock.GUIDFromString(fmt.Sprintf("%08x-facb-11e6-bd58-64006a7986d3", port))
@@ -33,19 +31,12 @@ func defaultListener(logDir string) (net.Listener, hypervisor.NetEndpoint, func(
 			endpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointHVSocket, Path: serviceID.String()}
 			return listener, endpoint, func() {}, nil
 		}
+		lastErr = err
 	}
-
-	sockPath := filepath.Join(logDir, socketName)
-	if removeErr := os.Remove(sockPath); removeErr != nil && !os.IsNotExist(removeErr) {
-		return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf("remove stale fallback socket: %w", removeErr)
-	}
-	listener, err := net.Listen("unix", sockPath)
-	if err != nil {
-		return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf("listen on fallback unix socket: %w", err)
-	}
-	cleanup := func() {
-		_ = os.Remove(sockPath)
-	}
-	endpoint := hypervisor.NetEndpoint{Type: hypervisor.NetEndpointUnixSocket, Path: sockPath}
-	return listener, endpoint, cleanup, nil
+	return nil, hypervisor.NetEndpoint{}, nil, fmt.Errorf(
+		"listen on Hyper-V socket ports %d-%d: %w",
+		hvSocketNetPortBase,
+		hvSocketNetPortBase+hvSocketNetPortCount-1,
+		lastErr,
+	)
 }

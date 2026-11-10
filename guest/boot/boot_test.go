@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stacklok/go-microvm/guest/vmconfig"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -45,6 +47,24 @@ func TestWithHVSocketNetwork(t *testing.T) {
 	cfg := defaultConfig()
 	WithHVSocketNetwork(2048).apply(cfg)
 	assert.Equal(t, uint32(2048), cfg.hvSocketNetPort)
+}
+
+func TestApplyVMConfig(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	applyVMConfig(cfg, vmconfig.Config{
+		TmpSizeMiB:      512,
+		HVSocketNetPort: 2049,
+		DisableSSH:      true,
+		VirtioFSMounts: []vmconfig.VirtioFSMountInfo{
+			{Tag: "workspace", FSType: "9p", ReadOnly: true},
+		},
+	})
+	assert.Equal(t, uint32(512), cfg.tmpSizeMiB)
+	assert.Equal(t, uint32(2049), cfg.hvSocketNetPort)
+	assert.True(t, cfg.disableSSH)
+	assert.Equal(t, "9p", cfg.workspaceFSType)
+	assert.True(t, cfg.workspaceReadOnly)
 }
 
 func TestWithWorkspaceReadOnly(t *testing.T) {

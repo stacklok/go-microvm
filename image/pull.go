@@ -560,15 +560,11 @@ func applyLayerToDir(layerDir, dst string) error {
 
 // copyOwnership copies the uid/gid from src to dst using best-effort lchown.
 func copyOwnership(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return nil
+	if info, err := os.Lstat(src); err == nil {
+		if uid, gid, ok := fileOwner(info); ok {
+			bestEffortLchown(dst, uid, gid)
+		}
 	}
-	uid, gid, ok := fileOwner(info)
-	if !ok {
-		return nil
-	}
-	bestEffortLchown(dst, uid, gid)
 	return xattr.CopyOverrideStat(src, dst)
 }
 

@@ -19,15 +19,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const (
-	errVmcomputeOperationPending syscall.Errno = 0xC0370103
-
-	notificationSystemExited          uint32 = 0x00000001
-	notificationSystemCreateCompleted uint32 = 0x00000002
-	notificationSystemStartCompleted  uint32 = 0x00000003
-	notificationServiceDisconnect     uint32 = 0x01000000
-)
-
 var (
 	vmcomputeDLL = windows.NewLazySystemDLL("vmcompute.dll")
 	ole32DLL     = windows.NewLazySystemDLL("ole32.dll")
@@ -40,6 +31,8 @@ var (
 	hcsCloseComputeSystem              = vmcomputeDLL.NewProc("HcsCloseComputeSystem")
 	hcsRegisterComputeSystemCallback   = vmcomputeDLL.NewProc("HcsRegisterComputeSystemCallback")
 	hcsUnregisterComputeSystemCallback = vmcomputeDLL.NewProc("HcsUnregisterComputeSystemCallback")
+	hcsGrantVmAccess                   = vmcomputeDLL.NewProc("HcsGrantVmAccess")
+	legacyGrantVmAccess                = vmcomputeDLL.NewProc("GrantVmAccess")
 	coTaskMemFree                      = ole32DLL.NewProc("CoTaskMemFree")
 
 	callbackAddress  = syscall.NewCallback(computeSystemCallback)
@@ -47,18 +40,13 @@ var (
 	callbackRegistry sync.Map
 )
 
-type hcsNotification struct {
-	typeID uint32
-	err    error
-}
-
-type callbackState struct {
-	notifications chan hcsNotification
-}
-
 type defaultRunner struct{}
 
 func (defaultRunner) CreateAndStart(ctx context.Context, id string, doc *ComputeSystem) (Handle, error) {
+	if err := grantDocFileAccess(id, doc); err != nil {
+		return nil, err
+	}
+
 	document, err := json.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("marshal compute system document: %w", err)
@@ -104,19 +92,19 @@ func (defaultRunner) CreateAndStart(ctx context.Context, id string, doc *Compute
 	}()
 
 	if errors.Is(createErr, errVmcomputeOperationPending) {
-		if err := handle.waitFor(ctx, notificationSystemCreateCompleted); err != nil {
+		if err := handle.tracker.waitFor(ctx, notificationSystemCreateCompleted); err != nil {
 			_ = terminateSystem(system)
 			return nil, fmt.Errorf("wait for compute system creation: %w", err)
 		}
 	}
 
-	startErr := callWithResult(hcsStartComputeSystem, uintptr(system))
+	startErr := callSystemOperation(hcsStartComputeSystem, system)
 	if startErr != nil && !errors.Is(startErr, errVmcomputeOperationPending) {
 		_ = terminateSystem(system)
 		return nil, fmt.Errorf("HcsStartComputeSystem: %w", startErr)
 	}
 	if errors.Is(startErr, errVmcomputeOperationPending) {
-		if err := handle.waitFor(ctx, notificationSystemStartCompleted); err != nil {
+		if err := handle.tracker.waitFor(ctx, notificationSystemStartCompleted); err != nil {
 			_ = terminateSystem(system)
 			return nil, fmt.Errorf("wait for compute system start: %w", err)
 		}
@@ -132,7 +120,7 @@ type vmcomputeHandle struct {
 	system          windows.Handle
 	callbackHandle  windows.Handle
 	callbackContext uintptr
-	callbackState   *callbackState
+	tracker         *notificationTracker
 }
 
 func (handle *vmcomputeHandle) Stop(ctx context.Context) error {
@@ -142,23 +130,13 @@ func (handle *vmcomputeHandle) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	shutdownErr := callWithResult(hcsShutdownComputeSystem, uintptr(handle.system))
-	if shutdownErr == nil || errors.Is(shutdownErr, errVmcomputeOperationPending) {
-		shutdownErr = handle.waitFor(ctx, notificationSystemExited)
-	}
-	if shutdownErr != nil {
-		if err := terminateSystem(handle.system); err != nil && !errors.Is(err, errVmcomputeOperationPending) {
-			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("HcsTerminateComputeSystem: %w", err))
-		}
-	}
-	closeErr := handle.closeLocked()
-	if shutdownErr != nil {
-		if closeErr != nil {
-			return errors.Join(shutdownErr, closeErr)
-		}
-		return shutdownErr
-	}
-	return closeErr
+	return runStopLifecycle(
+		ctx,
+		handle.tracker,
+		func() error { return callSystemOperation(hcsShutdownComputeSystem, handle.system) },
+		func() error { return terminateSystem(handle.system) },
+		handle.closeLocked,
+	)
 }
 
 func (handle *vmcomputeHandle) IsAlive() bool {
@@ -203,9 +181,9 @@ func (handle *vmcomputeHandle) IsAlive() bool {
 func (handle *vmcomputeHandle) ID() string { return handle.id }
 
 func (handle *vmcomputeHandle) registerCallback() error {
-	state := &callbackState{notifications: make(chan hcsNotification, 8)}
+	tracker := newNotificationTracker()
 	contextID := callbackSequence.Add(1)
-	callbackRegistry.Store(contextID, state)
+	callbackRegistry.Store(contextID, tracker)
 
 	var callbackHandle windows.Handle
 	result, _, _ := hcsRegisterComputeSystemCallback.Call(
@@ -220,30 +198,8 @@ func (handle *vmcomputeHandle) registerCallback() error {
 	}
 	handle.callbackHandle = callbackHandle
 	handle.callbackContext = contextID
-	handle.callbackState = state
+	handle.tracker = tracker
 	return nil
-}
-
-func (handle *vmcomputeHandle) waitFor(ctx context.Context, expected uint32) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case notification := <-handle.callbackState.notifications:
-			if notification.typeID == notificationServiceDisconnect {
-				return fmt.Errorf("vmcompute service disconnected")
-			}
-			if notification.typeID == notificationSystemExited && expected != notificationSystemExited {
-				if notification.err != nil {
-					return notification.err
-				}
-				return fmt.Errorf("compute system exited before operation completed")
-			}
-			if notification.typeID == expected {
-				return notification.err
-			}
-		}
-	}
 }
 
 func (handle *vmcomputeHandle) close() error {
@@ -278,23 +234,22 @@ func computeSystemCallback(notificationType, contextID, status, _ uintptr) uintp
 	if !ok {
 		return 0
 	}
-	state := value.(*callbackState)
-	notification := hcsNotification{typeID: uint32(notificationType), err: hresultError(status)}
-	select {
-	case state.notifications <- notification:
-	default:
-	}
+	tracker := value.(*notificationTracker)
+	tracker.notify(uint32(notificationType), hresultError(status))
 	return 0
 }
 
-func callWithResult(procedure *windows.LazyProc, args ...uintptr) error {
+func callSystemOperation(procedure *windows.LazyProc, system windows.Handle) error {
 	emptyOptions, err := windows.UTF16PtrFromString("")
 	if err != nil {
 		return err
 	}
 	var resultPointer *uint16
-	callArgs := append(args, uintptr(unsafe.Pointer(emptyOptions)), uintptr(unsafe.Pointer(&resultPointer)))
-	result, _, _ := procedure.Call(callArgs...)
+	result, _, _ := procedure.Call(
+		uintptr(system),
+		uintptr(unsafe.Pointer(emptyOptions)),
+		uintptr(unsafe.Pointer(&resultPointer)),
+	)
 	resultText := takeResultString(resultPointer)
 	if err := hresultError(result); err != nil {
 		if resultText != "" {
@@ -305,8 +260,62 @@ func callWithResult(procedure *windows.LazyProc, args ...uintptr) error {
 	return nil
 }
 
+func grantDocFileAccess(vmID string, doc *ComputeSystem) error {
+	if doc == nil || doc.VirtualMachine == nil {
+		return nil
+	}
+	var paths []string
+	if doc.VirtualMachine.Chipset != nil && doc.VirtualMachine.Chipset.LinuxKernelDirect != nil {
+		lkd := doc.VirtualMachine.Chipset.LinuxKernelDirect
+		if lkd.KernelFilePath != "" {
+			paths = append(paths, lkd.KernelFilePath)
+		}
+		if lkd.InitRdPath != "" {
+			paths = append(paths, lkd.InitRdPath)
+		}
+	}
+	if doc.VirtualMachine.Devices != nil {
+		for _, controller := range doc.VirtualMachine.Devices.Scsi {
+			for _, attachment := range controller.Attachments {
+				if attachment.Path != "" {
+					paths = append(paths, attachment.Path)
+				}
+			}
+		}
+	}
+	for _, path := range paths {
+		if err := grantVMAccess(vmID, path); err != nil {
+			return fmt.Errorf("grant VM access to %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func grantVMAccess(vmID, filePath string) error {
+	proc := hcsGrantVmAccess
+	if err := proc.Find(); err != nil {
+		proc = legacyGrantVmAccess
+		if findErr := proc.Find(); findErr != nil {
+			return fmt.Errorf("find HcsGrantVmAccess/GrantVmAccess: %w", findErr)
+		}
+	}
+	vmIDPtr, err := windows.UTF16PtrFromString(vmID)
+	if err != nil {
+		return err
+	}
+	filePathPtr, err := windows.UTF16PtrFromString(filePath)
+	if err != nil {
+		return err
+	}
+	result, _, _ := proc.Call(
+		uintptr(unsafe.Pointer(vmIDPtr)),
+		uintptr(unsafe.Pointer(filePathPtr)),
+	)
+	return hresultError(result)
+}
+
 func terminateSystem(system windows.Handle) error {
-	return callWithResult(hcsTerminateComputeSystem, uintptr(system))
+	return callSystemOperation(hcsTerminateComputeSystem, system)
 }
 
 func closeSystem(system windows.Handle) error {
@@ -327,7 +336,7 @@ func hresultError(result uintptr) error {
 	if result&0x1fff0000 == 0x00070000 {
 		result &= 0xffff
 	}
-	return syscall.Errno(result)
+	return syscall.Errno(uint32(result))
 }
 
 func takeResultString(pointer *uint16) string {

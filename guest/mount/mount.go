@@ -12,9 +12,15 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-const defaultTmpSizeMiB = 256
+const (
+	defaultTmpSizeMiB     = 256
+	defaultPlan9VsockPort = 564
+	defaultPlan9Msize     = 524288
+)
 
 type mountEntry struct {
 	source string
@@ -112,7 +118,7 @@ func WorkspaceWithFSType(
 
 	var lastErr error
 	for i := range maxRetries {
-		lastErr = syscall.Mount(entry.source, entry.target, entry.fstype, entry.flags, entry.data)
+		lastErr = mountWorkspaceOnce(entry, readOnly)
 		if lastErr == nil {
 			// Skip chown on read-only mounts: chown returns EROFS on a
 			// filesystem mounted with MS_RDONLY. Ownership is cosmetic
@@ -137,6 +143,42 @@ func WorkspaceWithFSType(
 	}
 
 	return fmt.Errorf("mounting %s tag %q on %s after %d retries: %w", fstype, tag, mountPoint, maxRetries, lastErr)
+}
+
+func mountWorkspaceOnce(entry mountEntry, readOnly bool) error {
+	if entry.fstype == "9p" {
+		if err := mountPlan9OverVsock(entry.target, entry.source, readOnly); err == nil {
+			return nil
+		}
+	}
+	return syscall.Mount(entry.source, entry.target, entry.fstype, entry.flags, entry.data)
+}
+
+func mountPlan9OverVsock(mountPoint, tag string, readOnly bool) error {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: defaultPlan9VsockPort}); err != nil {
+		return err
+	}
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, defaultPlan9Msize)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, defaultPlan9Msize)
+
+	entry := plan9VsockMountEntry(mountPoint, tag, fd, readOnly)
+	return syscall.Mount(entry.source, entry.target, entry.fstype, entry.flags, entry.data)
+}
+
+func plan9VsockMountEntry(mountPoint, tag string, fd int, readOnly bool) mountEntry {
+	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV)
+	data := fmt.Sprintf("trans=fd,rfdno=%d,wfdno=%d,msize=%d,version=9p2000.L,aname=%s", fd, fd, defaultPlan9Msize, tag)
+	if readOnly {
+		flags |= syscall.MS_RDONLY
+		data += ",noload,ro"
+	}
+	return mountEntry{source: tag, target: mountPoint, fstype: "9p", flags: flags, data: data}
 }
 
 func workspaceMountEntry(mountPoint, tag, fstype string, readOnly bool) mountEntry {

@@ -58,6 +58,20 @@ func TestWorkspaceMountEntry(t *testing.T) {
 			assert.Equal(t, tt.readOnly, entry.flags&syscall.MS_RDONLY != 0)
 		})
 	}
+
+	t.Run("plan9 vsock trans=fd entry", func(t *testing.T) {
+		t.Parallel()
+		entry := plan9VsockMountEntry("/workspace", "workspace", 7, false)
+		assert.Equal(t, "workspace", entry.source)
+		assert.Equal(t, "/workspace", entry.target)
+		assert.Equal(t, "9p", entry.fstype)
+		assert.Equal(t, "trans=fd,rfdno=7,wfdno=7,msize=524288,version=9p2000.L,aname=workspace", entry.data)
+		assert.Zero(t, entry.flags&syscall.MS_RDONLY)
+
+		roEntry := plan9VsockMountEntry("/workspace", "workspace", 7, true)
+		assert.Equal(t, "trans=fd,rfdno=7,wfdno=7,msize=524288,version=9p2000.L,aname=workspace,noload,ro", roEntry.data)
+		assert.NotZero(t, roEntry.flags&syscall.MS_RDONLY)
+	})
 }
 
 func TestEssentialMounts(t *testing.T) {

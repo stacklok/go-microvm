@@ -65,6 +65,7 @@ func (vm *VM) Stop(ctx context.Context) error {
 			defer ls.Release()
 			ls.State.Active = false
 			ls.State.PID = 0
+			ls.State.VMID = ""
 			if saveErr := ls.Save(); saveErr != nil {
 				slog.Warn("failed to persist state during stop", "error", saveErr)
 			}
