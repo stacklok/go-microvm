@@ -155,6 +155,10 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 			slog.Debug("using pre-built rootfs", "path", cfg.rootfsPath)
 			span.SetAttributes(attribute.Bool("microvm.image.prebuilt", true))
 			rootfs = &image.RootFS{Path: cfg.rootfsPath, Config: nil}
+		} else if cfg.rootfsShareDir != "" {
+			slog.Debug("sharing rootfs directory", "path", cfg.rootfsShareDir)
+			span.SetAttributes(attribute.Bool("microvm.image.prebuilt", true))
+			rootfs = &image.RootFS{Path: cfg.rootfsShareDir, Config: nil}
 		} else {
 			slog.Debug("pulling image", "ref", imageRef)
 			var err error
@@ -178,7 +182,7 @@ func Run(ctx context.Context, imageRef string, opts ...Option) (*VM, error) {
 	mounts := cfg.virtioFS
 	if cfg.rootfsShare != "" {
 		_, span := tracer.Start(ctx, "microvm.RootfsShare")
-		if !rootfs.FromCache {
+		if !rootfs.FromCache && cfg.rootfsShareDir == "" {
 			err := errors.New("rootfs share needs an image from the image cache")
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -692,6 +696,18 @@ func validateRootFSShare(cfg *config) error {
 	}
 	if cfg.rootfsPath != "" {
 		return errors.New("rootfs share cannot be combined with a pre-built rootfs path")
+	}
+	if dir := cfg.rootfsShareDir; dir != "" {
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("rootfs share directory must be absolute: %q", dir)
+		}
+		info, err := cfg.stat(dir)
+		if err != nil {
+			return fmt.Errorf("rootfs share directory: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("rootfs share directory is not a directory: %q", dir)
+		}
 	}
 	for _, m := range cfg.virtioFS {
 		if m.Tag == cfg.rootfsShare {
