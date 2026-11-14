@@ -157,6 +157,7 @@ type config struct {
 	rootfsPath            string   // pre-built rootfs directory; skips OCI image pull when set
 	rootfsHooks           []RootFSHook
 	rootfsShare           string // virtio-fs tag of the read-only cached rootfs; empty = clone it
+	rootfsShareDir        string // host directory shared under rootfsShare instead of the cached rootfs
 	netProvider           net.Provider
 	firewallRules         []firewall.Rule
 	firewallDefaultAction firewall.Action
@@ -309,9 +310,24 @@ func WithRootFSPath(path string) Option {
 // must assemble the root file system itself, for example as an overlay with
 // the share as its lower layer. The image must come from the image cache, and
 // the caller must keep its cache entry while the VM runs. Cannot be combined
-// with [WithRootFSPath].
+// with [WithRootFSPath]. It replaces an earlier [WithRootFSShareDir].
 func WithRootFSShare(tag string) Option {
-	return optionFunc(func(c *config) { c.rootfsShare = tag })
+	return optionFunc(func(c *config) { c.rootfsShare, c.rootfsShareDir = tag, "" })
+}
+
+// WithRootFSShareDir is like [WithRootFSShare], but shares dir, a host
+// directory the caller prepares, instead of a rootfs from the image cache.
+// The imageRef parameter to [Run] is ignored and no image is pulled, so no
+// image configuration reaches .krun_config.json and rootfs hooks get a nil
+// OCI config; pass the environment with [WithEnv].
+//
+// The guest init sees dir read-only under tag and must assemble the root
+// file system from it, for example by mounting the file system images it
+// holds. dir must be an absolute path to a directory, and the caller must
+// keep it while the VM runs. Cannot be combined with [WithRootFSPath]. It
+// replaces an earlier [WithRootFSShare].
+func WithRootFSShareDir(tag, dir string) Option {
+	return optionFunc(func(c *config) { c.rootfsShare, c.rootfsShareDir = tag, dir })
 }
 
 // WithRootFSHook adds hooks that modify the extracted rootfs before VM boot.

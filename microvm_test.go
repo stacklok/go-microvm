@@ -612,6 +612,96 @@ func TestRun_RootFSShare_SharesCachedRootfsReadOnly(t *testing.T) {
 	assert.NoError(t, err, "removing the VM must keep the cache entry")
 }
 
+func TestRun_RootFSShareDir_SharesDirReadOnly(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	shareDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(shareDir, "layer.img"), []byte("img"), 0o600))
+
+	const markerName = "rootfs-hook-marker"
+	backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+	var hookEntries []os.DirEntry
+	var hookCfg *image.OCIConfig
+
+	vm, err := Run(context.Background(), "ignored:latest",
+		WithDataDir(dataDir),
+		WithPreflightChecker(preflight.NewEmpty()),
+		WithImageFetcher(&mockImageFetcher{err: fmt.Errorf("must not pull")}),
+		WithNetProvider(&mockNetProvider{sockPath: "/tmp/fake.sock"}),
+		WithBackend(backend),
+		WithRootFSShareDir("rootfs", shareDir),
+		WithCleanDataDir(),
+		WithRootFSHook(func(rootfsPath string, cfg *image.OCIConfig) error {
+			entries, err := os.ReadDir(rootfsPath)
+			if err != nil {
+				return err
+			}
+			hookEntries, hookCfg = entries, cfg
+			return os.WriteFile(filepath.Join(rootfsPath, markerName), []byte("x"), 0o644)
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, vm.Stop(context.Background()))
+	})
+
+	workingPath := vm.RootFSPath()
+	assert.Equal(t, filepath.Join(dataDir, "rootfs-work"), workingPath)
+	assert.Equal(t, workingPath, backend.lastConfig.RootFSPath)
+	assert.Empty(t, hookEntries, "the root must start empty")
+	assert.Nil(t, hookCfg)
+	_, err = os.Stat(filepath.Join(shareDir, markerName))
+	assert.True(t, os.IsNotExist(err), "hook marker must not exist in the shared directory: %v", err)
+	assert.Equal(t, []hypervisor.FilesystemMount{
+		{Tag: "rootfs", HostPath: shareDir, ReadOnly: true},
+	}, backend.lastConfig.FilesystemMounts)
+
+	require.NoError(t, vm.Remove(context.Background()))
+	_, err = os.Stat(filepath.Join(shareDir, "layer.img"))
+	assert.NoError(t, err, "removing the VM must keep the shared directory")
+}
+
+func TestRun_RootFSShareDir_Validation(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	tests := []struct {
+		name string
+		dir  string
+		opts []Option
+		want string
+	}{
+		{name: "relative", dir: "rootfs", want: "must be absolute"},
+		{name: "missing", dir: filepath.Join(t.TempDir(), "missing"), want: "rootfs share directory"},
+		{name: "file", dir: file, want: "is not a directory"},
+		{
+			name: "pre-built rootfs",
+			dir:  t.TempDir(),
+			opts: []Option{WithRootFSPath(t.TempDir())},
+			want: "cannot be combined with a pre-built rootfs path",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &mockBackend{startHandle: &mockVMHandle{id: "42", alive: true}}
+			opts := append([]Option{
+				WithDataDir(t.TempDir()),
+				WithPreflightChecker(preflight.NewEmpty()),
+				WithBackend(backend),
+				WithRootFSShareDir("rootfs", tt.dir),
+			}, tt.opts...)
+			_, err := Run(context.Background(), "example.com/test:latest", opts...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.Zero(t, backend.startCalls)
+		})
+	}
+}
+
 func TestEmptyRootDir_PreservesExistingEntries(t *testing.T) {
 	t.Parallel()
 

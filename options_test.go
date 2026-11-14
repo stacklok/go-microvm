@@ -134,6 +134,20 @@ func TestWithRootFSPath_OverridesDefault(t *testing.T) {
 	assert.Equal(t, "/second", cfg.rootfsPath)
 }
 
+func TestWithRootFSShareDir_ReplacesRootFSShare(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	WithRootFSShare("cached").apply(cfg)
+	WithRootFSShareDir("dir", "/share").apply(cfg)
+	assert.Equal(t, "dir", cfg.rootfsShare)
+	assert.Equal(t, "/share", cfg.rootfsShareDir)
+
+	WithRootFSShare("cached").apply(cfg)
+	assert.Equal(t, "cached", cfg.rootfsShare)
+	assert.Empty(t, cfg.rootfsShareDir)
+}
+
 func TestWithVirtioFS(t *testing.T) {
 	t.Parallel()
 
