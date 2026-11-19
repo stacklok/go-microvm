@@ -21,7 +21,8 @@ import (
 
 const (
 	// maxConcurrentConns is the maximum number of concurrent SSH connections.
-	maxConcurrentConns = 4
+	// Connections beyond this limit are closed immediately.
+	maxConcurrentConns = 64
 
 	// maxChannelsPerConn is the maximum number of channels per connection.
 	maxChannelsPerConn = 10
@@ -166,7 +167,9 @@ func (s *Server) ListenAndServe() error {
 }
 
 // Serve accepts connections on the provided listener. It limits
-// concurrent connections to maxConcurrentConns via a semaphore.
+// concurrent connections to maxConcurrentConns via a semaphore; a
+// connection arriving at the limit is closed immediately rather than
+// blocking the accept loop.
 func (s *Server) Serve(ln net.Listener) error {
 	s.listener = ln
 	sem := make(chan struct{}, maxConcurrentConns)
@@ -183,7 +186,17 @@ func (s *Server) Serve(ln net.Listener) error {
 			}
 		}
 
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		default:
+			s.logger.Warn("connection limit reached, closing connection",
+				"remote", conn.RemoteAddr(),
+				"limit", maxConcurrentConns,
+			)
+			_ = conn.Close()
+			continue
+		}
+
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
