@@ -7,7 +7,7 @@ go 1.26.0
 
 require (
 	github.com/cenkalti/backoff/v7 v7.0.3
-	github.com/containers/gvisor-tap-vsock v0.9.0
+	github.com/containers/gvisor-tap-vsock v0.9.1
 	github.com/creack/pty v1.1.24
 	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/gofrs/flock v0.13.2
@@ -25,7 +25,7 @@ require (
 )
 
 require (
-	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/Microsoft/go-winio v0.6.4 // indirect
 	github.com/apparentlymart/go-cidr v1.1.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
@@ -44,8 +44,8 @@ require (
 	github.com/inetaf/tcpproxy v0.0.0-20260515195445-c159a6051109 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
 	github.com/linuxkit/virtsock v0.0.0-20220523201153-1a23e78aa7a2 // indirect
-	github.com/mdlayher/socket v0.6.0 // indirect
-	github.com/mdlayher/vsock v1.3.0 // indirect
+	github.com/mdlayher/socket v0.8.0 // indirect
+	github.com/mdlayher/vsock v1.4.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/moby/api v1.55.0 // indirect
 	github.com/moby/moby/client v0.5.1 // indirect
@@ -64,10 +64,10 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
-	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/mod v0.43.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20260413194555-9680d69bf798 // indirect
 )
